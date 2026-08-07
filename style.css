@@ -106,6 +106,53 @@ button {
     margin: 0;
 }
 
+.viewToggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.viewToggle input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+}
+
+.photoArrayControls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+}
+
+.photoArrayControls label {
+    display: grid;
+    gap: 4px;
+}
+
+.photoArrayControls input {
+    width: 100%;
+    height: 32px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+    padding: 0 8px;
+}
+
+.photoArrayControls button {
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--panel-bg);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 700;
+}
+
 .sidebarHeader h1 {
     font-size: 17px;
     line-height: 1.2;
@@ -184,6 +231,13 @@ button {
     margin-bottom: 8px;
 }
 
+.categoryHeaderRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+    align-items: center;
+    gap: 2px;
+}
+
 .categoryHeader {
     display: grid;
     grid-template-columns: 16px minmax(0, 1fr);
@@ -197,6 +251,30 @@ button {
     cursor: pointer;
     text-align: left;
     text-transform: uppercase;
+}
+
+.categoryHeaderRow .categoryHeader {
+    min-width: 0;
+}
+
+.categoryTool {
+    min-height: 26px;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--subtle);
+    cursor: pointer;
+    font-size: 10px;
+}
+
+.categoryTool:hover {
+    background: var(--panel-bg);
+    color: var(--text);
+}
+
+.categoryTool.danger:hover {
+    background: var(--danger);
+    color: #fff;
 }
 
 .categoryHeader strong {
@@ -223,7 +301,7 @@ button {
 .channelRow {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 28px 28px;
+    grid-template-columns: minmax(0, 1fr) repeat(4, 28px);
     align-items: center;
     gap: 2px;
     border-radius: 6px;
@@ -275,6 +353,36 @@ button {
     background: transparent;
     color: var(--subtle);
     cursor: pointer;
+    font-size: 10px;
+}
+
+.hiddenChannels {
+    margin: 4px 8px 6px;
+    color: var(--subtle);
+    font-size: 11px;
+}
+
+.hiddenChannels summary {
+    padding: 5px 0;
+    cursor: pointer;
+}
+
+.restoreHidden {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    text-align: left;
+}
+
+.restoreHidden:hover {
+    background: var(--panel-hover);
+    color: var(--text);
 }
 
 .channelTool:hover {
@@ -710,6 +818,47 @@ button {
     background: #111214;
 }
 
+.discordMediaEmbed {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #111214;
+}
+
+.discordMediaEmbed .embed {
+    border-radius: 0;
+}
+
+.discordMediaControls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: #1e1f22;
+}
+
+.discordMediaControls button {
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 5px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.discordMediaControls input {
+    min-width: 44px;
+    flex: 1;
+    accent-color: var(--accent);
+}
+
+.discordMediaControls output {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
 video.embed {
     height: auto;
 }
@@ -733,6 +882,166 @@ video.embed {
     margin-top: 6px;
     color: var(--muted);
     font-size: 12px;
+}
+
+.imageNoteButton {
+    margin-top: 6px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--panel-bg);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.imageNoteButton:hover {
+    background: var(--panel-hover);
+    color: var(--text);
+}
+
+.lockScreen {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: #111214;
+}
+
+.lockScreen[hidden] {
+    display: none;
+}
+
+.lockCard {
+    width: min(360px, 100%);
+    padding: 24px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel-bg);
+}
+
+.lockCard h2 {
+    margin: 6px 0;
+}
+
+.lockCard p:not(.eyebrow) {
+    color: var(--muted);
+}
+
+#unlockForm {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+#unlockForm input {
+    min-width: 0;
+    flex: 1;
+    height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+#unlockForm button {
+    padding: 0 14px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.unlockError {
+    min-height: 1.25em;
+    color: #ed4245 !important;
+    font-size: 13px;
+}
+
+.photoGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    width: min(900px, 100%);
+}
+
+.photoTile {
+    position: relative;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+    cursor: pointer;
+}
+
+.photoSelector {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 20px;
+    height: 20px;
+    accent-color: var(--accent);
+}
+
+.batchActions {
+    position: sticky;
+    z-index: 2;
+    top: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: min(900px, 100%);
+    margin-bottom: 10px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.batchActions span {
+    margin-right: auto;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.batchActions button {
+    min-height: 28px;
+    padding: 0 8px;
+    border-radius: 6px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.photoTile:hover {
+    border-color: var(--accent);
+}
+
+.photoTile img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    background: #111214;
+}
+
+.photoTile figcaption {
+    display: -webkit-box;
+    min-height: 2.6em;
+    margin: 0;
+    padding: 7px 8px;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.3;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .emptyPanel {
