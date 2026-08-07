@@ -1,5 +1,5 @@
 const DB_NAME = "knowledgeDiscord";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STRUCTURE_ID = "main";
 
 let db;
@@ -25,22 +25,39 @@ function initDB() {
 
         request.onupgradeneeded = (event) => {
             const nextDb = event.target.result;
+            const tx = event.target.transaction;
 
-            if (nextDb.objectStoreNames.contains("messages")) {
-                const tx = event.target.transaction;
-                const store = tx.objectStore("messages");
-
-                if (store.keyPath !== "channel") {
-                    nextDb.deleteObjectStore("messages");
-                }
-            }
-
+            // Version 1 used an incompatible messages store.  Do not delete it:
+            // keeping it is safer than risking existing notes during an upgrade.
             if (!nextDb.objectStoreNames.contains("messages")) {
                 nextDb.createObjectStore("messages", { keyPath: "channel" });
             }
 
             if (!nextDb.objectStoreNames.contains("structure")) {
                 nextDb.createObjectStore("structure", { keyPath: "id" });
+            }
+
+            if (!nextDb.objectStoreNames.contains("messageItems")) {
+                const items = nextDb.createObjectStore("messageItems", { keyPath: "id" });
+                items.createIndex("channel", "channel", { unique: false });
+
+                // Copy the current channel bundles into the new per-message store.
+                // This only runs for the compatible v2 store and leaves that store
+                // untouched as a recovery copy.
+                const oldMessages = tx.objectStore("messages");
+                if (oldMessages.keyPath === "channel") {
+                    oldMessages.openCursor().onsuccess = (cursorEvent) => {
+                        const cursor = cursorEvent.target.result;
+                        if (!cursor) return;
+                        const record = cursor.value;
+                        (record.messages || []).forEach((message) => {
+                            if (message?.id) {
+                                items.put({ id: message.id, channel: record.channel, message });
+                            }
+                        });
+                        cursor.continue();
+                    };
+                }
             }
         };
 
@@ -77,7 +94,7 @@ async function saveStructure(data) {
 
     store.put({
         id: STRUCTURE_ID,
-        data: structuredClone(data)
+        data
     });
 
     await transactionDone(tx);
@@ -86,23 +103,41 @@ async function saveStructure(data) {
 async function getChannelMessages(channelId) {
     ensureDB();
 
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readonly");
+        const index = tx.objectStore("messageItems").index("channel");
+        const records = await requestToPromise(index.getAll(channelId));
+        return records.map((record) => record.message);
+    }
+
     const tx = db.transaction("messages", "readonly");
     const store = tx.objectStore("messages");
     const record = await requestToPromise(store.get(channelId));
-
     return record?.messages || [];
 }
 
 async function saveChannelMessages(channelId, messages) {
     ensureDB();
 
-    const tx = db.transaction("messages", "readwrite");
-    const store = tx.objectStore("messages");
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readwrite");
+        const store = tx.objectStore("messageItems");
+        const index = store.index("channel");
+        const existingRequest = index.getAllKeys(channelId);
+        existingRequest.onsuccess = () => {
+            const nextIds = new Set(messages.map((message) => message.id));
+            existingRequest.result
+                .filter((id) => !nextIds.has(id))
+                .forEach((id) => store.delete(id));
+            messages.forEach((message) => store.put({ id: message.id, channel: channelId, message }));
+        };
+        existingRequest.onerror = () => tx.abort();
+        await transactionDone(tx);
+        return;
+    }
 
-    store.put({
-        channel: channelId,
-        messages: structuredClone(messages)
-    });
+    const tx = db.transaction("messages", "readwrite");
+    tx.objectStore("messages").put({ channel: channelId, messages });
 
     await transactionDone(tx);
 }
@@ -110,10 +145,18 @@ async function saveChannelMessages(channelId, messages) {
 async function deleteChannelMessages(channelId) {
     ensureDB();
 
-    const tx = db.transaction("messages", "readwrite");
-    const store = tx.objectStore("messages");
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readwrite");
+        const store = tx.objectStore("messageItems");
+        const keysRequest = store.index("channel").getAllKeys(channelId);
+        keysRequest.onsuccess = () => keysRequest.result.forEach((key) => store.delete(key));
+        keysRequest.onerror = () => tx.abort();
+        await transactionDone(tx);
+        return;
+    }
 
-    store.delete(channelId);
+    const tx = db.transaction("messages", "readwrite");
+    tx.objectStore("messages").delete(channelId);
 
     await transactionDone(tx);
 }
