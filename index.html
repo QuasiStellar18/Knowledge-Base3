@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#313338">
 
-    <link rel="stylesheet" href="style.css?v=38">
+    <link rel="stylesheet" href="style.css?v=51">
     <link rel="manifest" href="manifest.json">
 
     <title>Knowledge Discord</title>
@@ -34,6 +34,7 @@
                 <button id="newCategoryBtn" type="button">Folder</button>
                 <button id="newChannelBtn" type="button">Channel</button>
                 <button id="randomChannelBtn" type="button">Random channel</button>
+                <button id="randomServerMessageBtn" type="button">Random note</button>
             </div>
 
             <nav id="channels" aria-label="Channel list"></nav>
@@ -141,7 +142,13 @@
                 </div>
 
                 <div class="topActions">
+                    <button id="chatTimerQuick" class="chatTimerQuick" type="button" aria-label="Start timer">
+                        <span>Timer</span>
+                        <output id="chatTimerStatus">1:00</output>
+                        <span class="chatTimerBar" aria-hidden="true"><span id="chatTimerProgress"></span></span>
+                    </button>
                     <button id="randomMessageBtn" type="button">Random note</button>
+                    <button id="comparePhotosBtn" type="button">Compare photos</button>
                     <button id="saveRandomArrayBtn" type="button" hidden>Save array</button>
                     <button id="lockWorkspaceBtn" type="button">Lock</button>
                     <button id="deleteChannelBtn" class="dangerAction" type="button">Delete channel</button>
@@ -159,6 +166,7 @@
                 <textarea id="noteInput" autocomplete="off" rows="1" placeholder="Write a note, paste an image, or add #tags"></textarea>
                 <input id="imageInput" type="file" accept="image/*" multiple hidden>
                 <button id="attachImageBtn" type="button">Image</button>
+                <button id="linkPhotosBtn" type="button">Link photos</button>
                 <button id="sendBtn" type="button">Send</button>
             </form>
         </section>
@@ -177,7 +185,7 @@
         </div>
     </section>
 
-    <script src="db.js?v=38" defer></script>
-    <script src="app.js?v=38" defer></script>
+    <script src="db.js?v=51" defer></script>
+    <script src="app.js?v=51" defer></script>
 </body>
 </html>
