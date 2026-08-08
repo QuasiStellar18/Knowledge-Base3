@@ -42,7 +42,10 @@ const DEFAULT_STRUCTURE = {
         randomTimerOnMessage: false,
         randomTimerOnChannel: false,
         randomTimerOnArray: false,
-        showHiddenPhotos: false
+        showHiddenPhotos: false,
+        channelQuizSettings: {},
+        channelQuizHighScores: {},
+        channelQuizPresets: {}
     }
 };
 
@@ -71,7 +74,9 @@ const state = {
     focusMode: false,
     focusSessionCollectionId: null,
     activeAdventureSessionId: null,
-    focusAdventureSceneId: null
+    focusAdventureSceneId: null,
+    adventureEditorStage: "setup",
+    channelQuiz: { channelIds: [], useAllChannels: false, answerMode: "choice", current: null, score: 0, rounds: 0, ended: false }
 };
 
 let adventureAutosaveTimer;
@@ -85,6 +90,7 @@ let adventureTimerTick;
 let adventureAutoAdvanceTimer;
 let adventureAutoAdvanceKey;
 let adventureAutoAdvanceStartedMetronome = false;
+let channelQuizPunishmentTimer;
 
 const els = {
     app: document.getElementById("app"),
@@ -92,6 +98,11 @@ const els = {
     sidebar: document.getElementById("sidebar"),
     chat: document.getElementById("chat"),
     mobileStageNav: document.getElementById("mobileStageNav"),
+    mobileQuickActions: document.getElementById("mobileQuickActions"),
+    mobileBackBtn: document.getElementById("mobileBackBtn"),
+    mobileRandomBtn: document.getElementById("mobileRandomBtn"),
+    mobileAddImageBtn: document.getElementById("mobileAddImageBtn"),
+    mobileMoreBtn: document.getElementById("mobileMoreBtn"),
     channels: document.getElementById("channels"),
     activeTitle: document.getElementById("activeTitle"),
     activeMeta: document.getElementById("activeMeta"),
@@ -258,6 +269,10 @@ function bindEvents() {
     els.mobileStageNav.querySelectorAll("button").forEach((button) => {
         button.addEventListener("click", () => showMobileStage(button.dataset.stageTarget));
     });
+    els.mobileBackBtn.addEventListener("click", () => showMobileStage("sidebar"));
+    els.mobileRandomBtn.addEventListener("click", selectRandomMessageForCurrentView);
+    els.mobileAddImageBtn.addEventListener("click", () => els.imageInput.click());
+    els.mobileMoreBtn.addEventListener("click", openMobileQuickActions);
 
     els.app.addEventListener("scroll", debounce(() => updateMobileStageNav(), 80), { passive: true });
     window.addEventListener("resize", () => updateMobileStageNav());
@@ -779,6 +794,15 @@ function renderSpecialViews() {
         prefix: "◉",
         title: "Timer, metronome, and collection slideshow"
     }));
+    if (!getActiveServer()?.isAdventureServer) {
+        group.appendChild(renderSmartChannelRow({
+            id: "channel-quiz",
+            type: "channelQuiz",
+            label: "channel quiz",
+            prefix: "?",
+            title: "Guess which channel a random image came from"
+        }));
+    }
     if (state.randomPhotoArray.length > 0) {
         group.appendChild(renderSmartChannelRow({
             id: "random-photo-array",
@@ -914,7 +938,7 @@ function renderHeader() {
     els.saveRandomArrayBtn.disabled = !isRandomArray || state.randomPhotoArray.length === 0;
     els.lockWorkspaceBtn.hidden = !state.isUnlocked;
     els.randomMessageBtn.textContent = state.activeView.type === "collection" ? "Random collection note" : "Random note";
-    const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
+    const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "channelQuiz", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
     els.comparePhotosBtn.hidden = !compareAvailable;
     els.comparePhotosBtn.disabled = !compareAvailable;
 
@@ -933,6 +957,12 @@ function renderHeader() {
     if (state.activeView.type === "focusSession") {
         els.activeTitle.textContent = "Focus session";
         els.activeMeta.textContent = "Local timer, metronome, and collection slideshow";
+        return;
+    }
+
+    if (state.activeView.type === "channelQuiz") {
+        els.activeTitle.textContent = "Channel quiz";
+        els.activeMeta.textContent = "Guess where a random local image came from";
         return;
     }
 
@@ -1011,7 +1041,7 @@ function renderMessages() {
     }
 
     if (!state.ready) {
-        els.messages.appendChild(emptyPanel("Loading notes"));
+        renderChannelLoadingSkeleton("Opening your local workspace…");
         return;
     }
 
@@ -1021,7 +1051,7 @@ function renderMessages() {
     }
 
     if (state.loadingChannelId && state.loadingChannelId === state.activeChannelId) {
-        els.messages.appendChild(emptyPanel("Loading channel…"));
+        renderChannelLoadingSkeleton("Loading channel…");
         return;
     }
 
@@ -1049,6 +1079,11 @@ function renderMessages() {
 
     if (state.activeView.type === "focusSession") {
         renderFocusSession();
+        return;
+    }
+
+    if (state.activeView.type === "channelQuiz") {
+        renderChannelQuiz();
         return;
     }
 
@@ -1111,6 +1146,30 @@ function renderMessages() {
         els.messages.prepend(older);
     }
 
+}
+
+function renderChannelLoadingSkeleton(label = "Loading…") {
+    const loading = document.createElement("section");
+    loading.className = "channelLoadingSkeleton";
+    loading.setAttribute("role", "status");
+    const text = document.createElement("p");
+    text.textContent = label;
+    const grid = document.createElement("div");
+    grid.className = "channelLoadingPhotoGrid";
+    for (let index = 0; index < 8; index += 1) {
+        const tile = document.createElement("span");
+        tile.className = "skeletonBlock";
+        grid.appendChild(tile);
+    }
+    const lines = document.createElement("div");
+    lines.className = "channelLoadingLines";
+    for (let index = 0; index < 3; index += 1) {
+        const line = document.createElement("span");
+        line.className = "skeletonBlock";
+        lines.appendChild(line);
+    }
+    loading.append(text, grid, lines);
+    els.messages.appendChild(loading);
 }
 
 function getSlideshowItems(entries) {
@@ -1567,6 +1626,398 @@ function renderFocusSession() {
     note.textContent = "The timer and metronome stay local and keep running while you view the slideshow.";
     page.append(intro, setup, controls, note);
     els.messages.appendChild(page);
+}
+
+function renderChannelQuiz() {
+    const quiz = state.channelQuiz;
+    const quizSettings = getChannelQuizSettings();
+    const highScore = getChannelQuizHighScore();
+    const page = document.createElement("section");
+    page.className = "channelQuiz";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Which channel?</h3><p>Pick the channels to draw from, then identify the source of each randomly chosen local image or GIF.</p>";
+    const setup = document.createElement("section");
+    setup.className = "channelQuizSetup";
+    const all = document.createElement("label");
+    const allInput = document.createElement("input");
+    allInput.type = "checkbox";
+    allInput.checked = quiz.useAllChannels;
+    all.append(allInput, " Use all channels in this workspace");
+    const sources = document.createElement("label");
+    sources.textContent = "Or choose channels";
+    const sourceInput = document.createElement("select");
+    sourceInput.multiple = true;
+    sourceInput.size = Math.min(7, Math.max(2, allChannels().length));
+    allChannels().forEach((channel) => {
+        const option = document.createElement("option");
+        option.value = channel.id;
+        option.textContent = `# ${channel.name}`;
+        option.selected = quiz.channelIds.includes(channel.id);
+        sourceInput.appendChild(option);
+    });
+    sources.appendChild(sourceInput);
+    const mode = document.createElement("label");
+    mode.textContent = "Answer with";
+    const modeInput = document.createElement("select");
+    [["choice", "Multiple choice"], ["text", "Type the channel name"]].forEach(([value, label]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; option.selected = quiz.answerMode === value; modeInput.appendChild(option);
+    });
+    mode.appendChild(modeInput);
+    const presets = document.createElement("details");
+    presets.className = "channelQuizPresets";
+    const presetsSummary = document.createElement("summary");
+    presetsSummary.textContent = "Saved quiz presets";
+    const presetHelp = document.createElement("p");
+    presetHelp.textContent = "Save a channel selection and answer style so you can return to the same quiz setup in one tap.";
+    const presetControls = document.createElement("div");
+    presetControls.className = "channelQuizPresetControls";
+    const presetSelect = document.createElement("select");
+    const emptyPreset = document.createElement("option");
+    emptyPreset.value = "";
+    emptyPreset.textContent = "Choose a saved preset";
+    presetSelect.appendChild(emptyPreset);
+    getChannelQuizPresets().forEach((preset) => {
+        const option = document.createElement("option");
+        option.value = preset.id;
+        option.textContent = preset.name;
+        presetSelect.appendChild(option);
+    });
+    const loadPreset = document.createElement("button");
+    loadPreset.type = "button";
+    loadPreset.textContent = "Load";
+    loadPreset.addEventListener("click", () => {
+        const preset = getChannelQuizPresets().find((item) => item.id === presetSelect.value);
+        if (!preset) { alert("Choose a saved quiz preset first."); return; }
+        allInput.checked = Boolean(preset.useAllChannels);
+        [...sourceInput.options].forEach((option) => { option.selected = (preset.channelIds || []).includes(option.value); });
+        modeInput.value = preset.answerMode === "text" ? "text" : "choice";
+    });
+    const presetName = document.createElement("input");
+    presetName.type = "text";
+    presetName.maxLength = 48;
+    presetName.placeholder = "New preset name";
+    const savePreset = document.createElement("button");
+    savePreset.type = "button";
+    savePreset.textContent = "Save setup";
+    savePreset.addEventListener("click", async () => {
+        const name = normalizeDisplayName(presetName.value);
+        if (!name) { alert("Give this quiz preset a name."); return; }
+        await saveChannelQuizPreset({
+            name,
+            useAllChannels: allInput.checked,
+            channelIds: [...sourceInput.selectedOptions].map((option) => option.value),
+            answerMode: modeInput.value
+        });
+        presetName.value = "";
+        renderMessages();
+    });
+    const deletePreset = document.createElement("button");
+    deletePreset.type = "button";
+    deletePreset.textContent = "Delete";
+    deletePreset.addEventListener("click", async () => {
+        if (!presetSelect.value) { alert("Choose a saved quiz preset first."); return; }
+        await deleteChannelQuizPreset(presetSelect.value);
+        renderMessages();
+    });
+    presetControls.append(presetSelect, loadPreset, presetName, savePreset, deletePreset);
+    presets.append(presetsSummary, presetHelp, presetControls);
+    const settings = document.createElement("details");
+    settings.className = "channelQuizSettings";
+    const settingsSummary = document.createElement("summary");
+    settingsSummary.textContent = "Quiz settings and penalties";
+    const bpmPenalty = document.createElement("label");
+    const bpmPenaltyInput = document.createElement("input");
+    bpmPenaltyInput.type = "checkbox";
+    bpmPenaltyInput.checked = Boolean(quizSettings.increaseBpmOnWrong);
+    bpmPenalty.append(bpmPenaltyInput, " Increase metronome BPM after a wrong answer");
+    const bpmStep = document.createElement("label");
+    bpmStep.textContent = "BPM increase";
+    const bpmStepInput = document.createElement("input");
+    bpmStepInput.type = "number";
+    bpmStepInput.min = "1";
+    bpmStepInput.max = "100";
+    bpmStepInput.value = quizSettings.bpmIncrease;
+    bpmStep.appendChild(bpmStepInput);
+    const punishment = document.createElement("label");
+    const punishmentInput = document.createElement("input");
+    punishmentInput.type = "checkbox";
+    punishmentInput.checked = Boolean(quizSettings.punishmentEnabled);
+    punishment.append(punishmentInput, " Show a random punishment image after a wrong answer");
+    const punishmentChannel = document.createElement("label");
+    punishmentChannel.textContent = "Punishment image channel";
+    const punishmentChannelInput = document.createElement("select");
+    const noChannel = document.createElement("option");
+    noChannel.value = "";
+    noChannel.textContent = "Choose a channel";
+    punishmentChannelInput.appendChild(noChannel);
+    allChannels().forEach((channel) => {
+        const option = document.createElement("option");
+        option.value = channel.id;
+        option.textContent = `# ${channel.name}`;
+        option.selected = channel.id === quizSettings.punishmentChannelId;
+        punishmentChannelInput.appendChild(option);
+    });
+    punishmentChannel.appendChild(punishmentChannelInput);
+    const punishmentSeconds = document.createElement("label");
+    punishmentSeconds.textContent = "Punishment seconds";
+    const punishmentSecondsInput = document.createElement("input");
+    punishmentSecondsInput.type = "number";
+    punishmentSecondsInput.min = "1";
+    punishmentSecondsInput.max = "60";
+    punishmentSecondsInput.value = quizSettings.punishmentSeconds;
+    punishmentSeconds.appendChild(punishmentSecondsInput);
+    const saveQuizSettings = async () => {
+        saveChannelQuizSettings({
+            increaseBpmOnWrong: bpmPenaltyInput.checked,
+            bpmIncrease: clampAdventureNumber(bpmStepInput.value, 1, 100, 10),
+            punishmentEnabled: punishmentInput.checked,
+            punishmentChannelId: punishmentChannelInput.value || null,
+            punishmentSeconds: clampAdventureNumber(punishmentSecondsInput.value, 1, 60, 5)
+        });
+    };
+    [bpmPenaltyInput, bpmStepInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
+    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds);
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "adventurePrimary";
+    start.textContent = quiz.current ? "Next question" : quiz.ended ? "Start new quiz" : "Start quiz";
+    start.addEventListener("click", () => {
+        if (quiz.ended) {
+            quiz.score = 0;
+            quiz.rounds = 0;
+            quiz.ended = false;
+        }
+        quiz.useAllChannels = allInput.checked;
+        quiz.channelIds = [...sourceInput.selectedOptions].map((option) => option.value);
+        quiz.answerMode = modeInput.value;
+        drawChannelQuizQuestion();
+    });
+    setup.append(all, sources, mode, presets, settings, start);
+    page.append(intro, setup);
+    const score = document.createElement("p");
+    score.className = "channelQuizScore";
+    score.textContent = `${quiz.score} correct out of ${quiz.rounds} answered · high score: ${highScore.bestCorrect} correct`;
+    page.appendChild(score);
+    const quizActions = document.createElement("div");
+    quizActions.className = "channelQuizActions";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Start a fresh score";
+    reset.addEventListener("click", () => {
+        window.clearTimeout(channelQuizPunishmentTimer);
+        quiz.score = 0;
+        quiz.rounds = 0;
+        quiz.current = null;
+        quiz.punishment = null;
+        quiz.ended = false;
+        renderMessages();
+    });
+    quizActions.appendChild(reset);
+    if (!quiz.ended && (quiz.current || quiz.punishment || quiz.rounds > 0)) {
+        const busted = document.createElement("button");
+        busted.type = "button";
+        busted.className = "channelQuizBustedButton";
+        busted.textContent = "Busted — end quiz";
+        busted.addEventListener("click", finishChannelQuizAsBusted);
+        quizActions.appendChild(busted);
+    }
+    page.appendChild(quizActions);
+    if (quiz.ended) {
+        const result = document.createElement("section");
+        result.className = "channelQuizBusted";
+        const title = document.createElement("h3");
+        title.textContent = "Quiz busted";
+        const message = document.createElement("p");
+        message.textContent = `Final score: ${quiz.score} correct out of ${quiz.rounds}. Start a new quiz when you are ready.`;
+        result.append(title, message);
+        page.appendChild(result);
+        els.messages.appendChild(page);
+        return;
+    }
+    if (quiz.punishment) {
+        const punishmentPanel = document.createElement("section");
+        punishmentPanel.className = "channelQuizPunishment";
+        const note = document.createElement("p");
+        note.textContent = `Wrong answer. Returning to the quiz in ${quizSettings.punishmentSeconds} seconds…`;
+        punishmentPanel.append(note, renderAdventurePlayerMedia(quiz.punishment.ref));
+        page.appendChild(punishmentPanel);
+        els.messages.appendChild(page);
+        return;
+    }
+    if (quiz.current) {
+        const attachment = findAttachment(quiz.current.ref);
+        if (attachment) {
+            const media = renderAdventurePlayerMedia(quiz.current.ref);
+            page.appendChild(media);
+            const question = document.createElement("h3");
+            question.textContent = quiz.answerMode === "text" ? "Type the channel name" : "Which channel did this image come from?";
+            page.appendChild(question);
+            const answerArea = document.createElement("div");
+            answerArea.className = "adventurePlayerChoices";
+            if (quiz.answerMode === "text") {
+                const input = document.createElement("input");
+                input.type = "text";
+                input.placeholder = "Channel name";
+                const submit = document.createElement("button");
+                submit.type = "button";
+                submit.className = "adventureChoiceButton adventurePrimary";
+                submit.textContent = "Check answer";
+                submit.addEventListener("click", () => answerChannelQuiz(input.value));
+                answerArea.append(input, submit);
+            } else {
+                const eligible = quiz.useAllChannels ? allChannels().map((channel) => channel.id) : quiz.channelIds;
+                [...new Set([quiz.current.ref.channelId, ...eligible])].map((id) => getChannelById(id)).filter(Boolean).sort(() => Math.random() - .5).forEach((channel) => {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "adventureChoiceButton";
+                    button.textContent = `# ${channel.name}`;
+                    button.addEventListener("click", () => answerChannelQuiz(channel.id));
+                    answerArea.appendChild(button);
+                });
+            }
+            page.appendChild(answerArea);
+        }
+    }
+    els.messages.appendChild(page);
+}
+
+function drawChannelQuizQuestion() {
+    const quiz = state.channelQuiz;
+    const allowed = quiz.useAllChannels ? null : new Set(quiz.channelIds);
+    const candidates = getServerEntries().flatMap((entry) => (!allowed || allowed.has(entry.channelId) ? (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({ ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id } })) : []));
+    const chosen = randomItem(candidates);
+    if (!chosen) { alert("Choose at least one channel with local images, or use all channels."); return; }
+    quiz.current = chosen;
+    renderMessages();
+}
+
+async function answerChannelQuiz(answer) {
+    const quiz = state.channelQuiz;
+    if (!quiz.current) return;
+    const source = getChannelById(quiz.current.ref.channelId);
+    const typed = String(answer || "").trim().replace(/^#\s*/, "").toLowerCase();
+    const correct = quiz.answerMode === "text" ? typed === String(source?.name || "").toLowerCase() : answer === quiz.current.ref.channelId;
+    quiz.rounds += 1;
+    if (correct) {
+        quiz.score += 1;
+        await saveChannelQuizHighScore();
+        alert(`Correct — it was #${source?.name || "channel"}.`);
+        quiz.current = null;
+        renderMessages();
+        return;
+    }
+    const settings = getChannelQuizSettings();
+    if (settings.increaseBpmOnWrong) {
+        els.metronomeBpm.value = clampAdventureNumber(Number(els.metronomeBpm.value || state.structure.settings.metronomeBpm) + settings.bpmIncrease, 20, 300, 120);
+        await saveMetronomeSettings();
+        if (metronomeTimer) startMetronome();
+    }
+    const punishmentRef = getChannelQuizPunishmentRef(settings);
+    if (settings.punishmentEnabled && punishmentRef) {
+        quiz.punishment = { ref: punishmentRef };
+        renderMessages();
+        window.clearTimeout(channelQuizPunishmentTimer);
+        channelQuizPunishmentTimer = window.setTimeout(() => {
+            quiz.punishment = null;
+            quiz.current = null;
+            renderMessages();
+        }, settings.punishmentSeconds * 1000);
+        return;
+    }
+    alert(`Not quite — it was #${source?.name || "channel"}.`);
+    quiz.current = null;
+    renderMessages();
+}
+
+async function finishChannelQuizAsBusted() {
+    const quiz = state.channelQuiz;
+    if (quiz.ended) return;
+    window.clearTimeout(channelQuizPunishmentTimer);
+    quiz.current = null;
+    quiz.punishment = null;
+    quiz.ended = true;
+    await saveChannelQuizHighScore();
+    renderMessages();
+}
+
+function getChannelQuizSettings() {
+    const serverId = getActiveServer()?.id || "main";
+    const saved = state.structure.settings.channelQuizSettings?.[serverId] || {};
+    const defaultPunishment = allChannels().find((channel) => channel.name.toLowerCase() === "punishment")?.id || null;
+    return {
+        increaseBpmOnWrong: false,
+        bpmIncrease: 10,
+        punishmentEnabled: false,
+        punishmentChannelId: defaultPunishment,
+        punishmentSeconds: 5,
+        ...saved
+    };
+}
+
+async function saveChannelQuizSettings(settings) {
+    const serverId = getActiveServer()?.id || "main";
+    state.structure.settings.channelQuizSettings ||= {};
+    state.structure.settings.channelQuizSettings[serverId] = settings;
+    await saveStructure(state.structure);
+}
+
+function getChannelQuizHighScore() {
+    const serverId = getActiveServer()?.id || "main";
+    return state.structure.settings.channelQuizHighScores?.[serverId] || { bestCorrect: 0, bestRounds: 0 };
+}
+
+function getChannelQuizPresets() {
+    const serverId = getActiveServer()?.id || "main";
+    return state.structure.settings.channelQuizPresets?.[serverId] || [];
+}
+
+async function saveChannelQuizPreset(preset) {
+    const serverId = getActiveServer()?.id || "main";
+    state.structure.settings.channelQuizPresets ||= {};
+    const existing = getChannelQuizPresets();
+    const normalizedName = preset.name.toLowerCase();
+    const matching = existing.find((item) => item.name.toLowerCase() === normalizedName);
+    const item = {
+        id: matching?.id || crypto.randomUUID(),
+        name: preset.name,
+        useAllChannels: Boolean(preset.useAllChannels),
+        channelIds: [...new Set(preset.channelIds || [])],
+        answerMode: preset.answerMode === "text" ? "text" : "choice",
+        updatedAt: new Date().toISOString()
+    };
+    state.structure.settings.channelQuizPresets[serverId] = matching
+        ? existing.map((existingPreset) => existingPreset.id === matching.id ? item : existingPreset)
+        : [...existing, item];
+    await saveStructure(state.structure);
+}
+
+async function deleteChannelQuizPreset(presetId) {
+    const serverId = getActiveServer()?.id || "main";
+    state.structure.settings.channelQuizPresets ||= {};
+    state.structure.settings.channelQuizPresets[serverId] = getChannelQuizPresets().filter((preset) => preset.id !== presetId);
+    await saveStructure(state.structure);
+}
+
+async function saveChannelQuizHighScore() {
+    const serverId = getActiveServer()?.id || "main";
+    const existing = getChannelQuizHighScore();
+    if (state.channelQuiz.score <= existing.bestCorrect) return;
+    state.structure.settings.channelQuizHighScores ||= {};
+    state.structure.settings.channelQuizHighScores[serverId] = { bestCorrect: state.channelQuiz.score, bestRounds: state.channelQuiz.rounds, achievedAt: new Date().toISOString() };
+    await saveStructure(state.structure);
+}
+
+function getChannelQuizPunishmentRef(settings) {
+    if (!settings.punishmentChannelId) return null;
+    const candidates = (state.messagesByChannel.get(settings.punishmentChannelId) || []).flatMap((message) => (
+        (message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
+            channelId: settings.punishmentChannelId,
+            messageId: message.id,
+            attachmentId: attachment.id
+        }))
+    ));
+    return randomItem(candidates);
 }
 
 function renderStatsPage() {
@@ -2093,8 +2544,22 @@ function renderAdventureEditor(adventureId) {
         steps.appendChild(step);
     });
     creatorIntro.appendChild(steps);
-    page.append(creatorIntro, details);
-    page.appendChild(renderAdventureValidation(adventure));
+    const stage = state.adventureEditorStage || "setup";
+    const stageNav = document.createElement("nav");
+    stageNav.className = "adventureStageNav";
+    [["setup", "1. Setup", "Name it and choose the starting point"], ["scenes", "2. Build scenes", "Add media, paths, and game moments"], ["test", "3. Test", "Check the map and play your story"]].forEach(([id, label, hint]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = id === stage ? "active" : "";
+        button.textContent = label;
+        button.title = hint;
+        button.addEventListener("click", () => { state.adventureEditorStage = id; renderMessages(); });
+        stageNav.appendChild(button);
+    });
+    page.appendChild(stageNav);
+    if (stage === "setup") {
+        page.append(creatorIntro, details);
+    }
 
     const heading = document.createElement("div");
     heading.className = "adventureSceneHeading";
@@ -2104,9 +2569,30 @@ function renderAdventureEditor(adventureId) {
     addScene.textContent = "Add scene";
     addScene.addEventListener("click", () => addAdventureScene(adventure.id));
     heading.appendChild(addScene);
-    page.appendChild(heading);
-
-    adventure.scenes.forEach((scene, index) => page.appendChild(renderAdventureSceneEditor(adventure, scene, index)));
+    if (stage === "scenes") {
+        const sceneGuide = document.createElement("section");
+        sceneGuide.className = "adventureStageGuide";
+        sceneGuide.innerHTML = "<h3>Build scenes</h3><p>For each scene: choose a pattern, write the moment, add media, then set what happens next. Open only one scene at a time.</p>";
+        page.append(sceneGuide, heading);
+        adventure.scenes.forEach((scene, index) => page.appendChild(renderAdventureSceneEditor(adventure, scene, index)));
+    }
+    if (stage === "test") {
+        const testGuide = document.createElement("section");
+        testGuide.className = "adventureStageGuide";
+        testGuide.innerHTML = "<h3>Test your adventure</h3><p>Fix anything flagged below, view the scene map, then play through a saved local test run.</p>";
+        const testActions = document.createElement("div");
+        testActions.className = "adventureEditorActions";
+        const testPlay = play.cloneNode(true);
+        testPlay.addEventListener("click", () => startAdventurePlay(adventure.id));
+        const testMap = map.cloneNode(true);
+        testMap.addEventListener("click", () => openView("adventureMap", adventure.id));
+        const testScenes = document.createElement("button");
+        testScenes.type = "button";
+        testScenes.textContent = "Back to scenes";
+        testScenes.addEventListener("click", () => { state.adventureEditorStage = "scenes"; renderMessages(); });
+        testActions.append(testPlay, testMap, testScenes);
+        page.append(testGuide, renderAdventureValidation(adventure), testActions);
+    }
     els.messages.appendChild(page);
 }
 
@@ -2137,6 +2623,7 @@ function renderAdventureValidation(adventure) {
         if (event?.type === "timer" && !event.completeTargetId) issues.push(`${scene.title || "Untitled scene"}: timer ends the story because it has no destination.`);
         if (event?.type === "quiz" && event.mode === "manual" && !(event.answers || []).some((answer) => answer.label)) issues.push(`${scene.title || "Untitled scene"}: quiz has no answers.`);
         if (event?.type === "quiz" && ["source-choice", "source-text"].includes(event.mode) && (!event.mediaRef || !findAttachment(event.mediaRef))) issues.push(`${scene.title || "Untitled scene"}: source quiz needs a valid image.`);
+        if (event?.type === "quiz" && String(event.mode || "").startsWith("random-source") && !event.useAllChannels && !(event.channelIds || []).length) issues.push(`${scene.title || "Untitled scene"}: random channel quiz needs selected channels or all channels enabled.`);
     });
     const panel = document.createElement("details");
     panel.className = "adventureValidation";
@@ -2412,22 +2899,23 @@ function renderAdventureTemplateLibrary(adventure, scene) {
     const panel = document.createElement("section");
     panel.className = "adventureTemplateLibrary";
     const heading = document.createElement("strong");
-    heading.textContent = "Start with a scene template";
+    heading.textContent = "Choose what this scene does";
     const help = document.createElement("p");
-    help.textContent = "Templates give this scene a useful shape. You can change every part after choosing one.";
+    help.textContent = "Pick one starting pattern. It fills the scene with the right controls; you can still change everything afterward.";
     const grid = document.createElement("div");
     grid.className = "adventureTemplateGrid";
     [
-        ["twoPath", "Two paths", "A simple left-or-right decision"],
-        ["imageScene", "Image scene", "A moment built around an image or GIF"],
-        ["randomImage", "Random image", "Reveal a local photo or GIF at random"],
-        ["dice", "Dice check", "Roll to take a success or failure path"],
-        ["weighted", "Weighted path", "Let chance choose between paths"],
+        ["twoPath", "Decision", "Player chooses between two paths"],
+        ["imageScene", "Image moment", "Write around one image or GIF"],
+        ["randomImage", "Random reveal", "Draw one local image or GIF"],
+        ["dice", "Dice check", "Roll for success or failure"],
+        ["weighted", "Random path", "Chance picks a destination"],
         ["wheel", "Spinning wheel", "Spin for the next scene"],
-        ["timer", "Timer challenge", "A countdown before continuing"],
-        ["imageQuiz", "Image source quiz", "Guess which channel a picture came from"],
-        ["quiz", "Quick quiz", "Ask a question with answer paths"],
-        ["ending", "Ending", "A clean final scene"]
+        ["timer", "Timer challenge", "Countdown before continuing"],
+        ["imageQuiz", "Fixed-image quiz", "Ask where a chosen scene image came from"],
+        ["randomChannelQuiz", "Random channel quiz", "Draw an image, then identify its channel"],
+        ["quiz", "Written quiz", "Ask a custom multiple-choice question"],
+        ["ending", "Ending", "Finish this story here"]
     ].forEach(([id, label, description]) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -2462,7 +2950,7 @@ async function applyAdventureSceneTemplate(adventureId, sceneId, template) {
         renderMessages();
         return;
     }
-    if (["dice", "weighted", "wheel", "timer", "randomImage", "imageQuiz", "quiz"].includes(template)) adventure.editorMode = "advanced";
+    if (["dice", "weighted", "wheel", "timer", "randomImage", "imageQuiz", "randomChannelQuiz", "quiz"].includes(template)) adventure.editorMode = "advanced";
     if (template === "twoPath") {
         scene.isEnding = false;
         scene.randomEvent = null;
@@ -2491,6 +2979,11 @@ async function applyAdventureSceneTemplate(adventureId, sceneId, template) {
     } else if (template === "imageQuiz") {
         scene.randomEvent = { type: "quiz", mode: "source-choice", question: "Which channel did this image come from?", mediaRef: scene.mediaRefs?.[0] || null, channelIds: [], successTargetId: null, failureTargetId: null };
         scene.isEnding = false;
+        scene.choices = [];
+    } else if (template === "randomChannelQuiz") {
+        scene.randomEvent = { type: "quiz", mode: "random-source-choice", question: "Which channel did this image come from?", channelIds: [], useAllChannels: false, successTargetId: null, failureTargetId: null };
+        scene.isEnding = false;
+        scene.text ||= "Identify the channel behind the random image.";
         scene.choices = [];
     } else if (template === "quiz") {
         scene.isEnding = false;
@@ -2750,7 +3243,9 @@ function renderAdventureRandomEditor(adventure, scene) {
         [
             ["manual", "Manual answer buttons"],
             ["source-choice", "Which channel was this image from?"],
-            ["source-text", "Type the source channel name"]
+            ["source-text", "Type the source channel name"],
+            ["random-source-choice", "Random image: choose its channel"],
+            ["random-source-text", "Random image: type its channel"]
         ].forEach(([value, label]) => {
             const option = document.createElement("option");
             option.value = value;
@@ -2768,6 +3263,43 @@ function renderAdventureRandomEditor(adventure, scene) {
         question.value = event.question || "";
         question.placeholder = modeInput.value === "manual" ? "Quiz question" : "Optional question (defaults to a source-channel question)";
         if (modeInput.value !== "manual") {
+            const randomSource = modeInput.value.startsWith("random-source");
+            if (randomSource) {
+                const useAll = document.createElement("label");
+                const useAllInput = document.createElement("input");
+                useAllInput.type = "checkbox";
+                useAllInput.checked = Boolean(event.useAllChannels);
+                useAll.append(useAllInput, " Draw from every channel with local images in all workspaces");
+                const channels = document.createElement("label");
+                channels.textContent = "Otherwise draw from these channels";
+                const channelsInput = document.createElement("select");
+                channelsInput.multiple = true;
+                channelsInput.size = Math.min(6, Math.max(2, getAllChannels().length));
+                getAllChannels().forEach((channel) => {
+                    const option = document.createElement("option");
+                    option.value = channel.id;
+                    option.textContent = `#${channel.name} (${getChannelServer(channel.id)?.name || "server"})`;
+                    option.selected = (event.channelIds || []).includes(channel.id);
+                    channelsInput.appendChild(option);
+                });
+                const success = adventureTargetSelect(adventure, scene.id, event.successTargetId, "Correct answer destination");
+                const failure = adventureTargetSelect(adventure, scene.id, event.failureTargetId, "Wrong answer destination");
+                wrap.append(mode, question, useAll, channels, success.label, failure.label);
+                return {
+                    element: wrap,
+                    save: () => {
+                        scene.randomEvent = {
+                            type: "quiz",
+                            mode: modeInput.value,
+                            question: question.value.trim(),
+                            channelIds: [...channelsInput.selectedOptions].map((option) => option.value),
+                            useAllChannels: useAllInput.checked,
+                            successTargetId: success.select.value || null,
+                            failureTargetId: failure.select.value || null
+                        };
+                    }
+                };
+            }
             const media = document.createElement("label");
             media.textContent = "Quiz image (add local media to this scene first)";
             const mediaInput = document.createElement("select");
@@ -3581,21 +4113,32 @@ function renderAdventureRandomPlayerAction(adventure, scene, session) {
     }
     if (event.type === "quiz") {
         const question = document.createElement("p");
-        const sourceQuiz = ["source-choice", "source-text"].includes(event.mode);
-        question.textContent = event.question || (event.mode === "source-text"
+        const randomSourceQuiz = String(event.mode || "").startsWith("random-source");
+        const sourceQuiz = ["source-choice", "source-text"].includes(event.mode) || randomSourceQuiz;
+        const quizRef = randomSourceQuiz ? getAdventureRandomResult(session, scene.id, "quiz-image")?.ref : event.mediaRef;
+        question.textContent = event.question || (event.mode === "source-text" || event.mode === "random-source-text"
             ? "Type the name of the channel this image came from."
-            : event.mode === "source-choice"
+            : event.mode === "source-choice" || event.mode === "random-source-choice"
                 ? "Which channel did this image come from?"
                 : "Choose an answer.");
-        if (sourceQuiz && event.mediaRef) panel.appendChild(renderAdventurePlayerMedia(event.mediaRef));
-        if (sourceQuiz && (!event.mediaRef || !findAttachment(event.mediaRef))) {
+        if (randomSourceQuiz && !quizRef) {
+            const draw = document.createElement("button");
+            draw.type = "button";
+            draw.className = "adventureChoiceButton adventurePrimary";
+            draw.textContent = "Draw quiz image";
+            draw.addEventListener("click", () => drawAdventureQuizImage(adventure.id, scene.id));
+            panel.append(question, draw);
+            return panel;
+        }
+        if (sourceQuiz && quizRef) panel.appendChild(renderAdventurePlayerMedia(quizRef));
+        if (sourceQuiz && (!quizRef || !findAttachment(quizRef))) {
             question.textContent = "Choose a local quiz image in the scene editor, or repair its missing reference.";
             panel.appendChild(question);
             return panel;
         }
         const answers = document.createElement("div");
         answers.className = "adventurePlayerChoices";
-        if (event.mode === "source-text") {
+        if (event.mode === "source-text" || event.mode === "random-source-text") {
             const input = document.createElement("input");
             input.type = "text";
             input.placeholder = "Channel name";
@@ -3606,9 +4149,10 @@ function renderAdventureRandomPlayerAction(adventure, scene, session) {
             submit.textContent = "Submit answer";
             submit.addEventListener("click", () => resolveAdventureSourceQuiz(adventure.id, scene.id, input.value));
             answers.append(input, submit);
-        } else if (event.mode === "source-choice") {
-            const correctChannelId = event.mediaRef?.channelId;
-            const choices = [...new Set([correctChannelId, ...(event.channelIds || [])])]
+        } else if (event.mode === "source-choice" || event.mode === "random-source-choice") {
+            const correctChannelId = quizRef?.channelId;
+            const eligibleChannels = event.useAllChannels ? getAllChannels().map((channel) => channel.id) : (event.channelIds || []);
+            const choices = [...new Set([correctChannelId, ...eligibleChannels])]
                 .map((channelId) => getChannelById(channelId))
                 .filter(Boolean)
                 .sort(() => Math.random() - .5);
@@ -3927,19 +4471,43 @@ async function resolveAdventureQuiz(adventureId, sceneId, answer) {
     render();
 }
 
+async function drawAdventureQuizImage(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const event = adventure?.scenes.find((scene) => scene.id === sceneId)?.randomEvent;
+    if (!adventure || !session || !event) return;
+    await ensureServerMessagesLoaded();
+    const allowed = event.useAllChannels ? null : new Set(event.channelIds || []);
+    const candidates = getWorkspaceEntries().flatMap((entry) => (
+        (!allowed || allowed.has(entry.channelId)) ? (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
+            ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id }
+        })) : []
+    ));
+    const chosen = randomItem(candidates);
+    if (!chosen) {
+        alert("Choose at least one channel with local images, or enable all channels.");
+        return;
+    }
+    session.randomResults = [...(session.randomResults || []).filter((result) => !(result.sceneId === sceneId && result.kind === "quiz-image")), { sceneId, kind: "quiz-image", ref: chosen.ref }];
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
 async function resolveAdventureSourceQuiz(adventureId, sceneId, answer) {
     const adventure = getAdventure(adventureId);
     const session = getAdventureSession(adventureId);
     const event = adventure?.scenes.find((scene) => scene.id === sceneId)?.randomEvent;
-    if (!adventure || !session || !event?.mediaRef) return;
-    const sourceChannel = getChannelById(event.mediaRef.channelId);
+    const mediaRef = String(event?.mode || "").startsWith("random-source") ? getAdventureRandomResult(session, sceneId, "quiz-image")?.ref : event?.mediaRef;
+    if (!adventure || !session || !event || !mediaRef) return;
+    const sourceChannel = getChannelById(mediaRef.channelId);
     const normalizedAnswer = String(answer || "").trim().replace(/^#\s*/, "").toLowerCase();
-    const correct = event.mode === "source-text"
+    const correct = event.mode === "source-text" || event.mode === "random-source-text"
         ? normalizedAnswer === String(sourceChannel?.name || "").trim().toLowerCase()
-        : answer === event.mediaRef.channelId;
+        : answer === mediaRef.channelId;
     const targetSceneId = correct ? event.successTargetId : event.failureTargetId;
     const destination = adventure.scenes.find((scene) => scene.id === targetSceneId)?.title || "The end";
-    const answerLabel = event.mode === "source-text" ? (String(answer).trim() || "No answer") : `#${getChannelById(answer)?.name || "missing"}`;
+    const answerLabel = event.mode === "source-text" || event.mode === "random-source-text" ? (String(answer).trim() || "No answer") : `#${getChannelById(answer)?.name || "missing"}`;
     session.history.push({
         sceneId,
         choiceLabel: `Source quiz: ${answerLabel} · ${correct ? "correct" : "wrong"} → ${destination}`,
@@ -4190,6 +4758,23 @@ async function pickAdventureMedia(adventureId, sceneId, replaceRef = null) {
     openAdventureMediaSourcePicker(adventureId, sceneId, replaceRef);
 }
 
+function openMediaLoadingOverlay(label = "Loading local media…") {
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard mediaLoadingCard";
+    const shimmer = document.createElement("span");
+    shimmer.className = "skeletonBlock";
+    const text = document.createElement("p");
+    text.textContent = label;
+    const detail = document.createElement("p");
+    detail.textContent = "Reading only the photos stored in this browser.";
+    card.append(shimmer, text, detail);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    return modal;
+}
+
 function openAdventureMediaSourcePicker(adventureId, sceneId, replaceRef) {
     const modal = document.createElement("section");
     modal.className = "adventureMediaPicker";
@@ -4232,7 +4817,12 @@ function openAdventureMediaSourcePicker(adventureId, sceneId, replaceRef) {
 }
 
 async function pickAdventureMediaFromLibrary(adventureId, sceneId, replaceRef = null) {
-    await ensureServerMessagesLoaded();
+    const loading = openMediaLoadingOverlay();
+    try {
+        await ensureServerMessagesLoaded();
+    } finally {
+        loading.remove();
+    }
     const options = getAdventureMediaOptions();
     if (state.structure.settings.thumbnailMediaPicker) {
         openAdventureMediaPicker(adventureId, sceneId, options, replaceRef);
@@ -4250,7 +4840,12 @@ async function pickAdventureMediaFromLibrary(adventureId, sceneId, replaceRef = 
 }
 
 async function openAdventureMediaChannelPicker(adventureId, sceneId, replaceRef = null) {
-    await ensureServerMessagesLoaded();
+    const loading = openMediaLoadingOverlay("Finding channels with local media…");
+    try {
+        await ensureServerMessagesLoaded();
+    } finally {
+        loading.remove();
+    }
     const options = getAdventureMediaOptions();
     const channelCounts = new Map();
     options.forEach((option) => channelCounts.set(option.ref.channelId, (channelCounts.get(option.ref.channelId) || 0) + 1));
@@ -4410,13 +5005,11 @@ function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef, cha
     close.addEventListener("click", dismiss);
     const more = document.createElement("button");
     more.type = "button";
-    let visibleLimit = 36;
-    const renderOptions = () => {
-        grid.innerHTML = "";
-        more.hidden = true;
-        const query = search.value.trim().toLowerCase();
-        const matching = options.filter((option) => !query || option.label.toLowerCase().includes(query));
-        matching.slice(0, visibleLimit).forEach((option) => {
+    const pageSize = 10;
+    let visibleLimit = pageSize;
+    let matching = [];
+    const appendOptions = (items) => {
+        items.forEach((option) => {
             const attachment = findAttachment(option.ref);
             if (!attachment) return;
             const button = document.createElement("button");
@@ -4435,13 +5028,31 @@ function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef, cha
             });
             grid.appendChild(button);
         });
-        if (matching.length > visibleLimit) {
-            more.hidden = false;
-            more.textContent = `Show ${Math.min(36, matching.length - visibleLimit)} more (${matching.length} total)`;
-        }
     };
-    search.addEventListener("input", () => { visibleLimit = 36; renderOptions(); });
-    more.addEventListener("click", () => { visibleLimit += 36; renderOptions(); });
+    const updateMore = () => {
+        more.hidden = matching.length <= visibleLimit;
+        more.textContent = `Load 10 more (${matching.length - visibleLimit} remaining)`;
+    };
+    const loadMore = () => {
+        if (visibleLimit >= matching.length) return;
+        const previousLimit = visibleLimit;
+        visibleLimit = Math.min(matching.length, visibleLimit + pageSize);
+        appendOptions(matching.slice(previousLimit, visibleLimit));
+        updateMore();
+    };
+    const renderOptions = () => {
+        grid.replaceChildren();
+        const query = search.value.trim().toLowerCase();
+        matching = options.filter((option) => !query || option.label.toLowerCase().includes(query));
+        visibleLimit = Math.min(pageSize, matching.length);
+        appendOptions(matching.slice(0, visibleLimit));
+        updateMore();
+    };
+    search.addEventListener("input", renderOptions);
+    more.addEventListener("click", loadMore);
+    grid.addEventListener("scroll", () => {
+        if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 80) loadMore();
+    }, { passive: true });
     modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
     card.append(heading, search, grid, more, close);
     modal.appendChild(card);
@@ -4782,6 +5393,10 @@ function renderComposer() {
     els.randomPhotoArrayBtn.disabled = !state.ready || !state.isUnlocked;
     els.randomMetronomeBtn.disabled = !state.ready || !state.isUnlocked;
     els.metronomeToggleBtn.disabled = !state.ready || !state.isUnlocked;
+    els.mobileBackBtn.disabled = !state.ready || !state.isUnlocked;
+    els.mobileRandomBtn.disabled = !state.ready || !state.isUnlocked || (!enabled && !collectionHasNotes);
+    els.mobileAddImageBtn.disabled = !enabled;
+    els.mobileMoreBtn.disabled = !state.ready || !state.isUnlocked;
 
     els.attachmentPreview.innerHTML = "";
     state.draftAttachments.forEach((attachment) => {
@@ -4809,6 +5424,43 @@ function renderComposer() {
         });
         els.attachmentPreview.appendChild(chip);
     });
+}
+
+function openMobileQuickActions() {
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker mobileQuickSheet";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard mobileQuickSheetCard";
+    const heading = document.createElement("h3");
+    heading.textContent = "More actions";
+    const help = document.createElement("p");
+    help.textContent = "Quick tools for this local workspace.";
+    const actions = document.createElement("div");
+    actions.className = "mobileQuickSheetActions";
+    const dismiss = () => modal.remove();
+    const makeAction = (label, action, disabled = false, danger = false) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.disabled = disabled;
+        button.classList.toggle("danger", danger);
+        button.addEventListener("click", () => { dismiss(); action(); });
+        return button;
+    };
+    const isChannel = state.activeView.type === "channel" && Boolean(state.activeChannelId);
+    actions.append(
+        makeAction("Start / pause timer", () => els.chatTimerQuick.click()),
+        makeAction("Link local photos", openLinkedPhotoPicker, !isChannel),
+        makeAction("Compare photos", openComparePicker, els.comparePhotosBtn.hidden || els.comparePhotosBtn.disabled),
+        makeAction("Search this view", () => { els.searchInput.focus(); }, !isChannel),
+        makeAction("Lock workspace", lockWorkspace, !state.isUnlocked),
+        makeAction("Delete this channel", deleteActiveChannel, !isChannel, true)
+    );
+    const close = makeAction("Close", dismiss);
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    card.append(heading, help, actions, close);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
 }
 
 function renderUtilityPanel() {
@@ -6022,21 +6674,31 @@ function openPhotoCompare(refs) {
     close.addEventListener("click", () => modal.remove());
     const grid = document.createElement("div");
     grid.className = "photoCompareGrid";
+    grid.dataset.count = String(items.length);
     items.forEach((item, index) => {
+        const figure = document.createElement("figure");
         const image = document.createElement("img");
         const objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
         image.src = objectUrl || item.attachment.dataUrl || "";
         image.alt = item.alt;
         if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         image.addEventListener("click", () => openImageViewer(item.attachment, item.alt, items, index));
-        grid.appendChild(image);
+        const caption = document.createElement("figcaption");
+        caption.textContent = `#${item.channelName} · ${item.alt}`;
+        figure.append(image, caption);
+        grid.appendChild(figure);
     });
     modal.append(close, grid);
     document.body.appendChild(modal);
 }
 
 async function openComparePicker() {
-    await ensureServerMessagesLoaded();
+    const loading = openMediaLoadingOverlay("Preparing photos to compare…");
+    try {
+        await ensureServerMessagesLoaded();
+    } finally {
+        loading.remove();
+    }
     const options = getServerEntries().flatMap((entry) => (
         (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
             ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id },
@@ -6080,19 +6742,17 @@ async function openComparePicker() {
     compare.type = "button";
     compare.className = "adventurePrimary";
     const dismiss = () => modal.remove();
-    let visibleLimit = 48;
+    const pageSize = 10;
+    let visibleLimit = pageSize;
+    let matching = [];
     const syncSelection = () => {
         status.textContent = selected.size === 0 ? "Select 2 to 4 photos." : `${selected.size} of 4 selected`;
         compare.textContent = selected.size >= 2 ? `Compare ${selected.size} photos` : "Choose at least 2 photos";
         compare.disabled = selected.size < 2;
         grid.querySelectorAll("button[data-photo-key]").forEach((button) => button.classList.toggle("isSelected", selected.has(button.dataset.photoKey)));
     };
-    const renderOptions = () => {
-        grid.innerHTML = "";
-        more.hidden = true;
-        const query = search.value.trim().toLowerCase();
-        const matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
-        matching.slice(0, visibleLimit).forEach((option) => {
+    const appendOptions = (items) => {
+        items.forEach((option) => {
             const button = document.createElement("button");
             button.type = "button";
             button.dataset.photoKey = photoRefKey(option.ref);
@@ -6113,14 +6773,33 @@ async function openComparePicker() {
             });
             grid.appendChild(button);
         });
-        if (matching.length > visibleLimit) {
-            more.hidden = false;
-            more.textContent = `Show ${Math.min(48, matching.length - visibleLimit)} more (${matching.length} total)`;
-        }
+    };
+    const updateMore = () => {
+        more.hidden = matching.length <= visibleLimit;
+        more.textContent = `Load 10 more (${matching.length - visibleLimit} remaining)`;
+    };
+    const loadMore = () => {
+        if (visibleLimit >= matching.length) return;
+        const previousLimit = visibleLimit;
+        visibleLimit = Math.min(matching.length, visibleLimit + pageSize);
+        appendOptions(matching.slice(previousLimit, visibleLimit));
+        updateMore();
         syncSelection();
     };
-    search.addEventListener("input", () => { visibleLimit = 48; renderOptions(); });
-    more.addEventListener("click", () => { visibleLimit += 48; renderOptions(); });
+    const renderOptions = () => {
+        grid.replaceChildren();
+        const query = search.value.trim().toLowerCase();
+        matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
+        visibleLimit = Math.min(pageSize, matching.length);
+        appendOptions(matching.slice(0, visibleLimit));
+        updateMore();
+        syncSelection();
+    };
+    search.addEventListener("input", renderOptions);
+    more.addEventListener("click", loadMore);
+    grid.addEventListener("scroll", () => {
+        if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 80) loadMore();
+    }, { passive: true });
     clear.addEventListener("click", () => { selected.clear(); syncSelection(); });
     close.addEventListener("click", dismiss);
     compare.addEventListener("click", () => {
@@ -6140,7 +6819,12 @@ async function openComparePicker() {
 }
 
 async function openLinkedPhotoPicker() {
-    await ensureServerMessagesLoaded();
+    const loading = openMediaLoadingOverlay("Preparing your local photo library…");
+    try {
+        await ensureServerMessagesLoaded();
+    } finally {
+        loading.remove();
+    }
     const options = getServerEntries().flatMap((entry) => (
         (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
             ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id },
@@ -6184,19 +6868,17 @@ async function openLinkedPhotoPicker() {
     add.type = "button";
     add.className = "adventurePrimary";
     const dismiss = () => modal.remove();
-    let visibleLimit = 48;
+    const pageSize = 10;
+    let visibleLimit = pageSize;
+    let matching = [];
     const syncSelection = () => {
         status.textContent = selected.size ? `${selected.size} of 12 linked` : "Select photos to link to this note.";
         add.textContent = selected.size ? `Link ${selected.size} photo${selected.size === 1 ? "" : "s"}` : "Link selected photos";
         add.disabled = selected.size === 0;
         grid.querySelectorAll("button[data-photo-key]").forEach((button) => button.classList.toggle("isSelected", selected.has(button.dataset.photoKey)));
     };
-    const renderOptions = () => {
-        grid.innerHTML = "";
-        more.hidden = true;
-        const query = search.value.trim().toLowerCase();
-        const matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
-        matching.slice(0, visibleLimit).forEach((option) => {
+    const appendOptions = (items) => {
+        items.forEach((option) => {
             const button = document.createElement("button");
             button.type = "button";
             button.dataset.photoKey = photoRefKey(option.ref);
@@ -6217,14 +6899,33 @@ async function openLinkedPhotoPicker() {
             });
             grid.appendChild(button);
         });
-        if (matching.length > visibleLimit) {
-            more.hidden = false;
-            more.textContent = `Show ${Math.min(48, matching.length - visibleLimit)} more (${matching.length} total)`;
-        }
+    };
+    const updateMore = () => {
+        more.hidden = matching.length <= visibleLimit;
+        more.textContent = `Load 10 more (${matching.length - visibleLimit} remaining)`;
+    };
+    const loadMore = () => {
+        if (visibleLimit >= matching.length) return;
+        const previousLimit = visibleLimit;
+        visibleLimit = Math.min(matching.length, visibleLimit + pageSize);
+        appendOptions(matching.slice(previousLimit, visibleLimit));
+        updateMore();
         syncSelection();
     };
-    search.addEventListener("input", () => { visibleLimit = 48; renderOptions(); });
-    more.addEventListener("click", () => { visibleLimit += 48; renderOptions(); });
+    const renderOptions = () => {
+        grid.replaceChildren();
+        const query = search.value.trim().toLowerCase();
+        matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
+        visibleLimit = Math.min(pageSize, matching.length);
+        appendOptions(matching.slice(0, visibleLimit));
+        updateMore();
+        syncSelection();
+    };
+    search.addEventListener("input", renderOptions);
+    more.addEventListener("click", loadMore);
+    grid.addEventListener("scroll", () => {
+        if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 80) loadMore();
+    }, { passive: true });
     cancel.addEventListener("click", dismiss);
     clear.addEventListener("click", () => { selected.clear(); syncSelection(); });
     add.addEventListener("click", () => {
