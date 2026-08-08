@@ -40,6 +40,41 @@ button {
     border: 0;
 }
 
+button,
+input,
+textarea,
+select {
+    -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 2px;
+}
+
+@media (hover: none) {
+    button:not(:disabled):active,
+    .photoTile:active,
+    .imageAttachment:active {
+        transform: scale(.985);
+        filter: brightness(1.1);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+    }
+}
+
 #mobileStageNav {
     display: none;
 }
@@ -612,9 +647,13 @@ button {
 
 #chat {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
     min-width: 0;
     background: var(--chat-bg);
+}
+
+#mobileQuickActions {
+    display: none;
 }
 
 #topbar {
@@ -727,6 +766,56 @@ button {
     padding: 18px 20px 28px;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
+}
+
+.channelLoadingSkeleton {
+    display: grid;
+    gap: 14px;
+    width: min(900px, 100%);
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(43, 45, 49, .42);
+}
+
+.channelLoadingSkeleton p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.channelLoadingPhotoGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.channelLoadingPhotoGrid .skeletonBlock {
+    aspect-ratio: 1;
+}
+
+.channelLoadingLines {
+    display: grid;
+    gap: 8px;
+}
+
+.channelLoadingLines .skeletonBlock {
+    height: 13px;
+}
+
+.channelLoadingLines .skeletonBlock:nth-child(2) { width: 78%; }
+.channelLoadingLines .skeletonBlock:nth-child(3) { width: 56%; }
+
+.skeletonBlock {
+    display: block;
+    border-radius: 6px;
+    background: linear-gradient(100deg, #3d3f45 25%, #4b4e56 45%, #3d3f45 65%);
+    background-size: 220% 100%;
+    animation: skeletonShimmer 1.15s ease-in-out infinite;
+}
+
+@keyframes skeletonShimmer {
+    to { background-position: -220% 0; }
 }
 
 .message {
@@ -1045,6 +1134,177 @@ button {
     font-weight: 700;
 }
 
+.channelQuiz {
+    display: grid;
+    gap: 14px;
+    width: min(760px, 100%);
+    margin: 0 auto;
+}
+
+.channelQuizSetup {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.channelQuizSetup label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.channelQuizSetup input,
+.channelQuizSetup select {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.channelQuizSetup select[multiple] { min-height: 120px; }
+
+.channelQuizSetup button {
+    min-height: 44px;
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.channelQuizSettings {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .58);
+}
+
+.channelQuizPresets {
+    display: grid;
+    gap: 9px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .58);
+}
+
+.channelQuizPresets summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 800;
+}
+
+.channelQuizPresets p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.channelQuizPresetControls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+}
+
+.channelQuizPresetControls input,
+.channelQuizPresetControls select,
+.channelQuizPresetControls button {
+    min-height: 38px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.channelQuizSettings summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 800;
+}
+
+.channelQuizSettings label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.channelQuizSettings input,
+.channelQuizSettings select {
+    width: 100%;
+    min-height: 38px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.channelQuizPunishment {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    background: rgba(237, 66, 69, .1);
+}
+
+.channelQuizPunishment p {
+    margin: 0;
+    color: var(--text);
+    font-weight: 700;
+}
+
+.channelQuizScore {
+    margin: 0;
+    padding: 9px 11px;
+    border-radius: var(--radius);
+    background: rgba(35, 165, 89, .14);
+    color: var(--muted);
+}
+
+.channelQuizActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.channelQuizActions button {
+    min-height: 42px;
+    padding: 0 13px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.channelQuizActions .channelQuizBustedButton {
+    border-color: rgba(237, 66, 69, .72);
+    background: rgba(237, 66, 69, .16);
+    color: #ffb4b6;
+}
+
+.channelQuizBusted {
+    display: grid;
+    gap: 6px;
+    padding: 14px;
+    border: 1px solid rgba(237, 66, 69, .72);
+    border-radius: var(--radius);
+    background: rgba(237, 66, 69, .1);
+}
+
+.channelQuizBusted h3,
+.channelQuizBusted p { margin: 0; }
+.channelQuizBusted p { color: var(--muted); }
+
 .adventureStudio,
 .adventureEditor {
     display: grid;
@@ -1103,6 +1363,42 @@ button {
 }
 
 .adventureCreatorGuide li strong { color: var(--accent-strong); }
+
+.adventureStageNav {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+    padding: 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(30, 31, 34, .62);
+}
+
+.adventureStageNav button {
+    min-height: 42px;
+    padding: 0 9px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.adventureStageNav button.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.adventureStageGuide {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(30, 31, 34, .55);
+}
+
+.adventureStageGuide h3,
+.adventureStageGuide p { margin: 0; }
+.adventureStageGuide p { margin-top: 5px; color: var(--muted); }
 
 .adventureEditorActions,
 .adventureSceneActions,
@@ -1588,7 +1884,7 @@ body.focusMode #mobileStageNav { display: none; }
     z-index: 310;
     inset: 0;
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 10px;
     padding: 14px;
     background: rgba(0, 0, 0, .88);
@@ -1597,17 +1893,41 @@ body.focusMode #mobileStageNav { display: none; }
 .photoCompare > button { justify-self: end; }
 .photoCompareGrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
     gap: 10px;
     min-height: 0;
+}
+.photoCompareGrid figure {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #111214;
 }
 .photoCompareGrid img {
     width: 100%;
     height: 100%;
     min-height: 0;
     object-fit: contain;
+    cursor: zoom-in;
     background: #111214;
 }
+.photoCompareGrid figcaption {
+    overflow: hidden;
+    padding: 7px 9px;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.photoCompareGrid[data-count="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.photoCompareGrid[data-count="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.photoCompareGrid[data-count="3"] figure:first-child { grid-row: span 2; }
 
 .imageViewerControls {
     display: flex;
@@ -1810,6 +2130,56 @@ body.focusMode #mobileStageNav { display: none; }
     margin: 0;
 }
 
+.mobileQuickSheetCard {
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    width: min(520px, 100%);
+}
+
+.mobileQuickSheetCard > p {
+    margin: 0;
+    color: var(--muted);
+}
+
+.mobileQuickSheetActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.mobileQuickSheetActions button,
+.mobileQuickSheetCard > button {
+    min-height: 44px;
+    padding: 0 10px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.mobileQuickSheetActions button.danger {
+    border: 1px solid rgba(237, 66, 69, .64);
+    background: rgba(237, 66, 69, .14);
+    color: #ffb4b6;
+}
+
+.mediaLoadingCard {
+    grid-template-rows: auto auto auto;
+    width: min(360px, 100%);
+    text-align: center;
+}
+
+.mediaLoadingCard p {
+    margin: 0;
+    color: var(--muted);
+}
+
+.mediaLoadingCard .skeletonBlock {
+    width: 62px;
+    height: 62px;
+    justify-self: center;
+    border-radius: 50%;
+}
+
 .comparePickerCard {
     grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
 }
@@ -1920,6 +2290,11 @@ body.focusMode #mobileStageNav { display: none; }
     gap: 8px;
     overflow: auto;
     overscroll-behavior: contain;
+}
+
+.adventureMediaPickerGrid::after {
+    content: "";
+    height: 1px;
 }
 
 .adventureMediaPickerGrid button {
@@ -2436,6 +2811,8 @@ video.embed {
     touch-action: manipulation;
     -webkit-touch-callout: none;
     user-select: none;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 230px;
     transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
 
@@ -3009,6 +3386,33 @@ button:disabled {
         min-height: 0;
     }
 
+    #mobileQuickActions {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+        padding: 7px 10px;
+        border-top: 1px solid var(--border);
+        background: rgba(43, 45, 49, .96);
+        backdrop-filter: blur(12px);
+    }
+
+    #mobileQuickActions button {
+        min-width: 0;
+        min-height: 38px;
+        padding: 0 6px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel-hover);
+        color: var(--text);
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 800;
+    }
+
+    #mobileQuickActions button:disabled {
+        opacity: .42;
+    }
+
     #topbar {
         align-items: stretch;
         flex-direction: column;
@@ -3024,13 +3428,20 @@ button:disabled {
 
     .topActions {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr;
         align-items: stretch;
         gap: 8px;
     }
 
     .topActions > button {
         min-height: 40px;
+    }
+
+    #randomMessageBtn,
+    #comparePhotosBtn,
+    #lockWorkspaceBtn,
+    #deleteChannelBtn {
+        display: none;
     }
 
     .statsMetricGrid {
@@ -3109,11 +3520,17 @@ button:disabled {
     }
 
     #attachImageBtn,
-    #linkPhotosBtn,
+    #linkPhotosBtn {
+        display: none;
+    }
+
     #sendBtn {
+        grid-column: 1 / -1;
         width: 100%;
         min-height: 44px;
     }
+
+    .channelLoadingPhotoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
     .adventureChoiceRow {
         grid-template-columns: 1fr;
@@ -3299,6 +3716,16 @@ button:disabled {
     .messageHeader { flex-direction: row; align-items: center; gap: 6px; }
     .messageActions { width: auto; }
     .imageAttachment img { max-height: 46vh; }
+
+    #mobileQuickActions {
+        gap: 4px;
+        padding: 4px 8px;
+    }
+
+    #mobileQuickActions button {
+        min-height: 32px;
+        font-size: 11px;
+    }
 
     #input-bar { padding: 6px 10px; }
     #noteInput { min-height: 38px; max-height: 68px; }
