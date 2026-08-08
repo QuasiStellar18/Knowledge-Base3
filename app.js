@@ -69,6 +69,9 @@ const state = {
     visibleMessageLimit: 100,
     randomPhotoArray: [],
     randomZoom: null,
+    randomZoomSize: 60,
+    randomZoomPreset: "normal",
+    randomZoomSlideshowMs: 5000,
     isUnlocked: sessionStorage.getItem(UNLOCK_SESSION_KEY) === "1",
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -92,6 +95,8 @@ let adventureAutoAdvanceTimer;
 let adventureAutoAdvanceKey;
 let adventureAutoAdvanceStartedMetronome = false;
 let channelQuizPunishmentTimer;
+let channelQuizAdvanceTimer;
+let randomZoomSlideshowTimer;
 
 const els = {
     app: document.getElementById("app"),
@@ -304,6 +309,7 @@ async function unlockWorkspace(event) {
 
 function lockWorkspace() {
     stopMetronome();
+    stopRandomZoomSlideshow();
     state.isUnlocked = false;
     sessionStorage.removeItem(UNLOCK_SESSION_KEY);
     state.messagesByChannel.clear();
@@ -775,6 +781,13 @@ function renderSpecialViews() {
         title: "Pinned notes"
     }));
     group.appendChild(renderSmartChannelRow({
+        id: "favorites",
+        type: "favorites",
+        label: "favorite photos",
+        prefix: "★",
+        title: "Local favorite photos"
+    }));
+    group.appendChild(renderSmartChannelRow({
         id: "settings",
         type: "settings",
         label: "organization settings",
@@ -802,6 +815,13 @@ function renderSpecialViews() {
             label: "channel quiz",
             prefix: "?",
             title: "Guess which channel a random image came from"
+        }));
+        group.appendChild(renderSmartChannelRow({
+            id: "zoom-quiz",
+            type: "zoomQuiz",
+            label: "zoom quiz",
+            prefix: "⌕",
+            title: "Guess an image's channel from a cropped detail"
         }));
         group.appendChild(renderSmartChannelRow({
             id: "random-zoom",
@@ -915,6 +935,20 @@ function renderChannelRow(channel) {
 }
 
 async function openView(type, id) {
+    if (type !== "randomZoom") stopRandomZoomSlideshow();
+    if (["channelQuiz", "zoomQuiz"].includes(type) && state.activeView.type !== type) {
+        window.clearTimeout(channelQuizPunishmentTimer);
+        window.clearTimeout(channelQuizAdvanceTimer);
+        state.channelQuiz.current = null;
+        state.channelQuiz.punishment = null;
+        state.channelQuiz.score = 0;
+        state.channelQuiz.rounds = 0;
+        state.channelQuiz.ended = false;
+        state.channelQuiz.feedback = null;
+        state.channelQuiz.revealed = false;
+        state.channelQuiz.answering = false;
+        state.channelQuiz.screen = "setup";
+    }
     state.activeView = { type, id };
     state.selectedPhotoRefs = [];
 
@@ -978,6 +1012,12 @@ function renderHeader() {
         return;
     }
 
+    if (state.activeView.type === "zoomQuiz") {
+        els.activeTitle.textContent = "Zoom quiz";
+        els.activeMeta.textContent = "Guess which channel a cropped local image came from";
+        return;
+    }
+
     if (state.activeView.type === "randomZoom") {
         els.activeTitle.textContent = "Random zoom";
         els.activeMeta.textContent = "A random close-up from a local image in this workspace";
@@ -1016,6 +1056,13 @@ function renderHeader() {
         const messages = getPinnedEntries();
         els.activeTitle.textContent = "Pinned notes";
         els.activeMeta.textContent = `${messages.length} pinned in ${getActiveServer()?.name || "this server"}`;
+        return;
+    }
+
+    if (state.activeView.type === "favorites") {
+        const total = getFavoriteEntries().reduce((count, entry) => count + entry.message.attachments.length, 0);
+        els.activeTitle.textContent = "Favorite photos";
+        els.activeMeta.textContent = `${total} local favorites in ${getActiveServer()?.name || "this workspace"}`;
         return;
     }
 
@@ -1100,8 +1147,15 @@ function renderMessages() {
         return;
     }
 
-    if (state.activeView.type === "channelQuiz") {
+    if (["channelQuiz", "zoomQuiz"].includes(state.activeView.type)) {
         renderChannelQuiz();
+        return;
+    }
+
+    if (state.activeView.type === "favorites") {
+        const favorites = getFavoriteEntries();
+        if (favorites.length === 0) els.messages.appendChild(emptyPanel("No favorite photos yet. Use a photo's action menu to favorite it."));
+        else renderPhotoGrid(favorites);
         return;
     }
 
@@ -1653,6 +1707,7 @@ function renderFocusSession() {
 
 function renderChannelQuiz() {
     const quiz = state.channelQuiz;
+    const isZoomQuiz = state.activeView.type === "zoomQuiz";
     if (quiz.screen === "play") {
         renderChannelQuizPlay();
         return;
@@ -1663,7 +1718,9 @@ function renderChannelQuiz() {
     page.className = "channelQuiz";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
-    intro.innerHTML = "<h3>Which channel?</h3><p>Pick the channels to draw from, then identify the source of each randomly chosen local image or GIF.</p>";
+    intro.innerHTML = isZoomQuiz
+        ? "<h3>Zoom quiz</h3><p>Pick the channels to draw from, then identify each image's source from a randomly cropped detail.</p>"
+        : "<h3>Which channel?</h3><p>Pick the channels to draw from, then identify the source of each randomly chosen local image or GIF.</p>";
     const setup = document.createElement("section");
     setup.className = "channelQuizSetup";
     const all = document.createElement("label");
@@ -1807,6 +1864,23 @@ function renderChannelQuiz() {
     cropSizeInput.max = "100";
     cropSizeInput.value = quizSettings.randomCropSize;
     cropSize.appendChild(cropSizeInput);
+    const cropPreset = document.createElement("label");
+    cropPreset.textContent = "Crop difficulty preset";
+    const cropPresetInput = document.createElement("select");
+    const presetForSize = ({ 80: "easy", 60: "normal", 35: "hard" })[Number(quizSettings.randomCropSize)] || "custom";
+    [["easy", "Easy · 80% visible"], ["normal", "Normal · 60% visible"], ["hard", "Hard · 35% visible"], ["custom", "Custom percentage"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === presetForSize;
+        cropPresetInput.appendChild(option);
+    });
+    cropPreset.appendChild(cropPresetInput);
+    cropPresetInput.addEventListener("change", () => {
+        const presetSizes = { easy: 80, normal: 60, hard: 35 };
+        if (presetSizes[cropPresetInput.value]) cropSizeInput.value = presetSizes[cropPresetInput.value];
+        saveQuizSettings();
+    });
     const saveQuizSettings = async () => {
         saveChannelQuizSettings({
             increaseBpmOnWrong: bpmPenaltyInput.checked,
@@ -1819,11 +1893,11 @@ function renderChannelQuiz() {
         });
     };
     [bpmPenaltyInput, bpmStepInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput, randomCropInput, cropSizeInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
-    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds, randomCrop, cropSize);
+    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds, randomCrop, cropPreset, cropSize);
     const start = document.createElement("button");
     start.type = "button";
     start.className = "adventurePrimary";
-    start.textContent = quiz.current ? "Resume quiz" : quiz.ended ? "Start new quiz" : "Start quiz";
+    start.textContent = quiz.current ? "Resume quiz" : quiz.ended ? "Start new quiz" : isZoomQuiz ? "Start zoom quiz" : "Start quiz";
     start.addEventListener("click", () => {
         quiz.useAllChannels = allInput.checked;
         quiz.channelIds = [...sourceInput.selectedOptions].map((option) => option.value);
@@ -1850,6 +1924,7 @@ function renderChannelQuiz() {
 
 function renderChannelQuizPlay() {
     const quiz = state.channelQuiz;
+    const isZoomQuiz = state.activeView.type === "zoomQuiz";
     const quizSettings = getChannelQuizSettings();
     const highScore = getChannelQuizHighScore();
     const page = document.createElement("section");
@@ -1858,7 +1933,7 @@ function renderChannelQuizPlay() {
     header.className = "channelQuizPlayHeader";
     const title = document.createElement("div");
     const heading = document.createElement("h3");
-    heading.textContent = "Which channel?";
+    heading.textContent = isZoomQuiz ? "Zoom quiz" : "Which channel?";
     const score = document.createElement("p");
     score.className = "channelQuizScore";
     score.textContent = `${quiz.score} correct out of ${quiz.rounds} answered · high score: ${highScore.bestCorrect} correct`;
@@ -1877,6 +1952,7 @@ function renderChannelQuizPlay() {
     fresh.textContent = "Start a fresh score";
     fresh.addEventListener("click", () => {
         window.clearTimeout(channelQuizPunishmentTimer);
+        window.clearTimeout(channelQuizAdvanceTimer);
         quiz.score = 0;
         quiz.rounds = 0;
         quiz.current = null;
@@ -1938,13 +2014,15 @@ function renderChannelQuizPlay() {
     content.className = "channelQuizPlayContent";
     const media = renderAdventurePlayerMedia(quiz.current.ref);
     media.classList.add("channelQuizMedia");
-    if (quiz.crop) {
+    if (quiz.crop && !quiz.revealed) {
         media.classList.add("isCropped");
         const image = media.querySelector("img");
         if (image) {
             image.style.transform = `scale(${quiz.crop.scale})`;
             image.style.transformOrigin = `${quiz.crop.x}% ${quiz.crop.y}%`;
         }
+    } else if (quiz.crop && quiz.revealed) {
+        media.classList.add("isRevealed");
     }
     const answerPanel = document.createElement("section");
     answerPanel.className = "channelQuizAnswerPanel";
@@ -1952,6 +2030,17 @@ function renderChannelQuizPlay() {
     question.textContent = quiz.answerMode === "text" ? "Type the channel name" : "Which channel did this image come from?";
     const answerArea = document.createElement("div");
     answerArea.className = "adventurePlayerChoices";
+    if (quiz.feedback) {
+        const feedback = document.createElement("p");
+        feedback.className = `channelQuizFeedback ${quiz.feedback.correct ? "isCorrect" : "isWrong"}`;
+        feedback.textContent = `${quiz.feedback.correct ? "Correct" : "Not quite"} — it was #${quiz.feedback.sourceName}. Revealing the full image…`;
+        answerArea.appendChild(feedback);
+        answerPanel.append(question, answerArea);
+        content.append(media, answerPanel);
+        page.appendChild(content);
+        els.messages.appendChild(page);
+        return;
+    }
     if (quiz.answerMode === "text") {
         const input = document.createElement("input");
         input.type = "text";
@@ -2020,12 +2109,61 @@ function renderRandomZoom() {
     intro.innerHTML = "<h3>Random zoom</h3><p>Reveal a randomly cropped detail from one local photo or GIF in this workspace.</p>";
     const controls = document.createElement("div");
     controls.className = "randomZoomControls";
+    const difficulty = document.createElement("label");
+    difficulty.textContent = "Crop difficulty";
+    const difficultyInput = document.createElement("select");
+    [["easy", "Easy · 80% visible"], ["normal", "Normal · 60% visible"], ["hard", "Hard · 35% visible"], ["custom", "Custom"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = state.randomZoomPreset === value;
+        difficultyInput.appendChild(option);
+    });
+    const customSize = document.createElement("input");
+    customSize.type = "number";
+    customSize.min = "20";
+    customSize.max = "100";
+    customSize.value = state.randomZoomSize;
+    customSize.setAttribute("aria-label", "Custom visible crop size percentage");
+    customSize.hidden = state.randomZoomPreset !== "custom";
+    difficultyInput.addEventListener("change", () => {
+        state.randomZoomPreset = difficultyInput.value;
+        const presetSizes = { easy: 80, normal: 60, hard: 35 };
+        if (presetSizes[difficultyInput.value]) state.randomZoomSize = presetSizes[difficultyInput.value];
+        renderMessages();
+    });
+    customSize.addEventListener("change", () => {
+        state.randomZoomPreset = "custom";
+        state.randomZoomSize = clampAdventureNumber(customSize.value, 20, 100, 60);
+        renderMessages();
+    });
+    difficulty.append(difficultyInput, customSize);
     const next = document.createElement("button");
     next.type = "button";
     next.className = "adventurePrimary";
     next.textContent = state.randomZoom ? "Another random zoom" : "Reveal random detail";
     next.addEventListener("click", drawRandomZoom);
-    controls.appendChild(next);
+    const slideshow = document.createElement("button");
+    slideshow.type = "button";
+    slideshow.textContent = randomZoomSlideshowTimer ? "Pause auto reveal" : "Start auto reveal";
+    slideshow.addEventListener("click", toggleRandomZoomSlideshow);
+    const speed = document.createElement("select");
+    [[3000, "3 sec"], [5000, "5 sec"], [8000, "8 sec"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = label;
+        option.selected = state.randomZoomSlideshowMs === value;
+        speed.appendChild(option);
+    });
+    speed.setAttribute("aria-label", "Random zoom slideshow speed");
+    speed.addEventListener("change", () => {
+        state.randomZoomSlideshowMs = Number.parseInt(speed.value, 10) || 5000;
+        if (randomZoomSlideshowTimer) {
+            stopRandomZoomSlideshow();
+            toggleRandomZoomSlideshow();
+        }
+    });
+    controls.append(difficulty, next, slideshow, speed);
     page.append(intro, controls);
 
     const zoom = state.randomZoom;
@@ -2068,27 +2206,61 @@ function drawRandomZoom() {
     }
     state.randomZoom = {
         ref: chosen.ref,
-        scale: 1.7 + Math.random() * 2.1,
+        scale: 100 / clampAdventureNumber(state.randomZoomSize, 20, 100, 60),
         x: 18 + Math.random() * 64,
         y: 18 + Math.random() * 64
     };
     renderMessages();
 }
 
+function stopRandomZoomSlideshow() {
+    window.clearInterval(randomZoomSlideshowTimer);
+    randomZoomSlideshowTimer = null;
+}
+
+function toggleRandomZoomSlideshow() {
+    if (randomZoomSlideshowTimer) {
+        stopRandomZoomSlideshow();
+        renderMessages();
+        return;
+    }
+    drawRandomZoom();
+    randomZoomSlideshowTimer = window.setInterval(() => {
+        if (state.activeView.type !== "randomZoom") {
+            stopRandomZoomSlideshow();
+            return;
+        }
+        drawRandomZoom();
+    }, state.randomZoomSlideshowMs);
+    renderMessages();
+}
+
 function drawChannelQuizQuestion() {
     const quiz = state.channelQuiz;
+    window.clearTimeout(channelQuizAdvanceTimer);
     const allowed = quiz.useAllChannels ? null : new Set(quiz.channelIds);
-    const candidates = getServerEntries().flatMap((entry) => (!allowed || allowed.has(entry.channelId) ? (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({ ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id } })) : []));
-    const chosen = randomItem(candidates);
+    const candidatesByChannel = new Map();
+    getServerEntries().forEach((entry) => {
+        if (allowed && !allowed.has(entry.channelId)) return;
+        const images = (entry.message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+            .map((attachment) => ({ ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id } }));
+        if (images.length === 0) return;
+        candidatesByChannel.set(entry.channelId, [...(candidatesByChannel.get(entry.channelId) || []), ...images]);
+    });
+    const channelCandidates = [...candidatesByChannel.values()];
+    const chosen = randomItem(randomItem(channelCandidates) || []);
     if (!chosen) { alert("Choose at least one channel with local images, or use all channels."); return; }
     quiz.current = chosen;
     const settings = getChannelQuizSettings();
     const visiblePercent = clampAdventureNumber(settings.randomCropSize, 20, 100, 60);
-    quiz.crop = settings.randomCropEnabled ? {
+    quiz.crop = (settings.randomCropEnabled || state.activeView.type === "zoomQuiz") ? {
         scale: 100 / visiblePercent,
         x: 18 + Math.random() * 64,
         y: 18 + Math.random() * 64
     } : null;
+    quiz.feedback = null;
+    quiz.revealed = false;
     quiz.screen = "play";
     quiz.answering = false;
     renderMessages();
@@ -2105,8 +2277,7 @@ async function answerChannelQuiz(answer) {
     if (correct) {
         quiz.score += 1;
         await saveChannelQuizHighScore();
-        alert(`Correct — it was #${source?.name || "channel"}.`);
-        drawChannelQuizQuestion();
+        showChannelQuizReveal(true, source?.name || "channel");
         return;
     }
     const settings = getChannelQuizSettings();
@@ -2116,24 +2287,37 @@ async function answerChannelQuiz(answer) {
         if (metronomeTimer) startMetronome();
     }
     const punishmentRef = getChannelQuizPunishmentRef(settings);
-    if (settings.punishmentEnabled && punishmentRef) {
-        quiz.punishment = { ref: punishmentRef };
-        renderMessages();
-        window.clearTimeout(channelQuizPunishmentTimer);
-        channelQuizPunishmentTimer = window.setTimeout(() => {
-            quiz.punishment = null;
-            drawChannelQuizQuestion();
-        }, settings.punishmentSeconds * 1000);
-        return;
-    }
-    alert(`Not quite — it was #${source?.name || "channel"}.`);
-    drawChannelQuizQuestion();
+    showChannelQuizReveal(false, source?.name || "channel", settings.punishmentEnabled ? punishmentRef : null);
+}
+
+function showChannelQuizReveal(correct, sourceName, punishmentRef = null) {
+    const quiz = state.channelQuiz;
+    quiz.feedback = { correct, sourceName };
+    quiz.revealed = true;
+    renderMessages();
+    window.clearTimeout(channelQuizAdvanceTimer);
+    channelQuizAdvanceTimer = window.setTimeout(() => {
+        quiz.feedback = null;
+        quiz.revealed = false;
+        if (!correct && punishmentRef) {
+            quiz.punishment = { ref: punishmentRef };
+            renderMessages();
+            window.clearTimeout(channelQuizPunishmentTimer);
+            channelQuizPunishmentTimer = window.setTimeout(() => {
+                quiz.punishment = null;
+                drawChannelQuizQuestion();
+            }, getChannelQuizSettings().punishmentSeconds * 1000);
+            return;
+        }
+        drawChannelQuizQuestion();
+    }, 1200);
 }
 
 async function finishChannelQuizAsBusted() {
     const quiz = state.channelQuiz;
     if (quiz.ended) return;
     window.clearTimeout(channelQuizPunishmentTimer);
+    window.clearTimeout(channelQuizAdvanceTimer);
     quiz.current = null;
     quiz.punishment = null;
     quiz.answering = false;
@@ -5739,6 +5923,19 @@ function getPinnedEntries() {
     return getServerEntries()
         .filter((entry) => entry.message.pinned)
         .sort((a, b) => new Date(a.message.createdAt) - new Date(b.message.createdAt));
+}
+
+function getFavoriteEntries() {
+    return getServerEntries()
+        .map((entry) => ({
+            ...entry,
+            message: {
+                ...entry.message,
+                attachments: (entry.message.attachments || []).filter((attachment) => attachment.favorite && shouldShowAttachment(attachment))
+            }
+        }))
+        .filter((entry) => entry.message.attachments.length > 0)
+        .sort((a, b) => new Date(b.message.createdAt) - new Date(a.message.createdAt));
 }
 
 function getEmojiEntries(emoji) {
