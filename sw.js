@@ -1,10 +1,10 @@
-const CACHE_NAME = "knowledge-discord-v57";
+const CACHE_NAME = "knowledge-discord-v61";
 const ASSETS = [
     "./",
     "./index.html",
-    "./style.css?v=57",
-    "./db.js?v=57",
-    "./app.js?v=57",
+    "./style.css?v=61",
+    "./db.js?v=61",
+    "./app.js?v=61",
     "./manifest.json"
 ];
 
