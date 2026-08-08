@@ -1198,6 +1198,15 @@ select:focus-visible {
     transition: transform 220ms ease;
 }
 
+.channelQuizMedia.isRevealed .adventurePlayerMediaItem img {
+    animation: quizReveal 720ms ease both;
+}
+
+@keyframes quizReveal {
+    from { transform: scale(1.7); object-fit: cover; }
+    to { transform: scale(1); object-fit: contain; }
+}
+
 .channelQuizAnswerPanel {
     display: grid;
     align-content: start;
@@ -1258,6 +1267,17 @@ select:focus-visible {
     background: rgba(35, 165, 89, .14);
 }
 
+.channelQuizFeedback {
+    margin: 0;
+    padding: 11px;
+    border-radius: 7px;
+    font-weight: 800;
+    line-height: 1.4;
+}
+
+.channelQuizFeedback.isCorrect { background: rgba(35, 165, 89, .18); color: #a8f0c4; }
+.channelQuizFeedback.isWrong { background: rgba(237, 66, 69, .16); color: #ffb4b6; }
+
 .randomZoom {
     display: grid;
     gap: 14px;
@@ -1267,7 +1287,27 @@ select:focus-visible {
 
 .randomZoomControls {
     display: flex;
+    flex-wrap: wrap;
+    align-items: end;
     justify-content: center;
+    gap: 8px;
+}
+
+.randomZoomControls label {
+    display: grid;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.randomZoomControls select,
+.randomZoomControls input {
+    min-height: 40px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
 }
 
 .randomZoomControls button,
