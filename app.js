@@ -23,11 +23,31 @@ const DEFAULT_STRUCTURE = {
         randomTexts: [],
         photoGridEnabled: false,
         discordEmbedControls: false,
-        photoCollections: []
+        photoCollections: [],
+        adventures: [],
+        adventureComponents: [],
+        adventureSessions: [],
+        thumbnailMediaPicker: true,
+        metronomeBpm: 120,
+        metronomeMin: 80,
+        metronomeMax: 160,
+        randomBpmOnMessage: false,
+        randomBpmOnChannel: false,
+        randomBpmOnArray: false,
+        timerSeconds: 60,
+        timerMinSeconds: 30,
+        timerMaxSeconds: 180,
+        timerCoupleMetronome: false,
+        timerRepeatWithRandomBpm: false,
+        randomTimerOnMessage: false,
+        randomTimerOnChannel: false,
+        randomTimerOnArray: false,
+        showHiddenPhotos: false
     }
 };
 
 const CHANNEL_PIN = "58008";
+const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 
 const state = {
     ready: false,
@@ -44,9 +64,25 @@ const state = {
     error: "",
     visibleMessageLimit: 100,
     randomPhotoArray: [],
-    isUnlocked: false,
-    selectedPhotoRefs: []
+    isUnlocked: sessionStorage.getItem(UNLOCK_SESSION_KEY) === "1",
+    loadingChannelId: null,
+    selectedPhotoRefs: [],
+    focusMode: false,
+    activeAdventureSessionId: null,
+    focusAdventureSceneId: null
 };
+
+let adventureAutosaveTimer;
+
+let metronomeContext;
+let metronomeTimer;
+let countdownTimer;
+let countdownRemaining = 60;
+let countdownEndsAt = null;
+let adventureTimerTick;
+let adventureAutoAdvanceTimer;
+let adventureAutoAdvanceKey;
+let adventureAutoAdvanceStartedMetronome = false;
 
 const els = {
     app: document.getElementById("app"),
@@ -85,8 +121,31 @@ const els = {
     storageInfo: document.getElementById("storageInfo"),
     photoGridToggle: document.getElementById("photoGridToggle"),
     embedControlsToggle: document.getElementById("embedControlsToggle"),
+    thumbnailMediaPickerToggle: document.getElementById("thumbnailMediaPickerToggle"),
+    showHiddenPhotosToggle: document.getElementById("showHiddenPhotosToggle"),
     randomPhotoCount: document.getElementById("randomPhotoCount"),
     randomPhotoArrayBtn: document.getElementById("randomPhotoArrayBtn"),
+    metronomeBpm: document.getElementById("metronomeBpm"),
+    metronomeMin: document.getElementById("metronomeMin"),
+    metronomeMax: document.getElementById("metronomeMax"),
+    randomMetronomeBtn: document.getElementById("randomMetronomeBtn"),
+    metronomeToggleBtn: document.getElementById("metronomeToggleBtn"),
+    metronomeStatus: document.getElementById("metronomeStatus"),
+    randomBpmOnMessage: document.getElementById("randomBpmOnMessage"),
+    randomBpmOnChannel: document.getElementById("randomBpmOnChannel"),
+    randomBpmOnArray: document.getElementById("randomBpmOnArray"),
+    timerSeconds: document.getElementById("timerSeconds"),
+    timerMinSeconds: document.getElementById("timerMinSeconds"),
+    timerMaxSeconds: document.getElementById("timerMaxSeconds"),
+    randomTimerBtn: document.getElementById("randomTimerBtn"),
+    timerToggleBtn: document.getElementById("timerToggleBtn"),
+    timerResetBtn: document.getElementById("timerResetBtn"),
+    timerStatus: document.getElementById("timerStatus"),
+    timerCoupleMetronome: document.getElementById("timerCoupleMetronome"),
+    timerRepeatWithRandomBpm: document.getElementById("timerRepeatWithRandomBpm"),
+    randomTimerOnMessage: document.getElementById("randomTimerOnMessage"),
+    randomTimerOnChannel: document.getElementById("randomTimerOnChannel"),
+    randomTimerOnArray: document.getElementById("randomTimerOnArray"),
     lockScreen: document.getElementById("lockScreen"),
     unlockForm: document.getElementById("unlockForm"),
     channelPinInput: document.getElementById("channelPinInput"),
@@ -107,11 +166,13 @@ async function initApp() {
         console.log("initApp: structure loaded", !!savedStructure);
 
         state.structure = normalizeStructure(savedStructure);
+        const createdAdventureServer = ensureAdventureServer();
         const createdInbox = ensureInboxChannel();
         selectInitialChannel();
         hydrateSettingsControls();
         state.ready = true;
-        if (createdInbox) await saveStructure(state.structure);
+        if (createdInbox || createdAdventureServer) await saveStructure(state.structure);
+        if (state.isUnlocked) await loadActiveChannelMessages();
         requestPersistentStorage();
         refreshStorageEstimate();
     } catch (error) {
@@ -162,7 +223,25 @@ function bindEvents() {
     els.randomTextBtn.addEventListener("click", selectRandomText);
     els.photoGridToggle.addEventListener("change", togglePhotoGrid);
     els.embedControlsToggle.addEventListener("change", toggleEmbedControls);
+    els.thumbnailMediaPickerToggle.addEventListener("change", toggleThumbnailMediaPicker);
+    els.showHiddenPhotosToggle.addEventListener("change", toggleShowHiddenPhotos);
     els.randomPhotoArrayBtn.addEventListener("click", createRandomPhotoArray);
+    els.metronomeBpm.addEventListener("change", saveMetronomeSettings);
+    els.metronomeMin.addEventListener("change", saveMetronomeSettings);
+    els.metronomeMax.addEventListener("change", saveMetronomeSettings);
+    els.randomMetronomeBtn.addEventListener("click", selectRandomMetronomeBpm);
+    els.metronomeToggleBtn.addEventListener("click", toggleMetronome);
+    [els.randomBpmOnMessage, els.randomBpmOnChannel, els.randomBpmOnArray]
+        .forEach((control) => control.addEventListener("change", saveMetronomeTriggers));
+    [els.timerSeconds, els.timerMinSeconds, els.timerMaxSeconds]
+        .forEach((control) => control.addEventListener("change", saveTimerSettings));
+    els.randomTimerBtn.addEventListener("click", selectRandomTimer);
+    els.timerToggleBtn.addEventListener("click", toggleCountdownTimer);
+    els.timerResetBtn.addEventListener("click", resetCountdownTimer);
+    els.timerCoupleMetronome.addEventListener("change", saveTimerCoupling);
+    els.timerRepeatWithRandomBpm.addEventListener("change", saveTimerCoupling);
+    [els.randomTimerOnMessage, els.randomTimerOnChannel, els.randomTimerOnArray]
+        .forEach((control) => control.addEventListener("change", saveTimerTriggers));
 
     els.mobileStageNav.querySelectorAll("button").forEach((button) => {
         button.addEventListener("click", () => showMobileStage(button.dataset.stageTarget));
@@ -170,6 +249,12 @@ function bindEvents() {
 
     els.app.addEventListener("scroll", debounce(() => updateMobileStageNav(), 80), { passive: true });
     window.addEventListener("resize", () => updateMobileStageNav());
+    window.addEventListener("beforeunload", (event) => {
+        if (adventureAutosaveTimer) {
+            event.preventDefault();
+            event.returnValue = "";
+        }
+    });
 }
 
 async function unlockWorkspace(event) {
@@ -181,6 +266,7 @@ async function unlockWorkspace(event) {
     }
 
     state.isUnlocked = true;
+    sessionStorage.setItem(UNLOCK_SESSION_KEY, "1");
     els.channelPinInput.value = "";
     els.unlockError.textContent = "";
     await loadActiveChannelMessages();
@@ -189,7 +275,9 @@ async function unlockWorkspace(event) {
 }
 
 function lockWorkspace() {
+    stopMetronome();
     state.isUnlocked = false;
+    sessionStorage.removeItem(UNLOCK_SESSION_KEY);
     state.messagesByChannel.clear();
     state.randomPhotoArray = [];
     state.search = "";
@@ -255,6 +343,7 @@ function normalizeServer(server, serverIndex) {
     return {
         id: serverId,
         name: server.name || "Untitled",
+        isAdventureServer: Boolean(server.isAdventureServer),
         categories: rawCategories.map((category, categoryIndex) => ({
             id: category.id || `${serverId}:${slugify(category.name || `category-${categoryIndex + 1}`)}`,
             name: category.name || "General",
@@ -282,6 +371,7 @@ function normalizeServer(server, serverIndex) {
 function ensureInboxChannel() {
     let changed = false;
     state.structure.servers.forEach((server) => {
+        if (server.isAdventureServer) return;
         let inbox = allChannels(server).find((channel) => channel.isInboxChannel || channel.name === "inbox");
         if (inbox) {
             if (!inbox.isInboxChannel) {
@@ -297,6 +387,17 @@ function ensureInboxChannel() {
         }
     });
     return changed;
+}
+
+function ensureAdventureServer() {
+    if (state.structure.servers.some((server) => server.isAdventureServer)) return false;
+    state.structure.servers.push({
+        id: "adventures",
+        name: "Adventures",
+        isAdventureServer: true,
+        categories: []
+    });
+    return true;
 }
 
 function selectInitialChannel() {
@@ -392,6 +493,7 @@ function allChannels(server = getActiveServer()) {
 }
 
 function render() {
+    document.body.classList.toggle("focusMode", state.focusMode);
     renderServers();
     renderChannels();
     renderHeader();
@@ -413,12 +515,21 @@ function renderServers() {
         button.addEventListener("click", async () => {
             state.activeServerId = server.id;
             state.activeChannelId = allChannels(server)[0]?.id || null;
-            state.activeView = state.activeChannelId
-                ? { type: "channel", id: state.activeChannelId }
-                : { type: "settings", id: "settings" };
-            await loadActiveChannelMessages();
-            render();
+            state.activeView = server.isAdventureServer
+                ? { type: "adventureStudio", id: "studio" }
+                : state.activeChannelId
+                    ? { type: "channel", id: state.activeChannelId }
+                    : { type: "settings", id: "settings" };
             showMobileStage("sidebar");
+            if (state.isUnlocked && state.activeChannelId) {
+                state.loadingChannelId = state.activeChannelId;
+                renderChannels();
+                renderHeader();
+                renderMessages();
+                await loadActiveChannelMessages();
+                state.loadingChannelId = null;
+            }
+            render();
         });
 
         els.servers.appendChild(button);
@@ -436,7 +547,7 @@ function renderChannels() {
 
     els.channels.appendChild(renderSpecialViews());
 
-    if (allChannels(server).length === 0) {
+    if (allChannels(server).length === 0 && !server.isAdventureServer) {
         els.channels.appendChild(emptyPanel("No channels yet"));
     }
 
@@ -523,6 +634,29 @@ function renderChannels() {
                 label: collection.name,
                 prefix: "@",
                 title: `${collection.name} photo collection`
+            }));
+        });
+        els.channels.appendChild(group);
+    }
+
+    if (server.isAdventureServer) {
+        const group = document.createElement("section");
+        group.className = "category";
+        group.appendChild(staticCategoryHeader("Choose your adventure"));
+        group.appendChild(renderSmartChannelRow({
+            id: "studio",
+            type: "adventureStudio",
+            label: "adventure studio",
+            prefix: "✦",
+            title: "Create and edit adventures"
+        }));
+        getAdventures().forEach((adventure) => {
+            group.appendChild(renderSmartChannelRow({
+                id: adventure.id,
+                type: "adventureEditor",
+                label: adventure.title,
+                prefix: "›",
+                title: `Edit ${adventure.title}`
             }));
         });
         els.channels.appendChild(group);
@@ -629,9 +763,18 @@ function renderChannelRow(channel) {
         state.activeChannelId = channel.id;
         state.activeView = { type: "channel", id: channel.id };
         state.selectedPhotoRefs = [];
-        await loadActiveChannelMessages();
-        render();
+        state.loadingChannelId = channel.id;
+        renderChannels();
+        renderHeader();
+        renderMessages();
+        renderComposer();
         showMobileStage("chat");
+        await loadActiveChannelMessages();
+        state.loadingChannelId = null;
+        renderChannels();
+        renderHeader();
+        renderMessages();
+        renderComposer();
     });
 
     const rename = document.createElement("button");
@@ -676,7 +819,9 @@ async function openView(type, id) {
         state.activeChannelId = id;
         state.activeServerId = getChannelServer(id)?.id || state.activeServerId;
         await loadActiveChannelMessages();
-    } else {
+    } else if (["adventureEditor", "adventurePlay"].includes(type)) {
+        await ensureServerMessagesLoaded();
+    } else if (type !== "adventureStudio") {
         await ensureServerMessagesLoaded();
     }
 
@@ -701,6 +846,34 @@ function renderHeader() {
     if (state.activeView.type === "settings") {
         els.activeTitle.textContent = "Organization settings";
         els.activeMeta.textContent = "Manage categories and create channels";
+        return;
+    }
+
+    if (state.activeView.type === "adventureStudio") {
+        els.activeTitle.textContent = "Adventure studio";
+        els.activeMeta.textContent = "Create local branching stories with photos and GIFs from any server";
+        return;
+    }
+
+    if (state.activeView.type === "adventureEditor") {
+        const adventure = getAdventure(state.activeView.id);
+        els.activeTitle.textContent = adventure?.title || "Adventure editor";
+        els.activeMeta.textContent = "Scenes use references to local images and GIFs; source files are not copied";
+        return;
+    }
+
+    if (state.activeView.type === "adventureMap") {
+        const adventure = getAdventure(state.activeView.id);
+        els.activeTitle.textContent = `${adventure?.title || "Adventure"} map`;
+        els.activeMeta.textContent = "Tap a scene to return to its editor";
+        return;
+    }
+
+    if (state.activeView.type === "adventurePlay") {
+        const adventure = getAdventure(state.activeView.id);
+        const session = getAdventureSession(state.activeView.id);
+        els.activeTitle.textContent = adventure?.title || "Adventure";
+        els.activeMeta.textContent = session?.completed ? "Completed · restart to play again" : "Playing locally · progress is saved";
         return;
     }
 
@@ -760,13 +933,59 @@ function renderMessages() {
         return;
     }
 
+    if (state.loadingChannelId && state.loadingChannelId === state.activeChannelId) {
+        els.messages.appendChild(emptyPanel("Loading channel…"));
+        return;
+    }
+
+    if (["randomArray", "adventurePlay"].includes(state.activeView.type)) {
+        const focus = document.createElement("button");
+        focus.type = "button";
+        focus.className = "focusModeButton";
+        focus.textContent = state.focusMode ? "Exit focus mode" : "Focus mode";
+        focus.addEventListener("click", () => {
+            state.focusMode = !state.focusMode;
+            render();
+        });
+        els.messages.appendChild(focus);
+    }
+
     if (state.activeView.type === "settings") {
         renderSettingsPage();
         return;
     }
 
+    if (state.activeView.type === "adventureStudio") {
+        renderAdventureStudio();
+        return;
+    }
+
+    if (state.activeView.type === "adventureEditor") {
+        renderAdventureEditor(state.activeView.id);
+        return;
+    }
+
+    if (state.activeView.type === "adventureMap") {
+        renderAdventureMap(state.activeView.id);
+        return;
+    }
+
+    if (state.activeView.type === "adventurePlay") {
+        renderAdventurePlayer(state.activeView.id);
+        return;
+    }
+
     const allMessages = getVisibleMessages();
     const messages = allMessages.slice(-state.visibleMessageLimit);
+    const slideshowItems = getSlideshowItems(messages);
+    if (slideshowItems.length > 1) {
+        const slideshow = document.createElement("button");
+        slideshow.type = "button";
+        slideshow.className = "focusModeButton";
+        slideshow.textContent = "Slideshow";
+        slideshow.addEventListener("click", () => openSlideshow(slideshowItems));
+        els.messages.appendChild(slideshow);
+    }
 
     if (messages.length === 0) {
         els.messages.appendChild(emptyPanel(state.search ? "No matching notes" : "No notes yet"));
@@ -793,20 +1012,38 @@ function renderMessages() {
         els.messages.prepend(older);
     }
 
-    els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+function getSlideshowItems(entries) {
+    return entries.flatMap((entry) => {
+        const message = entry.message || entry;
+        const channelId = entry.channelId || state.activeChannelId;
+        return (message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
+            attachment,
+            alt: attachment.note || message.text || attachment.name || "Local photo",
+            channelName: getChannelById(channelId)?.name || "local",
+            date: message.createdAt,
+            tags: message.tags || []
+        }));
+    });
+}
+
+function shouldShowAttachment(attachment) {
+    return Boolean(state.structure.settings.showHiddenPhotos) || !attachment.hidden;
 }
 
 function usesPhotoGrid() {
-    return state.activeView.type === "randomArray"
-        || state.activeView.type === "collection"
-        || (state.activeView.type === "channel" && Boolean(state.structure.settings.photoGridEnabled));
+    return state.activeView.type === "collection"
+        || (state.activeView.type === "channel" && Boolean(getActiveChannel()?.isSavedArrayChannel))
+        || (["channel", "randomArray"].includes(state.activeView.type)
+            && Boolean(state.structure.settings.photoGridEnabled));
 }
 
 function renderPhotoGrid(entries) {
     const imageEntries = entries.flatMap((entry) => {
         const message = entry.message || entry;
         return (message.attachments || [])
-            .filter((attachment) => attachment.type?.startsWith("image/"))
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
             .map((attachment) => ({ message, attachment, channelId: entry.channelId || state.activeChannelId }));
     });
 
@@ -814,7 +1051,8 @@ function renderPhotoGrid(entries) {
         const grid = document.createElement("section");
         grid.className = "photoGrid";
         grid.setAttribute("aria-label", "Photo gallery");
-        imageEntries.forEach(({ message, attachment, channelId }) => grid.appendChild(renderPhotoTile(message, attachment, channelId)));
+        const viewerItems = imageEntries.map(({ message, attachment, channelId }) => ({ attachment, alt: attachment.note || message.text || attachment.name || "Local photo", channelName: getChannelById(channelId)?.name || "saved channel", date: message.createdAt, tags: message.tags || [] }));
+        imageEntries.forEach(({ message, attachment, channelId }, index) => grid.appendChild(renderPhotoTile(message, attachment, channelId, viewerItems, index)));
         els.messages.appendChild(grid);
     }
 
@@ -822,14 +1060,15 @@ function renderPhotoGrid(entries) {
 
     entries
         .map((entry) => entry.message || entry)
-        .filter((message) => !message.attachments?.some((attachment) => attachment.type?.startsWith("image/")))
+        .filter((message) => !message.attachments?.some((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)))
         .forEach((message) => els.messages.appendChild(renderMessage(message)));
 }
 
-function renderPhotoTile(message, attachment, channelId) {
+function renderPhotoTile(message, attachment, channelId, viewerItems = null, viewerIndex = 0) {
     const figure = document.createElement("figure");
     figure.className = "photoTile";
-    figure.title = "Tap to view fullscreen";
+    figure.classList.toggle("isFavorite", Boolean(attachment.favorite));
+    figure.title = "Tap to view fullscreen · hold for actions";
 
     const image = document.createElement("img");
     const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
@@ -842,8 +1081,14 @@ function renderPhotoTile(message, attachment, channelId) {
     }
 
     const caption = document.createElement("figcaption");
-    const source = message.arraySourceName ? `#${message.arraySourceName} · ` : "";
-    caption.textContent = attachment.note || message.text || `${source}${attachment.name || "Local photo"} · ${formatDate(message.createdAt)}`;
+    const meta = document.createElement("span");
+    meta.className = "photoTileMeta";
+    const sourceName = getChannelById(channelId)?.name || message.arraySourceName || "saved channel";
+    meta.textContent = `# ${sourceName} · ${formatDate(message.createdAt)}`;
+    const description = document.createElement("span");
+    description.className = "photoTileDescription";
+    description.textContent = attachment.note || message.text || attachment.name || "Local photo";
+    caption.append(meta, description);
     figure.append(image, caption);
     if (canSelectPhotos()) {
         const ref = { channelId, messageId: message.id, attachmentId: attachment.id };
@@ -857,12 +1102,143 @@ function renderPhotoTile(message, attachment, channelId) {
         selector.addEventListener("change", () => togglePhotoSelection(ref, selector.checked));
         figure.appendChild(selector);
     }
-    figure.addEventListener("click", () => requestFullscreenForElement(figure));
+    const order = getPhotoOrderPosition({ channelId, messageId: message.id, attachmentId: attachment.id });
+    if (order) {
+        const controls = document.createElement("div");
+        controls.className = "photoOrderControls";
+        const earlier = document.createElement("button");
+        earlier.type = "button";
+        earlier.textContent = "←";
+        earlier.title = "Move photo earlier";
+        earlier.disabled = order.index === 0;
+        earlier.addEventListener("click", (event) => {
+            event.stopPropagation();
+            movePhotoInCurrentView(order.index, -1);
+        });
+        const later = document.createElement("button");
+        later.type = "button";
+        later.textContent = "→";
+        later.title = "Move photo later";
+        later.disabled = order.index === order.length - 1;
+        later.addEventListener("click", (event) => {
+            event.stopPropagation();
+            movePhotoInCurrentView(order.index, 1);
+        });
+        controls.append(earlier, later);
+        figure.appendChild(controls);
+    }
+    bindPhotoQuickActions(figure, { message, attachment, channelId, viewerItems, viewerIndex, alt: image.alt });
+    figure.addEventListener("click", (event) => {
+        if (figure.dataset.longPressHandled === "1") {
+            figure.dataset.longPressHandled = "";
+            event.preventDefault();
+            return;
+        }
+        openImageViewer(attachment, image.alt, viewerItems, viewerIndex);
+    });
     return figure;
+}
+
+function bindPhotoQuickActions(element, photo) {
+    let timer;
+    const open = () => {
+        element.dataset.longPressHandled = "1";
+        openPhotoActionSheet(photo);
+    };
+    element.addEventListener("pointerdown", (event) => {
+        if (event.target.closest("button, input")) return;
+        if (event.button && event.pointerType === "mouse") return;
+        timer = window.setTimeout(open, 550);
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach((type) => element.addEventListener(type, () => window.clearTimeout(timer)));
+    element.addEventListener("contextmenu", (event) => {
+        if (event.target.closest("button, input")) return;
+        event.preventDefault();
+        window.clearTimeout(timer);
+        open();
+    });
+}
+
+function openPhotoActionSheet({ message, attachment, channelId, viewerItems, viewerIndex = 0, alt }) {
+    const modal = document.createElement("div");
+    modal.className = "photoActionSheet";
+    const card = document.createElement("section");
+    card.className = "photoActionSheetCard";
+    const title = document.createElement("strong");
+    title.textContent = attachment.note || attachment.name || "Photo actions";
+    const close = () => modal.remove();
+    const action = (label, callback, danger = false) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        if (danger) button.className = "dangerAction";
+        button.addEventListener("click", () => { close(); callback(); });
+        return button;
+    };
+    const ref = { channelId, messageId: message.id, attachmentId: attachment.id };
+    card.append(
+        title,
+        action(attachment.favorite ? "Remove favorite" : "Favorite", () => toggleAttachmentFlag(ref, "favorite")),
+        action("Add to collection", () => addPhotosToCollection([ref])),
+        action(attachment.note ? "Edit image note" : "Add image note", () => editAttachmentNote(message.id, attachment.id, channelId)),
+        action(state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)) ? "Remove from compare" : "Add to compare", () => togglePhotoSelection(ref, !state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)))),
+        action(attachment.hidden ? "Unhide photo" : "Hide photo", () => toggleAttachmentFlag(ref, "hidden"), !attachment.hidden),
+        action("Start slideshow", () => openSlideshow(viewerItems?.length ? viewerItems : [{ attachment, alt: alt || attachment.name || "Local photo", channelName: getChannelById(channelId)?.name || "channel", date: message.createdAt, tags: message.tags || [] }])),
+        action("Cancel", close)
+    );
+    modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+}
+
+async function toggleAttachmentFlag(ref, flag) {
+    const messages = state.messagesByChannel.get(ref.channelId) || [];
+    const updated = messages.map((message) => message.id !== ref.messageId ? message : {
+        ...message,
+        attachments: message.attachments.map((attachment) => attachment.id !== ref.attachmentId ? attachment : {
+            ...attachment,
+            [flag]: !attachment[flag]
+        })
+    });
+    state.messagesByChannel.set(ref.channelId, updated);
+    await saveChannelMessages(ref.channelId, updated);
+    render();
 }
 
 function canSelectPhotos() {
     return ["channel", "collection", "randomArray"].includes(state.activeView.type);
+}
+
+function getPhotoOrderPosition(ref) {
+    if (state.activeView.type === "collection") {
+        const refs = getAnyPhotoCollection(state.activeView.id)?.photoRefs || [];
+        const index = refs.findIndex((item) => photoRefKey(item) === photoRefKey(ref));
+        return index >= 0 ? { index, length: refs.length } : null;
+    }
+    const channel = getActiveChannel();
+    if (state.activeView.type === "channel" && channel?.isSavedArrayChannel && ref.channelId === channel.id) {
+        const messages = state.messagesByChannel.get(channel.id) || [];
+        const index = messages.findIndex((item) => item.id === ref.messageId);
+        return index >= 0 ? { index, length: messages.length } : null;
+    }
+    return null;
+}
+
+async function movePhotoInCurrentView(from, offset) {
+    const to = from + offset;
+    if (state.activeView.type === "collection") {
+        const collection = getAnyPhotoCollection(state.activeView.id);
+        if (!collection?.photoRefs || to < 0 || to >= collection.photoRefs.length) return;
+        [collection.photoRefs[from], collection.photoRefs[to]] = [collection.photoRefs[to], collection.photoRefs[from]];
+        await saveStructure(state.structure);
+    } else {
+        const channel = getActiveChannel();
+        const messages = channel?.isSavedArrayChannel ? state.messagesByChannel.get(channel.id) : null;
+        if (!messages || to < 0 || to >= messages.length) return;
+        [messages[from], messages[to]] = [messages[to], messages[from]];
+        await saveChannelMessages(channel.id, messages);
+    }
+    renderMessages();
 }
 
 function renderBatchActions() {
@@ -875,6 +1251,11 @@ function renderBatchActions() {
     add.type = "button";
     add.textContent = "Add to collection";
     add.addEventListener("click", () => addPhotosToCollection(state.selectedPhotoRefs));
+    const compare = document.createElement("button");
+    compare.type = "button";
+    compare.textContent = "Compare";
+    compare.disabled = state.selectedPhotoRefs.length < 2 || state.selectedPhotoRefs.length > 4;
+    compare.addEventListener("click", () => openPhotoCompare(state.selectedPhotoRefs));
     const clear = document.createElement("button");
     clear.type = "button";
     clear.textContent = "Clear";
@@ -882,7 +1263,7 @@ function renderBatchActions() {
         state.selectedPhotoRefs = [];
         renderMessages();
     });
-    bar.append(label, add, clear);
+    bar.append(label, add, compare, clear);
     els.messages.prepend(bar);
 }
 
@@ -895,6 +1276,25 @@ function renderSettingsPage() {
     intro.className = "settingsIntro";
     intro.innerHTML = `<h3>${escapeHTML(server?.name || "Workspace")}</h3><p>Organize channels under categories. Everything is saved in this browser on this device.</p>`;
     page.appendChild(intro);
+
+    const backup = document.createElement("section");
+    backup.className = "settingsCategory";
+    backup.innerHTML = "<h4>Private backup</h4><p>Export includes local notes, images/GIFs, organization, and adventures. Import replaces this device’s current local data after confirmation.</p>";
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.textContent = "Export local backup";
+    exportButton.addEventListener("click", exportLocalBackup);
+    const importButton = document.createElement("button");
+    importButton.type = "button";
+    importButton.textContent = "Import local backup";
+    const importInput = document.createElement("input");
+    importInput.type = "file";
+    importInput.accept = "application/json,.knowledge-backup.json";
+    importInput.hidden = true;
+    importButton.addEventListener("click", () => importInput.click());
+    importInput.addEventListener("change", () => importLocalBackup(importInput.files?.[0]));
+    backup.append(exportButton, importButton, importInput);
+    page.appendChild(backup);
 
     server.categories.forEach((category) => {
         const section = document.createElement("section");
@@ -935,6 +1335,2466 @@ function renderSettingsPage() {
     });
 
     els.messages.appendChild(page);
+}
+
+async function attachmentToBackup(attachment) {
+    const copy = { ...attachment };
+    if (attachment.blob) {
+        copy.dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(attachment.blob);
+        });
+        delete copy.blob;
+    }
+    return copy;
+}
+
+async function exportLocalBackup() {
+    const entries = await getAllChannelMessages();
+    const messages = await Promise.all(entries.map(async ({ channelId, messages: channelMessages }) => ({
+        channelId,
+        messages: await Promise.all(channelMessages.map(async (message) => ({
+            ...message,
+            attachments: await Promise.all((message.attachments || []).map(attachmentToBackup))
+        })))
+    })));
+    const backup = { format: "knowledge-discord-backup", version: 1, exportedAt: new Date().toISOString(), structure: state.structure, messages };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `knowledge-discord-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importLocalBackup(file) {
+    if (!file) return;
+    try {
+        const backup = JSON.parse(await file.text());
+        if (backup.format !== "knowledge-discord-backup" || !backup.structure || !Array.isArray(backup.messages)) throw new Error("Invalid backup format");
+        if (!confirm("Import this backup? It will replace the current local notes, photos, organization, and adventures on this device.")) return;
+        const structure = normalizeStructure(backup.structure);
+        await replaceAllChannelMessages(backup.messages);
+        await saveStructure(structure);
+        state.structure = structure;
+        state.messagesByChannel.clear();
+        state.activeAdventureSessionId = null;
+        selectInitialChannel();
+        await loadActiveChannelMessages();
+        hydrateSettingsControls();
+        render();
+        refreshStorageEstimate();
+        alert("Local backup imported.");
+    } catch (error) {
+        alert(`Could not import backup: ${error.message || "invalid file"}`);
+    }
+}
+
+function getAdventures() {
+    return state.structure.settings.adventures || [];
+}
+
+function getAdventure(adventureId) {
+    return getAdventures().find((adventure) => adventure.id === adventureId);
+}
+
+function queueAdventureAutosave(status = document.querySelector(".adventureSaveStatus")) {
+    if (status) status.textContent = "Saving…";
+    window.clearTimeout(adventureAutosaveTimer);
+    adventureAutosaveTimer = window.setTimeout(async () => {
+        try {
+            await saveAdventures();
+            if (status) status.textContent = "Saved locally";
+        } catch {
+            if (status) status.textContent = "Could not save";
+        } finally {
+            adventureAutosaveTimer = undefined;
+        }
+    }, 500);
+}
+
+function renderAdventureMap(adventureId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure) {
+        els.messages.appendChild(emptyPanel("Adventure not found."));
+        return;
+    }
+    const page = document.createElement("section");
+    page.className = "adventureMap";
+    const intro = document.createElement("p");
+    intro.textContent = "Scene map. Each card lists its outgoing paths; tap a card to edit it.";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "Back to editor";
+    back.addEventListener("click", () => openView("adventureEditor", adventureId));
+    page.append(intro, back);
+    const canvas = document.createElement("div");
+    canvas.className = "adventureMapCanvas";
+    adventure.scenes.forEach((scene, index) => {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = "adventureMapNode";
+        const heading = document.createElement("strong");
+        heading.textContent = `${index + 1}. ${scene.title || "Untitled scene"}`;
+        const paths = document.createElement("span");
+        const labels = [
+            ...(scene.choices || []).map((choice) => choice.label || "Choice"),
+            ...(scene.randomEvent?.type === "quiz" ? scene.randomEvent.answers?.map((answer) => answer.label || "Answer") || [] : []),
+            ...(scene.randomEvent?.type === "dice" ? ["Dice branch"] : []),
+            ...(scene.randomEvent?.type === "weighted" ? ["Weighted path"] : []),
+            ...(scene.randomEvent?.type === "wheel" ? ["Spinning wheel"] : []),
+            ...(scene.randomEvent?.type === "timer" ? ["Countdown timer"] : [])
+        ];
+        paths.textContent = scene.isEnding ? "Ending" : labels.length ? `→ ${labels.join(" · ")}` : "No outgoing path";
+        node.append(heading, paths);
+        node.addEventListener("click", () => {
+            state.focusAdventureSceneId = scene.id;
+            openView("adventureEditor", adventureId);
+        });
+        canvas.appendChild(node);
+    });
+    page.appendChild(canvas);
+    els.messages.appendChild(page);
+}
+
+function renderAdventureStudio() {
+    const page = document.createElement("section");
+    page.className = "adventureStudio";
+    const intro = document.createElement("div");
+    intro.className = "adventureIntro";
+    intro.innerHTML = "<h3>Choose your adventure</h3><p>Build branching stories using references to your local photos and GIFs from any server.</p>";
+    const create = document.createElement("button");
+    create.type = "button";
+    create.className = "adventurePrimary";
+    create.textContent = "Create adventure";
+    create.addEventListener("click", createAdventure);
+    intro.appendChild(create);
+    page.appendChild(intro);
+
+    const adventures = getAdventures();
+    if (adventures.length === 0) {
+        page.appendChild(emptyPanel("No adventures yet. Create one to begin."));
+    }
+    adventures.forEach((adventure) => {
+        const card = document.createElement("article");
+        card.className = "adventureCard";
+        const title = document.createElement("h4");
+        title.textContent = adventure.title;
+        const meta = document.createElement("p");
+        meta.textContent = `${adventure.scenes.length} scene${adventure.scenes.length === 1 ? "" : "s"} · ${adventure.description || "No description"}`;
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => openView("adventureEditor", adventure.id));
+        const play = document.createElement("button");
+        play.type = "button";
+        play.className = "adventurePrimary";
+        play.textContent = getAdventureSession(adventure.id) ? "Play / resume" : "Play";
+        play.addEventListener("click", () => startAdventurePlay(adventure.id));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "dangerAction";
+        remove.textContent = "Delete";
+        remove.addEventListener("click", () => deleteAdventure(adventure.id));
+        card.append(title, meta, play, edit, remove);
+        page.appendChild(card);
+    });
+    els.messages.appendChild(page);
+}
+
+function renderAdventureEditor(adventureId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure) {
+        els.messages.appendChild(emptyPanel("Adventure not found."));
+        return;
+    }
+
+    const page = document.createElement("section");
+    page.className = "adventureEditor";
+    const details = document.createElement("section");
+    details.className = "adventureDetails";
+    const saveStatus = document.createElement("output");
+    saveStatus.className = "adventureSaveStatus";
+    saveStatus.textContent = "Saved locally";
+    const title = document.createElement("input");
+    title.type = "text";
+    title.value = adventure.title;
+    title.placeholder = "Adventure title";
+    title.addEventListener("input", () => {
+        adventure.title = normalizeDisplayName(title.value) || "Untitled adventure";
+        queueAdventureAutosave(saveStatus);
+    });
+    const description = document.createElement("textarea");
+    description.rows = 2;
+    description.value = adventure.description || "";
+    description.placeholder = "Short description";
+    description.addEventListener("input", () => {
+        adventure.description = description.value;
+        queueAdventureAutosave(saveStatus);
+    });
+    const showStats = document.createElement("label");
+    const showStatsInput = document.createElement("input");
+    showStatsInput.type = "checkbox";
+    showStatsInput.checked = Boolean(adventure.showStats);
+    showStats.append(showStatsInput, " Show stats while playing (off by default)");
+    const showProgress = document.createElement("label");
+    const showProgressInput = document.createElement("input");
+    showProgressInput.type = "checkbox";
+    showProgressInput.checked = adventure.showProgress !== false;
+    showProgress.append(showProgressInput, " Show scene progress while playing");
+    const vibration = document.createElement("label");
+    const vibrationInput = document.createElement("input");
+    vibrationInput.type = "checkbox";
+    vibrationInput.checked = Boolean(adventure.vibrateOnTimer);
+    vibration.append(vibrationInput, " Vibrate when an adventure timer finishes (if supported)");
+    const editorMode = document.createElement("label");
+    editorMode.textContent = "Editor mode";
+    const editorModeInput = document.createElement("select");
+    [["basic", "Basic"], ["advanced", "Advanced"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === (adventure.editorMode || "basic");
+        editorModeInput.appendChild(option);
+    });
+    editorMode.appendChild(editorModeInput);
+    const modeHelp = document.createElement("p");
+    modeHelp.className = "adventureModeHelp";
+    const updateModeHelp = () => {
+        modeHelp.textContent = editorModeInput.value === "advanced"
+            ? "Advanced adds optional variables, conditions, and scene effects. Your story can still stay simple."
+            : "Basic keeps each scene focused on text, local media, choices, and endings. Switch to Advanced only when you need rules or variables.";
+    };
+    updateModeHelp();
+    editorModeInput.addEventListener("change", () => {
+        adventure.editorMode = editorModeInput.value;
+        updateModeHelp();
+        queueAdventureAutosave(saveStatus);
+    });
+    const enableVariables = document.createElement("label");
+    const enableVariablesInput = document.createElement("input");
+    enableVariablesInput.type = "checkbox";
+    enableVariablesInput.checked = Boolean(adventure.enableVariables);
+    enableVariables.append(enableVariablesInput, " Enable variables, health, and stats mechanics");
+    enableVariablesInput.addEventListener("change", () => {
+        adventure.enableVariables = enableVariablesInput.checked;
+        queueAdventureAutosave(saveStatus);
+    });
+    showStatsInput.addEventListener("change", () => {
+        adventure.showStats = showStatsInput.checked;
+        queueAdventureAutosave(saveStatus);
+    });
+    showProgressInput.addEventListener("change", () => { adventure.showProgress = showProgressInput.checked; queueAdventureAutosave(saveStatus); });
+    vibrationInput.addEventListener("change", () => { adventure.vibrateOnTimer = vibrationInput.checked; queueAdventureAutosave(saveStatus); });
+    const adventureMetronome = document.createElement("label");
+    const adventureMetronomeInput = document.createElement("input");
+    adventureMetronomeInput.type = "checkbox";
+    adventureMetronomeInput.checked = adventure.metronomeEnabled !== false;
+    adventureMetronome.append(adventureMetronomeInput, " Include a metronome control when playing this adventure");
+    const adventureBpm = numericField("Adventure metronome BPM", adventure.metronomeBpm || state.structure.settings.metronomeBpm);
+    const startScene = document.createElement("label");
+    startScene.textContent = "Start scene";
+    const startSceneInput = document.createElement("select");
+    adventure.scenes.forEach((scene, index) => {
+        const option = document.createElement("option");
+        option.value = scene.id;
+        option.textContent = `${index + 1}. ${scene.title || "Untitled scene"}`;
+        option.selected = scene.id === (adventure.startSceneId || adventure.scenes[0]?.id);
+        startSceneInput.appendChild(option);
+    });
+    startScene.appendChild(startSceneInput);
+    startSceneInput.addEventListener("change", () => {
+        adventure.startSceneId = startSceneInput.value;
+        queueAdventureAutosave(saveStatus);
+    });
+    adventureMetronomeInput.addEventListener("change", () => {
+        adventure.metronomeEnabled = adventureMetronomeInput.checked;
+        queueAdventureAutosave(saveStatus);
+    });
+    adventureBpm.input.addEventListener("input", () => {
+        adventure.metronomeBpm = clampAdventureNumber(adventureBpm.input.value, 20, 300, 120);
+        adventure.startSceneId = startSceneInput.value;
+        queueAdventureAutosave(saveStatus);
+    });
+    const variables = renderAdventureVariableEditor(adventure);
+    const inventory = document.createElement("label");
+    const inventoryInput = document.createElement("input");
+    inventoryInput.type = "checkbox";
+    inventoryInput.checked = Boolean(adventure.enableInventory);
+    inventory.append(inventoryInput, " Enable a simple adventure inventory");
+    inventoryInput.addEventListener("change", () => { adventure.enableInventory = inventoryInput.checked; queueAdventureAutosave(saveStatus); });
+    const saveDetails = document.createElement("button");
+    saveDetails.type = "button";
+    saveDetails.textContent = "Save details";
+    saveDetails.addEventListener("click", async () => {
+        adventure.title = normalizeDisplayName(title.value) || adventure.title;
+        adventure.description = description.value.trim();
+        adventure.editorMode = editorModeInput.value;
+        adventure.enableVariables = enableVariablesInput.checked;
+        adventure.showStats = showStatsInput.checked;
+        adventure.showProgress = showProgressInput.checked;
+        adventure.vibrateOnTimer = vibrationInput.checked;
+        adventure.metronomeEnabled = adventureMetronomeInput.checked;
+        adventure.metronomeBpm = clampAdventureNumber(adventureBpm.input.value, 20, 300, 120);
+        adventure.startSceneId = startSceneInput.value;
+        adventure.enableInventory = inventoryInput.checked;
+        if (adventure.editorMode === "advanced") variables.save();
+        await saveAdventures();
+        render();
+    });
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "All adventures";
+    back.addEventListener("click", () => openView("adventureStudio", "studio"));
+    const map = document.createElement("button");
+    map.type = "button";
+    map.textContent = "Map";
+    map.addEventListener("click", () => openView("adventureMap", adventure.id));
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "adventurePrimary";
+    play.textContent = "Play adventure";
+    play.addEventListener("click", () => startAdventurePlay(adventure.id));
+    details.append(title, description, startScene, editorMode, modeHelp, adventureMetronome, adventureBpm.label, inventory, enableVariables, showStats, showProgress, vibration);
+    if ((adventure.editorMode || "basic") === "advanced") details.appendChild(variables.element);
+    details.append(saveStatus, saveDetails, play, map, back);
+    page.appendChild(details);
+    page.appendChild(renderAdventureValidation(adventure));
+
+    const heading = document.createElement("div");
+    heading.className = "adventureSceneHeading";
+    heading.innerHTML = `<h3>Scenes (${adventure.scenes.length})</h3>`;
+    const addScene = document.createElement("button");
+    addScene.type = "button";
+    addScene.textContent = "Add scene";
+    addScene.addEventListener("click", () => addAdventureScene(adventure.id));
+    heading.appendChild(addScene);
+    page.appendChild(heading);
+
+    adventure.scenes.forEach((scene, index) => page.appendChild(renderAdventureSceneEditor(adventure, scene, index)));
+    els.messages.appendChild(page);
+}
+
+function renderAdventureValidation(adventure) {
+    const issues = [];
+    const reachable = new Set([adventure.startSceneId || adventure.scenes[0]?.id]);
+    const targets = (scene) => [
+        ...(scene.choices || []).map((choice) => choice.targetSceneId),
+        scene.randomEvent?.successTargetId,
+        scene.randomEvent?.failureTargetId,
+        scene.randomEvent?.completeTargetId,
+        ...(scene.randomEvent?.paths || []).map((path) => path.targetSceneId),
+        ...(scene.randomEvent?.answers || []).map((answer) => answer.targetSceneId)
+    ].filter(Boolean);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        adventure.scenes.filter((scene) => reachable.has(scene.id)).forEach((scene) => targets(scene).forEach((target) => {
+            if (!reachable.has(target)) { reachable.add(target); changed = true; }
+        }));
+    }
+    adventure.scenes.forEach((scene) => {
+        if (!scene.isEnding && !(scene.choices || []).some((choice) => choice.targetSceneId) && !scene.randomEvent) issues.push(`${scene.title || "Untitled scene"}: no outgoing path.`);
+        if (!reachable.has(scene.id)) issues.push(`${scene.title || "Untitled scene"}: unreachable from the start scene.`);
+        (scene.mediaRefs || []).forEach((ref) => { if (!findAttachment(ref)) issues.push(`${scene.title || "Untitled scene"}: missing media reference.`); });
+        const event = scene.randomEvent;
+        if (event?.type === "wheel" && !(event.paths || []).some((path) => path.targetSceneId)) issues.push(`${scene.title || "Untitled scene"}: wheel has no destination.`);
+        if (event?.type === "timer" && !event.completeTargetId) issues.push(`${scene.title || "Untitled scene"}: timer ends the story because it has no destination.`);
+        if (event?.type === "quiz" && event.mode === "manual" && !(event.answers || []).some((answer) => answer.label)) issues.push(`${scene.title || "Untitled scene"}: quiz has no answers.`);
+        if (event?.type === "quiz" && ["source-choice", "source-text"].includes(event.mode) && (!event.mediaRef || !findAttachment(event.mediaRef))) issues.push(`${scene.title || "Untitled scene"}: source quiz needs a valid image.`);
+    });
+    const panel = document.createElement("details");
+    panel.className = "adventureValidation";
+    const summary = document.createElement("summary");
+    summary.textContent = issues.length ? `Validation: ${issues.length} item${issues.length === 1 ? "" : "s"} to review` : "Validation: ready to play";
+    panel.appendChild(summary);
+    if (issues.length === 0) panel.appendChild(document.createTextNode("No missing media, orphaned scenes, or incomplete random events found."));
+    else {
+        const list = document.createElement("ul");
+        issues.forEach((issue) => { const item = document.createElement("li"); item.textContent = issue; list.appendChild(item); });
+        panel.appendChild(list);
+    }
+    return panel;
+}
+
+function renderAdventureSceneEditor(adventure, scene, index) {
+    const section = document.createElement("details");
+    section.className = "adventureScene";
+    section.open = scene.id === state.focusAdventureSceneId || (index === 0 && !state.focusAdventureSceneId);
+    const summary = document.createElement("summary");
+    summary.textContent = `${index + 1}. ${scene.title || "Untitled scene"}${scene.isEnding ? " · ending" : ""}`;
+    section.appendChild(summary);
+
+    const title = document.createElement("input");
+    title.type = "text";
+    title.value = scene.title || "";
+    title.placeholder = "Scene title";
+    const text = document.createElement("textarea");
+    text.rows = 4;
+    text.value = scene.text || "";
+    text.placeholder = "Story text and instructions";
+    const ending = document.createElement("label");
+    const endingInput = document.createElement("input");
+    endingInput.type = "checkbox";
+    endingInput.checked = Boolean(scene.isEnding);
+    ending.append(endingInput, " This is an ending");
+    const readyPrompt = document.createElement("label");
+    const readyPromptInput = document.createElement("input");
+    readyPromptInput.type = "checkbox";
+    readyPromptInput.checked = Boolean(scene.requireReady);
+    readyPrompt.append(readyPromptInput, " Require “Continue when ready” before this scene can advance");
+    const collectible = document.createElement("input");
+    collectible.type = "text";
+    collectible.value = scene.inventoryItem || "";
+    collectible.placeholder = "Collectible item in this scene (optional)";
+    collectible.addEventListener("input", () => { scene.inventoryItem = collectible.value; queueAdventureAutosave(); });
+    const saveDraft = () => {
+        scene.title = normalizeDisplayName(title.value) || "Untitled scene";
+        scene.text = text.value;
+        scene.isEnding = endingInput.checked;
+        scene.requireReady = readyPromptInput.checked;
+        scene.inventoryItem = normalizeDisplayName(collectible.value);
+        queueAdventureAutosave();
+    };
+    title.addEventListener("input", saveDraft);
+    text.addEventListener("input", saveDraft);
+    endingInput.addEventListener("change", saveDraft);
+    readyPromptInput.addEventListener("change", saveDraft);
+
+    const media = document.createElement("div");
+    media.className = "adventureMediaList";
+    (scene.mediaRefs || []).forEach((ref, mediaIndex) => {
+        const mediaItem = renderAdventureMedia(adventure.id, scene.id, ref);
+        const caption = document.createElement("input");
+        caption.type = "text";
+        caption.placeholder = "Adventure caption / alt text";
+        caption.value = scene.mediaCaptions?.[photoRefKey(ref)] || "";
+        caption.addEventListener("input", () => {
+            scene.mediaCaptions ||= {};
+            scene.mediaCaptions[photoRefKey(ref)] = caption.value;
+            queueAdventureAutosave();
+        });
+        mediaItem.appendChild(caption);
+        const moveEarlier = document.createElement("button");
+        moveEarlier.type = "button";
+        moveEarlier.textContent = "←";
+        moveEarlier.title = "Move media earlier";
+        moveEarlier.disabled = mediaIndex === 0;
+        moveEarlier.addEventListener("click", () => moveSceneMedia(adventure.id, scene.id, mediaIndex, -1));
+        const moveLater = document.createElement("button");
+        moveLater.type = "button";
+        moveLater.textContent = "→";
+        moveLater.title = "Move media later";
+        moveLater.disabled = mediaIndex === (scene.mediaRefs || []).length - 1;
+        moveLater.addEventListener("click", () => moveSceneMedia(adventure.id, scene.id, mediaIndex, 1));
+        mediaItem.append(moveEarlier, moveLater);
+        media.appendChild(mediaItem);
+    });
+    const addMedia = document.createElement("button");
+    addMedia.type = "button";
+    addMedia.textContent = "Add local image/GIF";
+    addMedia.addEventListener("click", () => pickAdventureMedia(adventure.id, scene.id));
+
+    const choices = document.createElement("div");
+    choices.className = "adventureChoices";
+    const choiceRows = [];
+    (scene.choices || []).forEach((choice) => {
+        const row = document.createElement("div");
+        row.className = "adventureChoiceRow";
+        const label = document.createElement("input");
+        label.type = "text";
+        label.value = choice.label || "";
+        label.placeholder = "Choice text";
+        const shortLabel = document.createElement("input");
+        shortLabel.type = "text";
+        shortLabel.value = choice.shortLabel || "";
+        shortLabel.placeholder = "Short mobile label (optional)";
+        const target = document.createElement("select");
+        const endingTarget = document.createElement("option");
+        endingTarget.value = "";
+        endingTarget.textContent = "End story";
+        target.appendChild(endingTarget);
+        adventure.scenes.filter((item) => item.id !== scene.id).forEach((item, targetIndex) => {
+            const option = document.createElement("option");
+            option.value = item.id;
+            option.textContent = `${targetIndex + 1}. ${item.title || "Untitled scene"}`;
+            option.selected = item.id === choice.targetSceneId;
+            target.appendChild(option);
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+            row.remove();
+            const position = choiceRows.indexOf(row);
+            if (position >= 0) choiceRows.splice(position, 1);
+        });
+        row.append(label, shortLabel, target, remove);
+        label.addEventListener("input", () => {
+            choice.label = label.value;
+            queueAdventureAutosave();
+        });
+        target.addEventListener("change", () => {
+            choice.targetSceneId = target.value || null;
+            queueAdventureAutosave();
+        });
+        shortLabel.addEventListener("input", () => {
+            choice.shortLabel = shortLabel.value;
+            queueAdventureAutosave();
+        });
+        if (adventure.editorMode === "advanced") {
+            const rules = renderAdventureChoiceRuleEditor(adventure, choice);
+            row.adventureRuleEditor = rules;
+            row.appendChild(rules.element);
+        }
+        choiceRows.push(row);
+        choices.appendChild(row);
+    });
+    const addChoice = document.createElement("button");
+    addChoice.type = "button";
+    addChoice.textContent = "Add choice";
+    addChoice.addEventListener("click", () => {
+        const choice = { id: crypto.randomUUID(), label: "", targetSceneId: "" };
+        scene.choices = [...(scene.choices || []), choice];
+        renderMessages();
+    });
+
+    const advanced = adventure.editorMode === "advanced";
+    const ambience = renderAdventureAmbienceEditor(scene);
+    const randomEditor = advanced ? renderAdventureRandomEditor(adventure, scene) : null;
+    const sceneEffects = advanced ? renderAdventureEffectsEditor(adventure, scene.effects || [], "When this scene opens") : null;
+    const autoAdvance = advanced ? renderAdventureAutoAdvanceEditor(adventure, scene) : null;
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "adventurePrimary";
+    save.textContent = "Save scene";
+    save.addEventListener("click", async () => {
+        scene.title = normalizeDisplayName(title.value) || "Untitled scene";
+        scene.text = text.value.trim();
+        scene.isEnding = endingInput.checked;
+        scene.requireReady = readyPromptInput.checked;
+        if (sceneEffects) scene.effects = sceneEffects.save();
+        scene.choices = choiceRows.map((row) => ({
+            id: crypto.randomUUID(),
+            label: row.querySelector("input").value.trim() || "Continue",
+            shortLabel: row.querySelectorAll("input")[1].value.trim(),
+            targetSceneId: row.querySelector("select").value || null,
+            ...(row.adventureRuleEditor ? row.adventureRuleEditor.save() : {})
+        }));
+        if (randomEditor) randomEditor.save();
+        if (autoAdvance) autoAdvance.save();
+        ambience.save();
+        await saveAdventures();
+        renderMessages();
+    });
+    const removeScene = document.createElement("button");
+    removeScene.type = "button";
+    removeScene.className = "dangerAction";
+    removeScene.textContent = "Delete scene";
+    removeScene.disabled = adventure.scenes.length === 1;
+    removeScene.addEventListener("click", () => deleteAdventureScene(adventure.id, scene.id));
+    const duplicateScene = document.createElement("button");
+    duplicateScene.type = "button";
+    duplicateScene.textContent = "Duplicate scene";
+    duplicateScene.addEventListener("click", () => duplicateAdventureScene(adventure.id, scene.id));
+    const testScene = document.createElement("button");
+    testScene.type = "button";
+    testScene.textContent = "Test from here";
+    testScene.addEventListener("click", () => startAdventureTest(adventure.id, scene.id));
+    const template = document.createElement("select");
+    [["", "Apply scene template…"], ["imageQuiz", "Image source quiz"], ["timer", "Timer challenge"], ["wheel", "Wheel choice"], ["ending", "Ending scene"], ...(state.structure.settings.adventureComponents || []).map((component) => [`component:${component.id}`, `Saved: ${component.name}`])].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        template.appendChild(option);
+    });
+    template.addEventListener("change", () => {
+        if (!template.value) return;
+        applyAdventureSceneTemplate(adventure.id, scene.id, template.value);
+    });
+    const saveComponent = document.createElement("button");
+    saveComponent.type = "button";
+    saveComponent.textContent = "Save as reusable component";
+    saveComponent.addEventListener("click", () => saveAdventureComponent(adventure.id, scene.id));
+    const moveUp = document.createElement("button");
+    moveUp.type = "button";
+    moveUp.textContent = "Move up";
+    moveUp.disabled = index === 0;
+    moveUp.addEventListener("click", () => moveAdventureScene(adventure.id, scene.id, -1));
+    const moveDown = document.createElement("button");
+    moveDown.type = "button";
+    moveDown.textContent = "Move down";
+    moveDown.disabled = index === adventure.scenes.length - 1;
+    moveDown.addEventListener("click", () => moveAdventureScene(adventure.id, scene.id, 1));
+    section.draggable = true;
+    section.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/plain", scene.id));
+    section.addEventListener("dragover", (event) => event.preventDefault());
+    section.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const sourceId = event.dataTransfer.getData("text/plain");
+        if (sourceId && sourceId !== scene.id) moveAdventureSceneTo(adventure.id, sourceId, scene.id);
+    });
+
+    section.append(title, text, ending, readyPrompt, collectible, media, addMedia, choices, addChoice, ambience.element);
+    if (sceneEffects) section.appendChild(sceneEffects.element);
+    if (randomEditor) section.appendChild(randomEditor.element);
+    if (autoAdvance) section.appendChild(autoAdvance.element);
+    section.append(template, saveComponent, moveUp, moveDown, save, duplicateScene, testScene, removeScene);
+    return section;
+}
+
+async function moveSceneMedia(adventureId, sceneId, from, offset) {
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    const to = from + offset;
+    if (!scene?.mediaRefs || to < 0 || to >= scene.mediaRefs.length) return;
+    [scene.mediaRefs[from], scene.mediaRefs[to]] = [scene.mediaRefs[to], scene.mediaRefs[from]];
+    await saveAdventures();
+    renderMessages();
+}
+
+async function applyAdventureSceneTemplate(adventureId, sceneId, template) {
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    if (template.startsWith("component:")) {
+        const component = (state.structure.settings.adventureComponents || []).find((item) => item.id === template.slice("component:".length));
+        if (component?.scene) {
+            const copy = structuredClone(component.scene);
+            copy.choices = (copy.choices || []).map((choice) => ({ ...choice, id: crypto.randomUUID(), targetSceneId: null }));
+            if (copy.randomEvent) {
+                ["successTargetId", "failureTargetId", "completeTargetId"].forEach((key) => { if (key in copy.randomEvent) copy.randomEvent[key] = null; });
+                copy.randomEvent.paths = copy.randomEvent.paths?.map((path) => ({ ...path, targetSceneId: null }));
+                copy.randomEvent.answers = copy.randomEvent.answers?.map((answer) => ({ ...answer, targetSceneId: null }));
+            }
+            Object.assign(scene, copy, { id: scene.id, title: `${component.name} copy` });
+        }
+        await saveAdventures();
+        renderMessages();
+        return;
+    }
+    if (template === "imageQuiz") {
+        scene.randomEvent = { type: "quiz", mode: "source-choice", question: "Which channel did this image come from?", mediaRef: scene.mediaRefs?.[0] || null, channelIds: [], successTargetId: null, failureTargetId: null };
+    } else if (template === "timer") {
+        scene.randomEvent = defaultRandomEvent("timer");
+        scene.text ||= "Complete the timer challenge.";
+    } else if (template === "wheel") {
+        scene.randomEvent = defaultRandomEvent("wheel");
+        scene.text ||= "Let the wheel decide what happens next.";
+    } else if (template === "ending") {
+        scene.isEnding = true;
+        scene.choices = [];
+        scene.randomEvent = null;
+        scene.text ||= "The adventure ends here.";
+    }
+    await saveAdventures();
+    renderMessages();
+}
+
+async function saveAdventureComponent(adventureId, sceneId) {
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    const name = normalizeDisplayName(prompt("Reusable component name?", scene.title || "Scene component"));
+    if (!name) return;
+    const copy = structuredClone(scene);
+    copy.id = crypto.randomUUID();
+    state.structure.settings.adventureComponents = [...(state.structure.settings.adventureComponents || []), { id: crypto.randomUUID(), name, scene: copy, createdAt: new Date().toISOString() }];
+    await saveAdventures();
+    renderMessages();
+}
+
+function renderAdventureAmbienceEditor(scene) {
+    const wrap = document.createElement("section");
+    wrap.className = "adventureAmbienceEditor";
+    const heading = document.createElement("strong");
+    heading.textContent = "Scene ambience (optional)";
+    const theme = document.createElement("label");
+    theme.textContent = "Theme";
+    const themeInput = document.createElement("select");
+    [["", "Default"], ["ocean", "Ocean"], ["forest", "Forest"], ["ember", "Ember"], ["violet", "Violet"]].forEach(([value, label]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; option.selected = value === (scene.ambience?.theme || ""); themeInput.appendChild(option);
+    });
+    theme.appendChild(themeInput);
+    const bpm = numericField("Scene metronome BPM (blank keeps adventure BPM)", scene.ambience?.metronomeBpm || "");
+    bpm.input.placeholder = "Optional BPM";
+    const timer = numericField("Scene timer preset seconds (optional)", scene.ambience?.timerSeconds || "");
+    timer.input.placeholder = "Optional seconds";
+    wrap.append(heading, theme, bpm.label, timer.label);
+    return {
+        element: wrap,
+        save: () => {
+            const metronomeBpm = Number.parseInt(bpm.input.value, 10);
+            const timerSeconds = Number.parseInt(timer.input.value, 10);
+            scene.ambience = {
+                theme: themeInput.value,
+                metronomeBpm: metronomeBpm ? clampAdventureNumber(metronomeBpm, 20, 300, 120) : null,
+                timerSeconds: timerSeconds ? clampAdventureNumber(timerSeconds, 1, 7200, 60) : null
+            };
+        }
+    };
+}
+
+function renderAdventureAutoAdvanceEditor(adventure, scene) {
+    const wrap = document.createElement("section");
+    wrap.className = "adventureAutoAdvanceEditor";
+    const heading = document.createElement("strong");
+    heading.textContent = "Automatic transition (optional)";
+    const mode = document.createElement("select");
+    [["", "Off"], ["delay", "After a delay"], ["timer", "After a timer"], ["beats", "After metronome beats"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === (scene.autoAdvance?.mode || "");
+        mode.appendChild(option);
+    });
+    const value = numericField(mode.value === "beats" ? "Number of beats" : "Seconds", scene.autoAdvance?.value || "");
+    value.input.placeholder = mode.value === "beats" ? "4" : "10";
+    const target = adventureTargetSelect(adventure, scene.id, scene.autoAdvance?.targetSceneId, "Continue to");
+    const updateLabel = () => {
+        value.label.firstChild.textContent = mode.value === "beats" ? "Number of beats" : "Seconds";
+        value.input.placeholder = mode.value === "beats" ? "4" : "10";
+    };
+    mode.addEventListener("change", updateLabel);
+    wrap.append(heading, mode, value.label, target.label);
+    return {
+        element: wrap,
+        save: () => {
+            if (!mode.value || !target.select.value) {
+                scene.autoAdvance = null;
+                return;
+            }
+            scene.autoAdvance = {
+                mode: mode.value,
+                value: clampAdventureNumber(value.input.value, 1, 7200, mode.value === "beats" ? 4 : 10),
+                targetSceneId: target.select.value
+            };
+        }
+    };
+}
+
+async function moveAdventureScene(adventureId, sceneId, offset) {
+    const adventure = getAdventure(adventureId);
+    const from = adventure?.scenes.findIndex((scene) => scene.id === sceneId) ?? -1;
+    const to = from + offset;
+    if (!adventure || from < 0 || to < 0 || to >= adventure.scenes.length) return;
+    [adventure.scenes[from], adventure.scenes[to]] = [adventure.scenes[to], adventure.scenes[from]];
+    await saveAdventures();
+    renderMessages();
+}
+
+async function moveAdventureSceneTo(adventureId, sourceId, targetId) {
+    const adventure = getAdventure(adventureId);
+    const from = adventure?.scenes.findIndex((scene) => scene.id === sourceId) ?? -1;
+    const to = adventure?.scenes.findIndex((scene) => scene.id === targetId) ?? -1;
+    if (!adventure || from < 0 || to < 0) return;
+    const [scene] = adventure.scenes.splice(from, 1);
+    adventure.scenes.splice(to, 0, scene);
+    await saveAdventures();
+    renderMessages();
+}
+
+function renderAdventureRandomEditor(adventure, scene) {
+    const wrap = document.createElement("section");
+    wrap.className = "adventureRandomEditor";
+    const heading = document.createElement("strong");
+    heading.textContent = "Optional random event";
+    const type = document.createElement("select");
+    [
+        ["", "None"],
+        ["dice", "Dice branch"],
+        ["weighted", "Weighted path"],
+        ["wheel", "Spinning wheel"],
+        ["timer", "Countdown timer"],
+        ["image", "Random image"],
+        ["quiz", "Quiz gate"]
+    ].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === scene.randomEvent?.type;
+        type.appendChild(option);
+    });
+    type.addEventListener("change", () => {
+        scene.randomEvent = defaultRandomEvent(type.value);
+        renderMessages();
+    });
+    wrap.append(heading, type);
+    const event = scene.randomEvent;
+    if (!event) return { element: wrap, save: () => { scene.randomEvent = null; } };
+
+    if (event.type === "dice") {
+        const sides = numericField("Dice sides", event.sides || 20);
+        const threshold = numericField("Success on", event.threshold || 12);
+        const success = adventureTargetSelect(adventure, scene.id, event.successTargetId, "Success destination");
+        const failure = adventureTargetSelect(adventure, scene.id, event.failureTargetId, "Failure destination");
+        wrap.append(sides.label, threshold.label, success.label, failure.label);
+        return {
+            element: wrap,
+            save: () => {
+                scene.randomEvent = {
+                    type: "dice",
+                    sides: clampAdventureNumber(sides.input.value, 2, 1000, 20),
+                    threshold: clampAdventureNumber(threshold.input.value, 1, 1000, 12),
+                    successTargetId: success.select.value || null,
+                    failureTargetId: failure.select.value || null
+                };
+            }
+        };
+    }
+
+    if (event.type === "timer") {
+        const seconds = numericField("Countdown seconds", event.seconds || 60);
+        const random = document.createElement("label");
+        const randomInput = document.createElement("input");
+        randomInput.type = "checkbox";
+        randomInput.checked = Boolean(event.random);
+        random.append(randomInput, " Randomize this countdown when it starts");
+        const couple = document.createElement("label");
+        const coupleInput = document.createElement("input");
+        coupleInput.type = "checkbox";
+        coupleInput.checked = Boolean(event.coupleMetronome);
+        couple.append(coupleInput, " Metronome follows this timer");
+        const min = numericField("Random minimum seconds", event.minSeconds || 30);
+        const max = numericField("Random maximum seconds", event.maxSeconds || 90);
+        const complete = adventureTargetSelect(adventure, scene.id, event.completeTargetId, "When timer finishes");
+        wrap.append(seconds.label, random, couple, min.label, max.label, complete.label);
+        return {
+            element: wrap,
+            save: () => {
+                scene.randomEvent = {
+                    type: "timer",
+                    seconds: clampAdventureNumber(seconds.input.value, 1, 7200, 60),
+                    random: randomInput.checked,
+                    coupleMetronome: coupleInput.checked,
+                    minSeconds: clampAdventureNumber(min.input.value, 1, 7200, 30),
+                    maxSeconds: clampAdventureNumber(max.input.value, 1, 7200, 90),
+                    completeTargetId: complete.select.value || null
+                };
+            }
+        };
+    }
+
+    if (event.type === "weighted" || event.type === "wheel") {
+        const paths = document.createElement("div");
+        paths.className = "adventureWeightedPaths";
+        const rows = [];
+        (event.paths || []).forEach((path) => {
+            const row = document.createElement("div");
+            row.className = "adventureWeightedRow";
+            const target = adventureTargetSelect(adventure, scene.id, path.targetSceneId, "Destination").select;
+            const weight = document.createElement("input");
+            weight.type = "number";
+            weight.min = "1";
+            weight.value = path.weight || 1;
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.textContent = "Remove";
+            remove.addEventListener("click", () => {
+                row.remove();
+                rows.splice(rows.indexOf(row), 1);
+            });
+            row.append(target, weight, remove);
+            rows.push(row);
+            paths.appendChild(row);
+        });
+        const add = document.createElement("button");
+        add.type = "button";
+        add.textContent = event.type === "wheel" ? "Add wheel segment" : "Add weighted path";
+        add.addEventListener("click", () => {
+            scene.randomEvent.paths = [...(scene.randomEvent.paths || []), { targetSceneId: null, weight: 1 }];
+            renderMessages();
+        });
+        wrap.append(paths, add);
+        return {
+            element: wrap,
+            save: () => {
+                scene.randomEvent = {
+                    type: event.type,
+                    paths: rows.map((row) => ({
+                        targetSceneId: row.querySelector("select").value || null,
+                        weight: clampAdventureNumber(row.querySelector("input").value, 1, 1000, 1)
+                    }))
+                };
+            }
+        };
+    }
+
+    if (event.type === "quiz") {
+        const mode = document.createElement("label");
+        mode.textContent = "Quiz type";
+        const modeInput = document.createElement("select");
+        [
+            ["manual", "Manual answer buttons"],
+            ["source-choice", "Which channel was this image from?"],
+            ["source-text", "Type the source channel name"]
+        ].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = value === (event.mode || "manual");
+            modeInput.appendChild(option);
+        });
+        mode.appendChild(modeInput);
+        modeInput.addEventListener("change", () => {
+            scene.randomEvent = { ...event, mode: modeInput.value };
+            renderMessages();
+        });
+        const question = document.createElement("textarea");
+        question.rows = 2;
+        question.value = event.question || "";
+        question.placeholder = modeInput.value === "manual" ? "Quiz question" : "Optional question (defaults to a source-channel question)";
+        if (modeInput.value !== "manual") {
+            const media = document.createElement("label");
+            media.textContent = "Quiz image (add local media to this scene first)";
+            const mediaInput = document.createElement("select");
+            const unavailable = document.createElement("option");
+            unavailable.value = "";
+            unavailable.textContent = scene.mediaRefs?.length ? "Choose image" : "No scene media available";
+            mediaInput.appendChild(unavailable);
+            (scene.mediaRefs || []).forEach((ref) => {
+                const attachment = findAttachment(ref);
+                const option = document.createElement("option");
+                option.value = photoRefKey(ref);
+                option.textContent = `#${getChannelById(ref.channelId)?.name || "missing"} · ${attachment?.note || attachment?.name || "image"}`;
+                option.selected = photoRefKey(ref) === photoRefKey(event.mediaRef || {});
+                mediaInput.appendChild(option);
+            });
+            media.appendChild(mediaInput);
+            const success = adventureTargetSelect(adventure, scene.id, event.successTargetId, "Correct answer destination");
+            const failure = adventureTargetSelect(adventure, scene.id, event.failureTargetId, "Wrong answer destination");
+            const channels = document.createElement("label");
+            channels.textContent = modeInput.value === "source-choice" ? "Extra channels to offer as answers" : "";
+            const channelsInput = document.createElement("select");
+            channelsInput.multiple = true;
+            channelsInput.size = Math.min(5, Math.max(2, getAllChannels().length));
+            getAllChannels().forEach((channel) => {
+                const option = document.createElement("option");
+                option.value = channel.id;
+                option.textContent = `#${channel.name} (${getChannelServer(channel.id)?.name || "server"})`;
+                option.selected = (event.channelIds || []).includes(channel.id);
+                channelsInput.appendChild(option);
+            });
+            channels.appendChild(channelsInput);
+            wrap.append(mode, question, media, success.label, failure.label);
+            if (modeInput.value === "source-choice") wrap.appendChild(channels);
+            return {
+                element: wrap,
+                save: () => {
+                    const selectedRef = (scene.mediaRefs || []).find((ref) => photoRefKey(ref) === mediaInput.value) || null;
+                    scene.randomEvent = {
+                        type: "quiz",
+                        mode: modeInput.value,
+                        question: question.value.trim(),
+                        mediaRef: selectedRef,
+                        channelIds: [...channelsInput.selectedOptions].map((option) => option.value),
+                        successTargetId: success.select.value || null,
+                        failureTargetId: failure.select.value || null
+                    };
+                }
+            };
+        }
+        const answers = document.createElement("div");
+        answers.className = "adventureWeightedPaths";
+        const rows = [];
+        (event.answers || []).forEach((answer) => {
+            const row = document.createElement("div");
+            row.className = "adventureWeightedRow";
+            const label = document.createElement("input");
+            label.type = "text";
+            label.value = answer.label || "";
+            label.placeholder = "Answer";
+            const target = adventureTargetSelect(adventure, scene.id, answer.targetSceneId, "Destination").select;
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.textContent = "Remove";
+            remove.addEventListener("click", () => {
+                row.remove();
+                rows.splice(rows.indexOf(row), 1);
+            });
+            row.append(label, target, remove);
+            rows.push(row);
+            answers.appendChild(row);
+        });
+        const add = document.createElement("button");
+        add.type = "button";
+        add.textContent = "Add answer";
+        add.addEventListener("click", () => {
+            scene.randomEvent.answers = [...(scene.randomEvent.answers || []), { label: "", targetSceneId: null }];
+            renderMessages();
+        });
+        wrap.append(mode, question, answers, add);
+        return {
+            element: wrap,
+            save: () => {
+                scene.randomEvent = {
+                    type: "quiz",
+                    mode: "manual",
+                    question: question.value.trim(),
+                    answers: rows.map((row) => ({
+                        label: row.querySelector("input").value.trim() || "Continue",
+                        targetSceneId: row.querySelector("select").value || null
+                    }))
+                };
+            }
+        };
+    }
+
+    const sourceNames = [
+        ...(event.channelIds || []).map((id) => `#${getChannelById(id)?.name || "missing"}`),
+        ...(event.collectionIds || []).map((id) => `@${getAnyPhotoCollection(id)?.name || "missing"}`)
+    ].join(", ");
+    const sourceText = document.createElement("p");
+    sourceText.textContent = sourceNames || "No image channels selected";
+    const setSources = document.createElement("button");
+    setSources.type = "button";
+    setSources.textContent = "Choose image channels";
+    setSources.addEventListener("click", () => setAdventureRandomImageSources(adventure.id, scene.id));
+    wrap.append(sourceText, setSources);
+    return { element: wrap, save: () => {} };
+}
+
+function defaultRandomEvent(type) {
+    if (type === "dice") return { type, sides: 20, threshold: 12, successTargetId: null, failureTargetId: null };
+    if (type === "weighted") return { type, paths: [{ targetSceneId: null, weight: 1 }, { targetSceneId: null, weight: 1 }] };
+    if (type === "wheel") return { type, paths: [{ targetSceneId: null, weight: 1 }, { targetSceneId: null, weight: 1 }] };
+    if (type === "timer") return { type, seconds: 60, random: false, coupleMetronome: false, minSeconds: 30, maxSeconds: 90, completeTargetId: null };
+    if (type === "image") return { type, channelIds: [], collectionIds: [] };
+    if (type === "quiz") return { type, question: "", answers: [{ label: "", targetSceneId: null }, { label: "", targetSceneId: null }] };
+    return null;
+}
+
+function numericField(labelText, value) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.value = value;
+    label.appendChild(input);
+    return { label, input };
+}
+
+function adventureTargetSelect(adventure, currentSceneId, selectedId, labelText) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    const select = document.createElement("select");
+    const ending = document.createElement("option");
+    ending.value = "";
+    ending.textContent = "End story";
+    select.appendChild(ending);
+    adventure.scenes.filter((scene) => scene.id !== currentSceneId).forEach((scene, index) => {
+        const option = document.createElement("option");
+        option.value = scene.id;
+        option.textContent = `${index + 1}. ${scene.title || "Untitled scene"}`;
+        option.selected = scene.id === selectedId;
+        select.appendChild(option);
+    });
+    label.appendChild(select);
+    return { label, select };
+}
+
+function clampAdventureNumber(value, minimum, maximum, fallback) {
+    return Math.min(maximum, Math.max(minimum, Number.parseInt(value, 10) || fallback));
+}
+
+function renderAdventureVariableEditor(adventure) {
+    const wrap = document.createElement("section");
+    wrap.className = "adventureVariablesEditor";
+    const heading = document.createElement("strong");
+    heading.textContent = "Optional variables";
+    wrap.appendChild(heading);
+    const rows = [];
+    (adventure.variables || []).forEach((variable) => {
+        const row = document.createElement("div");
+        row.className = "adventureVariableRow";
+        row.dataset.variableId = variable.id;
+        const name = document.createElement("input");
+        name.type = "text";
+        name.value = variable.name || "";
+        name.placeholder = "Name";
+        const type = document.createElement("select");
+        [["boolean", "Yes / no"], ["number", "Number"]].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = value === variable.type;
+            type.appendChild(option);
+        });
+        const initial = document.createElement("input");
+        initial.type = variable.type === "number" ? "number" : "text";
+        initial.value = variable.type === "number" ? Number(variable.initialValue || 0) : (variable.initialValue ? "true" : "false");
+        initial.placeholder = variable.type === "number" ? "Starting value" : "true / false";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+            row.remove();
+            rows.splice(rows.indexOf(row), 1);
+        });
+        type.addEventListener("change", () => {
+            initial.type = type.value === "number" ? "number" : "text";
+            initial.value = type.value === "number" ? "0" : "false";
+            initial.placeholder = type.value === "number" ? "Starting value" : "true / false";
+        });
+        row.append(name, type, initial, remove);
+        rows.push(row);
+        wrap.appendChild(row);
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "Add variable";
+    add.addEventListener("click", () => {
+        adventure.variables = [...(adventure.variables || []), { id: crypto.randomUUID(), name: "New variable", type: "boolean", initialValue: false }];
+        renderMessages();
+    });
+    wrap.appendChild(add);
+    return {
+        element: wrap,
+        save: () => {
+            adventure.variables = rows.map((row) => {
+                const [name, type, initial] = row.querySelectorAll("input, select");
+                return {
+                    id: row.dataset.variableId,
+                    name: normalizeDisplayName(name.value) || "Variable",
+                    type: type.value,
+                    initialValue: type.value === "number" ? Number(initial.value) || 0 : initial.value.trim().toLowerCase() === "true"
+                };
+            });
+        }
+    };
+}
+
+function renderAdventureEffectsEditor(adventure, effects, headingText) {
+    const wrap = document.createElement("section");
+    wrap.className = "adventureEffectsEditor";
+    const heading = document.createElement("strong");
+    heading.textContent = headingText;
+    wrap.appendChild(heading);
+    const rows = [];
+    const addRow = (effect = {}) => {
+        const row = document.createElement("div");
+        row.className = "adventureEffectRow";
+        const variable = adventureVariableSelect(adventure, effect.variableId, "Choose variable");
+        const mode = document.createElement("select");
+        [["set", "Set"], ["add", "Add (numbers)"]].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = value === effect.mode;
+            mode.appendChild(option);
+        });
+        const value = document.createElement("input");
+        value.type = "text";
+        value.value = effect.value ?? "true";
+        value.placeholder = "true, false, or number";
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+            row.remove();
+            rows.splice(rows.indexOf(row), 1);
+        });
+        row.append(variable, mode, value, remove);
+        rows.push(row);
+        wrap.appendChild(row);
+    };
+    effects.forEach(addRow);
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "Add change";
+    add.disabled = !(adventure.variables || []).length;
+    add.addEventListener("click", () => addRow({ variableId: adventure.variables[0]?.id, mode: "set", value: "true" }));
+    wrap.appendChild(add);
+    return {
+        element: wrap,
+        save: () => rows.map((row) => {
+            const [variable, mode, value] = row.querySelectorAll("select, input");
+            return { variableId: variable.value, mode: mode.value, value: value.value.trim() };
+        }).filter((effect) => effect.variableId)
+    };
+}
+
+function renderAdventureChoiceRuleEditor(adventure, choice) {
+    const wrap = document.createElement("details");
+    wrap.className = "adventureChoiceRules";
+    const summary = document.createElement("summary");
+    summary.textContent = "Condition / variable change";
+    wrap.appendChild(summary);
+    const condition = document.createElement("div");
+    condition.className = "adventureConditionRow";
+    const conditionVariable = adventureVariableSelect(adventure, choice.condition?.variableId, "Always available");
+    const operator = document.createElement("select");
+    [["truthy", "is true"], ["falsy", "is false"], [">=", "number ≥"], ["<=", "number ≤"], ["=", "equals"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === choice.condition?.operator;
+        operator.appendChild(option);
+    });
+    const conditionValue = document.createElement("input");
+    conditionValue.type = "text";
+    conditionValue.value = choice.condition?.value ?? "";
+    conditionValue.placeholder = "Value when needed";
+    condition.append(conditionVariable, operator, conditionValue);
+    const effects = renderAdventureEffectsEditor(adventure, choice.effects || [], "After this choice");
+    wrap.append(condition, effects.element);
+    return {
+        element: wrap,
+        save: () => ({
+            condition: conditionVariable.value ? {
+                variableId: conditionVariable.value,
+                operator: operator.value,
+                value: conditionValue.value.trim()
+            } : null,
+            effects: effects.save()
+        })
+    };
+}
+
+function adventureVariableSelect(adventure, selectedId, emptyLabel) {
+    const select = document.createElement("select");
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = emptyLabel;
+    select.appendChild(empty);
+    (adventure.variables || []).forEach((variable) => {
+        const option = document.createElement("option");
+        option.value = variable.id;
+        option.textContent = variable.name;
+        option.selected = variable.id === selectedId;
+        select.appendChild(option);
+    });
+    return select;
+}
+
+function renderAdventureMedia(adventureId, sceneId, ref) {
+    const wrap = document.createElement("div");
+    wrap.className = "adventureMediaRef";
+    const attachment = findAttachment(ref);
+    if (attachment) {
+        const image = document.createElement("img");
+        const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+        image.src = objectUrl || attachment.dataUrl || "";
+        image.alt = attachment.note || attachment.name || "Adventure media";
+        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        wrap.appendChild(image);
+    } else {
+        wrap.appendChild(emptyPanel("Missing source media"));
+        const repair = document.createElement("button");
+        repair.type = "button";
+        repair.textContent = "Repair media";
+        repair.addEventListener("click", () => pickAdventureMedia(adventureId, sceneId, ref));
+        wrap.appendChild(repair);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove media";
+    remove.addEventListener("click", () => removeAdventureMedia(adventureId, sceneId, ref));
+    wrap.appendChild(remove);
+    return wrap;
+}
+
+function getAdventureSessions(adventureId) {
+    return (state.structure.settings.adventureSessions || []).filter((session) => session.adventureId === adventureId);
+}
+
+function getAdventureSession(adventureId, sessionId = state.activeAdventureSessionId) {
+    const sessions = getAdventureSessions(adventureId);
+    const session = sessions.find((item) => item.id === sessionId)
+        || sessions.find((item) => !item.isTest)
+        || sessions[0];
+    if (!session) return null;
+    if (!session.id) session.id = crypto.randomUUID();
+    if (!session.name) session.name = session.isTest ? "Test run" : "Main run";
+    state.activeAdventureSessionId = session.id;
+    return session;
+}
+
+function resetAdventureSession(session, adventure, startSceneId = null) {
+    session.currentSceneId = startSceneId || adventure.startSceneId || adventure.scenes[0].id;
+    session.history = [];
+    session.randomResults = [];
+    session.timers = {};
+    session.readyScenes = [];
+    session.checkpoints = [];
+    session.inventory = [];
+    session.variables = createAdventureVariables(adventure);
+    session.completed = false;
+    session.updatedAt = new Date().toISOString();
+    applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === session.currentSceneId)?.effects);
+}
+
+async function createAdventureSession(adventureId, { name = "New run", isTest = false, startSceneId = null } = {}) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure?.scenes.length) return null;
+    const session = {
+        id: crypto.randomUUID(),
+        name,
+        isTest,
+        adventureId,
+        currentSceneId: null,
+        history: [],
+        randomResults: [],
+        readyScenes: [],
+        variables: {},
+        completed: false,
+        updatedAt: new Date().toISOString()
+    };
+    resetAdventureSession(session, adventure, startSceneId);
+    state.structure.settings.adventureSessions = [...(state.structure.settings.adventureSessions || []), session];
+    state.activeAdventureSessionId = session.id;
+    await saveAdventures();
+    return session;
+}
+
+async function startAdventurePlay(adventureId, restart = false) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure?.scenes.length) return;
+    let session = getAdventureSession(adventureId);
+    if (!session) {
+        session = await createAdventureSession(adventureId, { name: "Main run" });
+    } else if (restart) {
+        resetAdventureSession(session, adventure);
+        await saveAdventures();
+    } else {
+        ensureAdventureSessionVariables(session, adventure);
+        await saveAdventures();
+    }
+    if (session) await openView("adventurePlay", adventureId);
+}
+
+async function startAdventureTest(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    await createAdventureSession(adventureId, {
+        name: `Test: ${scene.title || "scene"}`,
+        isTest: true,
+        startSceneId: sceneId
+    });
+    await openView("adventurePlay", adventureId);
+}
+
+function renderAdventurePlayer(adventureId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    if (!adventure || !session) {
+        els.messages.appendChild(emptyPanel("Start this adventure from Adventure Studio."));
+        return;
+    }
+
+    const page = document.createElement("section");
+    page.className = "adventurePlayer";
+    const controls = document.createElement("div");
+    controls.className = "adventurePlayerControls";
+    const runPicker = document.createElement("label");
+    runPicker.className = "adventureRunPicker";
+    const runLabel = document.createElement("span");
+    runLabel.textContent = "Saved run";
+    const runSelect = document.createElement("select");
+    getAdventureSessions(adventureId).forEach((item, index) => {
+        if (!item.id) item.id = crypto.randomUUID();
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.selected = item.id === session.id;
+        option.textContent = `${item.name || (item.isTest ? "Test run" : `Run ${index + 1}`)}${item.completed ? " · finished" : ""}`;
+        runSelect.appendChild(option);
+    });
+    runSelect.addEventListener("change", async () => {
+        state.activeAdventureSessionId = runSelect.value;
+        await saveAdventures();
+        render();
+    });
+    runPicker.append(runLabel, runSelect);
+    const newRun = document.createElement("button");
+    newRun.type = "button";
+    newRun.textContent = "New run";
+    newRun.addEventListener("click", async () => {
+        const name = prompt("Name this saved run?", `Run ${getAdventureSessions(adventureId).length + 1}`);
+        if (name === null) return;
+        await createAdventureSession(adventureId, { name: normalizeDisplayName(name) || "New run" });
+        render();
+    });
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.textContent = "Restart";
+    restart.addEventListener("click", () => startAdventurePlay(adventureId, true));
+    const checkpoint = document.createElement("button");
+    checkpoint.type = "button";
+    checkpoint.textContent = "Save checkpoint";
+    checkpoint.addEventListener("click", () => saveAdventureCheckpoint(adventureId));
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => openView("adventureEditor", adventureId));
+    controls.append(runPicker, newRun, restart, checkpoint);
+    if (adventure.metronomeEnabled !== false) {
+        const adventureBpm = clampAdventureNumber(adventure.metronomeBpm, 20, 300, state.structure.settings.metronomeBpm || 120);
+        const metronome = document.createElement("button");
+        metronome.type = "button";
+        metronome.textContent = metronomeTimer ? `Stop metronome (${adventureBpm} BPM)` : `Start metronome (${adventureBpm} BPM)`;
+        metronome.addEventListener("click", async () => {
+            els.metronomeBpm.value = adventureBpm;
+            await toggleMetronome();
+            render();
+        });
+        controls.appendChild(metronome);
+    }
+    controls.append(edit);
+    page.appendChild(controls);
+
+    if (session.isTest) {
+        const testNotice = document.createElement("p");
+        testNotice.className = "adventureTestNotice";
+        testNotice.textContent = "Play-test run: this starts at the selected scene and is saved separately from your normal runs.";
+        page.appendChild(testNotice);
+    }
+
+    ensureAdventureSessionVariables(session, adventure);
+    if (adventure.enableVariables && adventure.showStats && adventure.variables?.length) {
+        page.appendChild(renderAdventureStats(adventure, session));
+    }
+    if (adventure.enableInventory) page.appendChild(renderAdventureInventory(adventureId, session));
+
+    if (session.completed) {
+        clearAdventureAutoAdvance();
+        const ending = document.createElement("section");
+        ending.className = "adventureEnding";
+        ending.innerHTML = "<h3>The end</h3><p>Your progress is saved locally. Restart whenever you want another path.</p>";
+        page.appendChild(ending);
+        page.appendChild(renderAdventureCompletionGallery(adventure, session));
+    } else {
+        const scene = adventure.scenes.find((item) => item.id === session.currentSceneId) || adventure.scenes[0];
+        if (scene.ambience?.theme) page.classList.add(`adventureTheme-${scene.ambience.theme}`);
+        const title = document.createElement("h2");
+        title.textContent = scene.title || "Untitled scene";
+        page.appendChild(title);
+        if (adventure.showProgress !== false) {
+            const progress = document.createElement("p");
+            progress.className = "adventureProgress";
+            progress.textContent = `Scene ${Math.max(1, adventure.scenes.findIndex((item) => item.id === scene.id) + 1)} of ${adventure.scenes.length}`;
+            page.appendChild(progress);
+        }
+        const media = document.createElement("div");
+        media.className = "adventurePlayerMedia";
+        (scene.mediaRefs || []).forEach((ref) => media.appendChild(renderAdventurePlayerMedia(ref, scene.mediaCaptions?.[photoRefKey(ref)] || "")));
+        const randomImage = getAdventureRandomResult(session, scene.id, "image");
+        if (randomImage?.ref) media.appendChild(renderAdventurePlayerMedia(randomImage.ref));
+        if (media.childElementCount) page.appendChild(media);
+        if (scene.text) {
+            const text = document.createElement("p");
+            text.className = "adventurePlayerText";
+            text.textContent = scene.text;
+            page.appendChild(text);
+        }
+        const waitingForReady = Boolean(scene.requireReady) && !(session.readyScenes || []).includes(scene.id);
+        if (waitingForReady) {
+            clearAdventureAutoAdvance();
+            page.appendChild(renderAdventureReadyPrompt(adventureId, scene.id));
+        } else {
+        const automatic = renderAdventureAutoAdvanceNotice(adventure, session, scene);
+        if (automatic) page.appendChild(automatic);
+        if (adventure.enableInventory && scene.inventoryItem && !(session.inventory || []).includes(scene.inventoryItem)) {
+            const collect = document.createElement("button");
+            collect.type = "button";
+            collect.className = "adventureChoiceButton";
+            collect.textContent = `Collect: ${scene.inventoryItem}`;
+            collect.addEventListener("click", () => collectAdventureItem(adventureId, scene.inventoryItem));
+            page.appendChild(collect);
+        }
+        if (scene.ambience?.metronomeBpm || scene.ambience?.timerSeconds) {
+            const ambience = document.createElement("section");
+            ambience.className = "adventureAmbiencePlayer";
+            if (scene.ambience.metronomeBpm) {
+                const metronome = document.createElement("button");
+                metronome.type = "button";
+                metronome.textContent = `Start scene metronome (${scene.ambience.metronomeBpm} BPM)`;
+                metronome.addEventListener("click", () => { els.metronomeBpm.value = scene.ambience.metronomeBpm; startMetronome(); render(); });
+                ambience.appendChild(metronome);
+            }
+            if (scene.ambience.timerSeconds) {
+                const timer = document.createElement("button");
+                timer.type = "button";
+                timer.textContent = `Start scene timer (${formatTimer(scene.ambience.timerSeconds)})`;
+                timer.addEventListener("click", () => { els.timerSeconds.value = scene.ambience.timerSeconds; resetCountdownTimer(); toggleCountdownTimer(); });
+                ambience.appendChild(timer);
+            }
+            page.appendChild(ambience);
+        }
+
+        const randomAction = renderAdventureRandomPlayerAction(adventure, scene, session);
+        if (randomAction) page.appendChild(randomAction);
+        const choices = (scene.choices || []).filter((choice) => choice.label && isAdventureChoiceAvailable(choice, session.variables, adventure));
+        if (scene.randomEvent && scene.randomEvent.type !== "image") {
+            // Dice and weighted events decide the next path before ordinary choices are shown.
+        } else if (scene.isEnding || choices.length === 0) {
+            const end = document.createElement("button");
+            end.type = "button";
+            end.className = "adventureChoiceButton adventurePrimary";
+            end.textContent = "Finish adventure";
+            end.addEventListener("click", () => finishAdventure(adventureId, scene.id));
+            page.appendChild(end);
+        } else {
+            const choiceList = document.createElement("div");
+            choiceList.className = "adventurePlayerChoices";
+            choices.forEach((choice) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "adventureChoiceButton";
+                button.textContent = window.matchMedia("(max-width: 700px)").matches && choice.shortLabel ? choice.shortLabel : choice.label;
+                button.addEventListener("click", () => advanceAdventure(adventureId, scene.id, choice));
+                choiceList.appendChild(button);
+            });
+            page.appendChild(choiceList);
+        }
+        }
+    }
+
+    const history = document.createElement("details");
+    history.className = "adventureHistory";
+    const summary = document.createElement("summary");
+    summary.textContent = `History (${session.history.length})`;
+    history.appendChild(summary);
+    if (session.history.length === 0) history.appendChild(emptyPanel("Your choices will appear here."));
+    session.history.forEach((entry) => {
+        const row = document.createElement("p");
+        const scene = adventure.scenes.find((item) => item.id === entry.sceneId);
+        row.textContent = `${scene?.title || "Scene"}: ${entry.choiceLabel || "Started"}`;
+        history.appendChild(row);
+    });
+    page.appendChild(history);
+    const checkpoints = renderAdventureCheckpoints(adventureId, session);
+    if (checkpoints) page.appendChild(checkpoints);
+    els.messages.appendChild(page);
+}
+
+function renderAdventureReadyPrompt(adventureId, sceneId) {
+    const panel = document.createElement("section");
+    panel.className = "adventureReadyPrompt";
+    const message = document.createElement("p");
+    message.textContent = "Take your time. Continue when you’re ready.";
+    const ready = document.createElement("button");
+    ready.type = "button";
+    ready.className = "adventureChoiceButton adventurePrimary";
+    ready.textContent = "Continue when ready";
+    ready.addEventListener("click", () => markAdventureSceneReady(adventureId, sceneId));
+    panel.append(message, ready);
+    return panel;
+}
+
+async function markAdventureSceneReady(adventureId, sceneId) {
+    const session = getAdventureSession(adventureId);
+    if (!session) return;
+    session.readyScenes = [...new Set([...(session.readyScenes || []), sceneId])];
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+function clearAdventureAutoAdvance() {
+    if (adventureAutoAdvanceTimer) window.clearTimeout(adventureAutoAdvanceTimer);
+    adventureAutoAdvanceTimer = undefined;
+    adventureAutoAdvanceKey = undefined;
+    if (adventureAutoAdvanceStartedMetronome) stopMetronome();
+    adventureAutoAdvanceStartedMetronome = false;
+}
+
+function renderAdventureAutoAdvanceNotice(adventure, session, scene) {
+    const setting = scene.autoAdvance;
+    if (!setting?.mode || !setting.targetSceneId) return null;
+    const target = adventure.scenes.find((item) => item.id === setting.targetSceneId);
+    if (!target) return null;
+    const bpm = clampAdventureNumber(scene.ambience?.metronomeBpm || adventure.metronomeBpm, 20, 300, state.structure.settings.metronomeBpm || 120);
+    const durationMs = setting.mode === "beats"
+        ? Math.round(Number(setting.value || 1) * 60000 / bpm)
+        : Number(setting.value || 1) * 1000;
+    const key = `${session.id}:${scene.id}`;
+    if (adventureAutoAdvanceKey !== key) {
+        clearAdventureAutoAdvance();
+        adventureAutoAdvanceKey = key;
+        if (setting.mode === "beats" && !metronomeTimer) {
+            els.metronomeBpm.value = bpm;
+            startMetronome();
+            adventureAutoAdvanceStartedMetronome = true;
+        }
+        adventureAutoAdvanceTimer = window.setTimeout(async () => {
+            adventureAutoAdvanceTimer = undefined;
+            adventureAutoAdvanceKey = undefined;
+            if (state.activeView.type !== "adventurePlay" || getAdventureSession(adventure.id)?.id !== session.id || session.currentSceneId !== scene.id) return;
+            if (setting.mode === "timer") vibrateAdventureTimer(adventure);
+            await advanceAdventure(adventure.id, scene.id, {
+                label: `${setting.mode === "beats" ? `${setting.value} metronome beats` : `${setting.value}-second ${setting.mode}`} → ${target.title || "next scene"}`,
+                targetSceneId: setting.targetSceneId,
+                effects: []
+            });
+        }, durationMs);
+    }
+    const panel = document.createElement("p");
+    panel.className = "adventureAutoAdvanceNotice";
+    panel.textContent = setting.mode === "beats"
+        ? `Continuing to ${target.title || "the next scene"} after ${setting.value} beat${Number(setting.value) === 1 ? "" : "s"} at ${bpm} BPM.`
+        : `Continuing to ${target.title || "the next scene"} after ${setting.value} second${Number(setting.value) === 1 ? "" : "s"}.`;
+    return panel;
+}
+
+function vibrateAdventureTimer(adventure) {
+    if (adventure.vibrateOnTimer && typeof navigator.vibrate === "function") navigator.vibrate([90, 45, 120]);
+}
+
+function renderAdventureInventory(adventureId, session) {
+    const panel = document.createElement("section");
+    panel.className = "adventureInventory";
+    const title = document.createElement("strong");
+    title.textContent = "Inventory";
+    const items = document.createElement("span");
+    items.textContent = (session.inventory || []).length ? session.inventory.join(" · ") : "Nothing collected";
+    panel.append(title, items);
+    return panel;
+}
+
+async function collectAdventureItem(adventureId, item) {
+    const session = getAdventureSession(adventureId);
+    if (!session || !item) return;
+    session.inventory = [...new Set([...(session.inventory || []), item])];
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+function renderAdventureCheckpoints(adventureId, session) {
+    const entries = session.checkpoints || [];
+    if (entries.length === 0) return null;
+    const panel = document.createElement("section");
+    panel.className = "adventureHistory";
+    const heading = document.createElement("h3");
+    heading.textContent = "Checkpoints";
+    panel.appendChild(heading);
+    entries.forEach((checkpoint) => {
+        const row = document.createElement("div");
+        row.className = "adventureCheckpoint";
+        const label = document.createElement("span");
+        label.textContent = checkpoint.name;
+        const restore = document.createElement("button");
+        restore.type = "button";
+        restore.textContent = "Restore";
+        restore.addEventListener("click", () => restoreAdventureCheckpoint(adventureId, checkpoint.id));
+        row.append(label, restore);
+        panel.appendChild(row);
+    });
+    return panel;
+}
+
+async function saveAdventureCheckpoint(adventureId) {
+    const session = getAdventureSession(adventureId);
+    if (!session) return;
+    const name = normalizeDisplayName(prompt("Checkpoint name?", `Checkpoint ${(session.checkpoints || []).length + 1}`));
+    if (!name) return;
+    const snapshot = structuredClone({ ...session, checkpoints: [] });
+    session.checkpoints = [...(session.checkpoints || []), { id: crypto.randomUUID(), name, createdAt: new Date().toISOString(), snapshot }];
+    await saveAdventures();
+    render();
+}
+
+async function restoreAdventureCheckpoint(adventureId, checkpointId) {
+    const session = getAdventureSession(adventureId);
+    const checkpoint = (session?.checkpoints || []).find((item) => item.id === checkpointId);
+    if (!session || !checkpoint || !confirm(`Restore checkpoint “${checkpoint.name}”?`)) return;
+    const checkpoints = session.checkpoints;
+    Object.assign(session, structuredClone(checkpoint.snapshot), { id: session.id, adventureId, checkpoints, updatedAt: new Date().toISOString() });
+    await saveAdventures();
+    render();
+}
+
+function renderAdventureCompletionGallery(adventure, session) {
+    const panel = document.createElement("section");
+    panel.className = "adventureCompletionGallery";
+    const heading = document.createElement("h3");
+    heading.textContent = "Path gallery";
+    panel.appendChild(heading);
+    const seen = new Set();
+    const refs = [];
+    (session.history || []).forEach((entry) => {
+        const scene = adventure.scenes.find((item) => item.id === entry.sceneId);
+        (scene?.mediaRefs || []).forEach((ref) => {
+            if (!seen.has(photoRefKey(ref))) { seen.add(photoRefKey(ref)); refs.push(ref); }
+        });
+    });
+    (session.randomResults || []).filter((result) => result.ref).forEach((result) => {
+        if (!seen.has(photoRefKey(result.ref))) { seen.add(photoRefKey(result.ref)); refs.push(result.ref); }
+    });
+    if (refs.length === 0) {
+        panel.appendChild(emptyPanel("No images or GIFs were encountered on this path."));
+        return panel;
+    }
+    const grid = document.createElement("div");
+    grid.className = "adventureGalleryGrid";
+    refs.forEach((ref) => grid.appendChild(renderAdventurePlayerMedia(ref)));
+    const slideshow = document.createElement("button");
+    slideshow.type = "button";
+    slideshow.textContent = "Slideshow this path";
+    slideshow.addEventListener("click", () => openSlideshow(refs.map((ref) => {
+        const attachment = findAttachment(ref);
+        return attachment ? { attachment, alt: attachment.note || attachment.name || "Adventure media", channelName: getChannelById(ref.channelId)?.name || "local" } : null;
+    }).filter(Boolean)));
+    panel.append(grid, slideshow);
+    return panel;
+}
+
+function renderAdventureRandomPlayerAction(adventure, scene, session) {
+    const event = scene.randomEvent;
+    if (!event) return null;
+    const panel = document.createElement("section");
+    panel.className = "adventureRandomAction";
+    if (event.type === "dice") {
+        const text = document.createElement("p");
+        text.textContent = `Roll 1d${event.sides || 20}. ${event.threshold || 12}+ succeeds.`;
+        const roll = document.createElement("button");
+        roll.type = "button";
+        roll.className = "adventureChoiceButton adventurePrimary";
+        roll.textContent = "Roll dice";
+        roll.addEventListener("click", () => resolveAdventureDice(adventure.id, scene.id));
+        panel.append(text, roll);
+        return panel;
+    }
+    if (event.type === "quiz") {
+        const question = document.createElement("p");
+        const sourceQuiz = ["source-choice", "source-text"].includes(event.mode);
+        question.textContent = event.question || (event.mode === "source-text"
+            ? "Type the name of the channel this image came from."
+            : event.mode === "source-choice"
+                ? "Which channel did this image come from?"
+                : "Choose an answer.");
+        if (sourceQuiz && event.mediaRef) panel.appendChild(renderAdventurePlayerMedia(event.mediaRef));
+        if (sourceQuiz && (!event.mediaRef || !findAttachment(event.mediaRef))) {
+            question.textContent = "Choose a local quiz image in the scene editor, or repair its missing reference.";
+            panel.appendChild(question);
+            return panel;
+        }
+        const answers = document.createElement("div");
+        answers.className = "adventurePlayerChoices";
+        if (event.mode === "source-text") {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.placeholder = "Channel name";
+            input.autocomplete = "off";
+            const submit = document.createElement("button");
+            submit.type = "button";
+            submit.className = "adventureChoiceButton adventurePrimary";
+            submit.textContent = "Submit answer";
+            submit.addEventListener("click", () => resolveAdventureSourceQuiz(adventure.id, scene.id, input.value));
+            answers.append(input, submit);
+        } else if (event.mode === "source-choice") {
+            const correctChannelId = event.mediaRef?.channelId;
+            const choices = [...new Set([correctChannelId, ...(event.channelIds || [])])]
+                .map((channelId) => getChannelById(channelId))
+                .filter(Boolean)
+                .sort(() => Math.random() - .5);
+            choices.forEach((channel) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "adventureChoiceButton";
+                button.textContent = `# ${channel.name}`;
+                button.addEventListener("click", () => resolveAdventureSourceQuiz(adventure.id, scene.id, channel.id));
+                answers.appendChild(button);
+            });
+            if (choices.length < 2) question.textContent = "Choose the quiz image and at least one extra channel in the editor.";
+        } else {
+        (event.answers || []).filter((answer) => answer.label).forEach((answer) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "adventureChoiceButton";
+            button.textContent = answer.label;
+            button.addEventListener("click", () => resolveAdventureQuiz(adventure.id, scene.id, answer));
+            answers.appendChild(button);
+        });
+            if (answers.childElementCount === 0) question.textContent = "Add quiz answers in the editor first.";
+        }
+        panel.append(question, answers);
+        return panel;
+    }
+    if (event.type === "weighted") {
+        const text = document.createElement("p");
+        text.textContent = "Let chance choose the next path.";
+        const choose = document.createElement("button");
+        choose.type = "button";
+        choose.className = "adventureChoiceButton adventurePrimary";
+        choose.textContent = "Choose random path";
+        choose.addEventListener("click", () => resolveAdventureWeightedPath(adventure.id, scene.id));
+        panel.append(text, choose);
+        return panel;
+    }
+    if (event.type === "wheel") {
+        const text = document.createElement("p");
+        text.textContent = "Spin the wheel to choose the next path. Segment sizes follow their weights.";
+        const wheel = renderAdventureWheel(event.paths || [], scene.id);
+        const spin = document.createElement("button");
+        spin.type = "button";
+        spin.className = "adventureChoiceButton adventurePrimary";
+        spin.textContent = "Spin wheel";
+        spin.addEventListener("click", () => resolveAdventureWheel(adventure.id, scene.id));
+        panel.append(text, wheel, spin);
+        return panel;
+    }
+    if (event.type === "timer") {
+        return renderAdventureTimerAction(adventure, scene, session);
+    }
+    if (getAdventureRandomResult(session, scene.id, "image")) return null;
+    const text = document.createElement("p");
+    const sourceCount = (event.channelIds?.length || 0) + (event.collectionIds?.length || 0);
+    text.textContent = sourceCount ? "Reveal a random local image or GIF." : "Choose image channels or collections in the editor first.";
+    const reveal = document.createElement("button");
+    reveal.type = "button";
+    reveal.className = "adventureChoiceButton";
+    reveal.textContent = "Reveal random image";
+    reveal.disabled = !sourceCount;
+    reveal.addEventListener("click", () => revealAdventureRandomImage(adventure.id, scene.id));
+    panel.append(text, reveal);
+    return panel;
+}
+
+function getAdventureRandomResult(session, sceneId, kind) {
+    return (session.randomResults || []).find((result) => result.sceneId === sceneId && result.kind === kind);
+}
+
+function getAdventureTimerState(session, scene) {
+    session.timers ||= {};
+    if (!session.timers[scene.id]) {
+        const event = scene.randomEvent;
+        const min = Math.min(event.minSeconds || event.seconds || 60, event.maxSeconds || event.seconds || 60);
+        const max = Math.max(event.minSeconds || event.seconds || 60, event.maxSeconds || event.seconds || 60);
+        session.timers[scene.id] = {
+            remaining: event.random ? Math.floor(Math.random() * (max - min + 1)) + min : event.seconds || 60,
+            running: false,
+            completed: false,
+            endsAt: null
+        };
+    }
+    const timer = session.timers[scene.id];
+    if (timer.running && timer.endsAt) timer.remaining = Math.max(0, Math.ceil((timer.endsAt - Date.now()) / 1000));
+    return timer;
+}
+
+function renderAdventureTimerAction(adventure, scene, session) {
+    const timer = getAdventureTimerState(session, scene);
+    if (timer.running && !adventureTimerTick) startAdventureTimerTick(adventure.id, scene.id);
+    const panel = document.createElement("section");
+    panel.className = "adventureRandomAction adventureTimerAction";
+    const display = document.createElement("strong");
+    display.textContent = timer.completed ? "Timer complete" : formatTimer(timer.remaining);
+    const note = document.createElement("p");
+    note.textContent = timer.completed ? "The timer has already taken its completion path." : "Start, pause, or reset this scene timer.";
+    const controls = document.createElement("div");
+    controls.className = "adventureTimerControls";
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "adventureChoiceButton adventurePrimary";
+    start.textContent = timer.running ? "Pause timer" : "Start timer";
+    start.disabled = timer.completed;
+    start.addEventListener("click", () => toggleAdventureTimer(adventure.id, scene.id));
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "adventureChoiceButton";
+    reset.textContent = "Reset timer";
+    reset.disabled = timer.completed;
+    reset.addEventListener("click", () => resetAdventureTimer(adventure.id, scene.id));
+    controls.append(start, reset);
+    panel.append(display, note, controls);
+    return panel;
+}
+
+async function toggleAdventureTimer(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    if (!adventure || !session || !scene) return;
+    const timer = getAdventureTimerState(session, scene);
+    if (timer.running) {
+        timer.remaining = Math.max(0, Math.ceil((timer.endsAt - Date.now()) / 1000));
+        timer.running = false;
+        timer.endsAt = null;
+        if (scene.randomEvent.coupleMetronome) stopMetronome();
+    } else {
+        timer.running = true;
+        timer.endsAt = Date.now() + timer.remaining * 1000;
+        if (scene.randomEvent.coupleMetronome) {
+            els.metronomeBpm.value = clampAdventureNumber(adventure.metronomeBpm, 20, 300, state.structure.settings.metronomeBpm || 120);
+            if (!metronomeTimer) startMetronome();
+        }
+        startAdventureTimerTick(adventureId, sceneId);
+    }
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function resetAdventureTimer(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    if (!adventure || !session || !scene) return;
+    const event = scene.randomEvent;
+    const min = Math.min(event.minSeconds || event.seconds || 60, event.maxSeconds || event.seconds || 60);
+    const max = Math.max(event.minSeconds || event.seconds || 60, event.maxSeconds || event.seconds || 60);
+    session.timers ||= {};
+    session.timers[sceneId] = { remaining: event.random ? Math.floor(Math.random() * (max - min + 1)) + min : event.seconds || 60, running: false, completed: false, endsAt: null };
+    if (adventureTimerTick) window.clearInterval(adventureTimerTick);
+    adventureTimerTick = undefined;
+    if (event.coupleMetronome) stopMetronome();
+    await saveAdventures();
+    render();
+}
+
+function startAdventureTimerTick(adventureId, sceneId) {
+    if (adventureTimerTick) window.clearInterval(adventureTimerTick);
+    adventureTimerTick = window.setInterval(async () => {
+        const adventure = getAdventure(adventureId);
+        const session = getAdventureSession(adventureId);
+        const scene = adventure?.scenes.find((item) => item.id === sceneId);
+        if (!adventure || !session || !scene || state.activeView.type !== "adventurePlay" || session.currentSceneId !== sceneId) {
+            window.clearInterval(adventureTimerTick);
+            adventureTimerTick = undefined;
+            return;
+        }
+        const timer = getAdventureTimerState(session, scene);
+        if (timer.remaining <= 0) {
+            window.clearInterval(adventureTimerTick);
+            adventureTimerTick = undefined;
+            await completeAdventureTimer(adventureId, sceneId);
+            return;
+        }
+        render();
+    }, 250);
+}
+
+async function completeAdventureTimer(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    if (!adventure || !session || !scene) return;
+    const timer = getAdventureTimerState(session, scene);
+    if (timer.completed) return;
+    timer.completed = true;
+    timer.running = false;
+    timer.endsAt = null;
+    if (scene.randomEvent.coupleMetronome) stopMetronome();
+    vibrateAdventureTimer(adventure);
+    const target = scene.randomEvent.completeTargetId;
+    const destination = adventure.scenes.find((item) => item.id === target)?.title || "The end";
+    session.history.push({ sceneId, choiceLabel: `Timer finished → ${destination}`, at: new Date().toISOString() });
+    session.currentSceneId = target || null;
+    session.completed = !target;
+    if (target) applyAdventureEffects(session, adventure, adventure.scenes.find((item) => item.id === target)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+function getAdventureWeightedPath(paths) {
+    const valid = paths.filter((path) => Number(path.weight) > 0);
+    if (valid.length === 0) return null;
+    const total = valid.reduce((sum, path) => sum + Number(path.weight), 0);
+    let value = Math.random() * total;
+    return valid.find((path) => {
+        value -= Number(path.weight);
+        return value < 0;
+    }) || valid.at(-1);
+}
+
+function renderAdventureWheel(paths, sceneId) {
+    const valid = paths.filter((path) => Number(path.weight) > 0);
+    const colors = ["#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245", "#3498db", "#9b59b6", "#e67e22"];
+    const total = valid.reduce((sum, path) => sum + Number(path.weight), 0) || 1;
+    let cursor = 0;
+    const slices = valid.map((path, index) => {
+        const next = cursor + (Number(path.weight) / total) * 360;
+        const slice = `${colors[index % colors.length]} ${cursor}deg ${next}deg`;
+        cursor = next;
+        return slice;
+    });
+    const wrap = document.createElement("div");
+    wrap.className = "adventureWheelWrap";
+    const pointer = document.createElement("span");
+    pointer.className = "adventureWheelPointer";
+    pointer.setAttribute("aria-hidden", "true");
+    const wheel = document.createElement("div");
+    wheel.className = "adventureWheel";
+    wheel.dataset.wheelScene = sceneId;
+    wheel.style.background = slices.length ? `conic-gradient(${slices.join(", ")})` : "#3f4147";
+    const center = document.createElement("span");
+    center.textContent = "SPIN";
+    wheel.appendChild(center);
+    const legend = document.createElement("div");
+    legend.className = "adventureWheelLegend";
+    valid.forEach((path, index) => {
+        const row = document.createElement("span");
+        const target = getAdventure(state.activeView.id)?.scenes.find((scene) => scene.id === path.targetSceneId);
+        row.textContent = `${index + 1}. ${target?.title || "End story"} (${path.weight})`;
+        row.style.setProperty("--wheel-color", colors[index % colors.length]);
+        legend.appendChild(row);
+    });
+    wrap.append(pointer, wheel, legend);
+    return wrap;
+}
+
+async function resolveAdventureDice(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    if (!adventure || !session || !scene?.randomEvent) return;
+    const event = scene.randomEvent;
+    const roll = Math.floor(Math.random() * Math.max(2, event.sides || 20)) + 1;
+    const success = roll >= (event.threshold || 12);
+    const target = success ? event.successTargetId : event.failureTargetId;
+    const destination = adventure.scenes.find((item) => item.id === target)?.title || "The end";
+    session.history.push({ sceneId, choiceLabel: `Rolled ${roll} on d${event.sides || 20}: ${success ? "success" : "failure"} → ${destination}`, at: new Date().toISOString() });
+    session.currentSceneId = target || null;
+    session.completed = !target;
+    if (target) applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === target)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function resolveAdventureWeightedPath(adventureId, sceneId, choiceLabel = "Random path", chosenPath = null) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const paths = adventure?.scenes.find((item) => item.id === sceneId)?.randomEvent?.paths || [];
+    const chosen = chosenPath || getAdventureWeightedPath(paths);
+    if (!adventure || !session || !chosen) return;
+    const destination = adventure.scenes.find((item) => item.id === chosen.targetSceneId)?.title || "The end";
+    session.history.push({ sceneId, choiceLabel: `${choiceLabel} (weight ${chosen.weight}) → ${destination}`, at: new Date().toISOString() });
+    session.currentSceneId = chosen.targetSceneId || null;
+    session.completed = !chosen.targetSceneId;
+    if (chosen.targetSceneId) applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === chosen.targetSceneId)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function resolveAdventureWheel(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const paths = adventure?.scenes.find((item) => item.id === sceneId)?.randomEvent?.paths || [];
+    const chosen = getAdventureWeightedPath(paths);
+    if (!chosen) return;
+    const wheel = document.querySelector(`[data-wheel-scene="${CSS.escape(sceneId)}"]`);
+    if (wheel) {
+        const turns = 1440 + Math.floor(Math.random() * 1080);
+        wheel.classList.remove("isSpinning");
+        wheel.style.setProperty("--wheel-turn", `${turns}deg`);
+        void wheel.offsetWidth;
+        wheel.classList.add("isSpinning");
+        await new Promise((resolve) => window.setTimeout(resolve, 950));
+    }
+    await resolveAdventureWeightedPath(adventureId, sceneId, "Wheel", chosen);
+}
+
+async function resolveAdventureQuiz(adventureId, sceneId, answer) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    if (!adventure || !session) return;
+    const destination = adventure.scenes.find((scene) => scene.id === answer.targetSceneId)?.title || "The end";
+    session.history.push({ sceneId, choiceLabel: `Quiz answer: ${answer.label} → ${destination}`, at: new Date().toISOString() });
+    session.currentSceneId = answer.targetSceneId || null;
+    session.completed = !answer.targetSceneId;
+    if (answer.targetSceneId) applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === answer.targetSceneId)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function resolveAdventureSourceQuiz(adventureId, sceneId, answer) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const event = adventure?.scenes.find((scene) => scene.id === sceneId)?.randomEvent;
+    if (!adventure || !session || !event?.mediaRef) return;
+    const sourceChannel = getChannelById(event.mediaRef.channelId);
+    const normalizedAnswer = String(answer || "").trim().replace(/^#\s*/, "").toLowerCase();
+    const correct = event.mode === "source-text"
+        ? normalizedAnswer === String(sourceChannel?.name || "").trim().toLowerCase()
+        : answer === event.mediaRef.channelId;
+    const targetSceneId = correct ? event.successTargetId : event.failureTargetId;
+    const destination = adventure.scenes.find((scene) => scene.id === targetSceneId)?.title || "The end";
+    const answerLabel = event.mode === "source-text" ? (String(answer).trim() || "No answer") : `#${getChannelById(answer)?.name || "missing"}`;
+    session.history.push({
+        sceneId,
+        choiceLabel: `Source quiz: ${answerLabel} · ${correct ? "correct" : "wrong"} → ${destination}`,
+        at: new Date().toISOString()
+    });
+    session.currentSceneId = targetSceneId || null;
+    session.completed = !targetSceneId;
+    if (targetSceneId) applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === targetSceneId)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function revealAdventureRandomImage(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const session = getAdventureSession(adventureId);
+    const scene = adventure?.scenes.find((item) => item.id === sceneId);
+    const channelIds = scene?.randomEvent?.channelIds || [];
+    const collectionIds = scene?.randomEvent?.collectionIds || [];
+    if (!adventure || !session || channelIds.length + collectionIds.length === 0) return;
+    const candidates = channelIds.flatMap((channelId) => (
+        (state.messagesByChannel.get(channelId) || []).flatMap((message) => (
+            (message.attachments || [])
+                .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+                .map((attachment) => ({ channelId, messageId: message.id, attachmentId: attachment.id }))
+        ))
+    ));
+    collectionIds.forEach((collectionId) => {
+        const collection = getAnyPhotoCollection(collectionId);
+        (collection?.photoRefs || []).forEach((ref) => {
+            if (findAttachment(ref)) candidates.push(ref);
+        });
+    });
+    const ref = randomItem(candidates);
+    if (!ref) {
+        alert("Those channels do not currently contain a local image or GIF.");
+        return;
+    }
+    session.randomResults = [...(session.randomResults || []), { sceneId, kind: "image", ref }];
+    session.history.push({ sceneId, choiceLabel: `Revealed random media from #${getChannelById(ref.channelId)?.name || "channel"}`, at: new Date().toISOString() });
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+function renderAdventurePlayerMedia(ref, caption = "") {
+    const attachment = findAttachment(ref);
+    const wrap = document.createElement("figure");
+    wrap.className = "adventurePlayerMediaItem";
+    if (!attachment) {
+        wrap.appendChild(emptyPanel("Missing source media"));
+        return wrap;
+    }
+    const image = document.createElement("img");
+    const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+    image.src = objectUrl || attachment.dataUrl || "";
+    image.alt = caption || attachment.note || attachment.name || "Adventure media";
+    if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+    image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+    wrap.appendChild(image);
+    if (caption) {
+        const label = document.createElement("figcaption");
+        label.textContent = caption;
+        wrap.appendChild(label);
+    }
+    return wrap;
+}
+
+function createAdventureVariables(adventure) {
+    return Object.fromEntries((adventure.variables || []).map((variable) => [
+        variable.id,
+        variable.type === "number" ? Number(variable.initialValue || 0) : Boolean(variable.initialValue)
+    ]));
+}
+
+function ensureAdventureSessionVariables(session, adventure) {
+    session.variables ||= {};
+    (adventure.variables || []).forEach((variable) => {
+        if (!(variable.id in session.variables)) {
+            session.variables[variable.id] = variable.type === "number" ? Number(variable.initialValue || 0) : Boolean(variable.initialValue);
+        }
+    });
+}
+
+function applyAdventureEffects(session, adventure, effects = []) {
+    if (!adventure.enableVariables) return;
+    ensureAdventureSessionVariables(session, adventure);
+    effects.forEach((effect) => {
+        const variable = (adventure.variables || []).find((item) => item.id === effect.variableId);
+        if (!variable) return;
+        if (variable.type === "number") {
+            const value = Number(effect.value) || 0;
+            session.variables[variable.id] = effect.mode === "add"
+                ? Number(session.variables[variable.id] || 0) + value
+                : value;
+        } else {
+            session.variables[variable.id] = String(effect.value).toLowerCase() === "true";
+        }
+    });
+}
+
+function isAdventureChoiceAvailable(choice, variables = {}, adventure = {}) {
+    if (!adventure.enableVariables) return true;
+    const condition = choice.condition;
+    if (!condition?.variableId) return true;
+    const value = variables[condition.variableId];
+    if (condition.operator === "truthy") return Boolean(value);
+    if (condition.operator === "falsy") return !value;
+    if (condition.operator === ">=") return Number(value) >= Number(condition.value);
+    if (condition.operator === "<=") return Number(value) <= Number(condition.value);
+    return String(value) === String(condition.value);
+}
+
+function renderAdventureStats(adventure, session) {
+    const stats = document.createElement("section");
+    stats.className = "adventureStats";
+    (adventure.variables || []).forEach((variable) => {
+        const row = document.createElement("span");
+        const value = session.variables?.[variable.id];
+        row.textContent = variable.type === "boolean"
+            ? `${variable.name}: ${value ? "Yes" : "No"}`
+            : `${variable.name}: ${Number(value || 0)}`;
+        stats.appendChild(row);
+    });
+    return stats;
+}
+
+async function advanceAdventure(adventureId, sceneId, choice) {
+    const session = getAdventureSession(adventureId);
+    const adventure = getAdventure(adventureId);
+    if (!session || !adventure) return;
+    clearAdventureAutoAdvance();
+    ensureAdventureSessionVariables(session, adventure);
+    applyAdventureEffects(session, adventure, choice.effects);
+    session.history.push({ sceneId, choiceLabel: choice.label, at: new Date().toISOString() });
+    session.currentSceneId = choice.targetSceneId || null;
+    session.completed = !choice.targetSceneId;
+    if (choice.targetSceneId) applyAdventureEffects(session, adventure, adventure.scenes.find((scene) => scene.id === choice.targetSceneId)?.effects);
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function finishAdventure(adventureId, sceneId) {
+    const session = getAdventureSession(adventureId);
+    if (!session) return;
+    clearAdventureAutoAdvance();
+    session.history.push({ sceneId, choiceLabel: "Finished", at: new Date().toISOString() });
+    session.currentSceneId = null;
+    session.completed = true;
+    session.updatedAt = new Date().toISOString();
+    await saveAdventures();
+    render();
+}
+
+async function createAdventure() {
+    const title = normalizeDisplayName(prompt("Adventure title?"));
+    if (!title) return;
+    const firstScene = {
+        id: crypto.randomUUID(),
+        title: "Opening scene",
+        text: "",
+        isEnding: false,
+        mediaRefs: [],
+        choices: []
+    };
+    const adventure = {
+        id: uniqueId("adventure", title),
+        title,
+        description: "",
+        metronomeEnabled: true,
+        metronomeBpm: state.structure.settings.metronomeBpm || 120,
+        scenes: [firstScene],
+        startSceneId: firstScene.id,
+        createdAt: new Date().toISOString()
+    };
+    state.structure.settings.adventures.push(adventure);
+    await saveAdventures();
+    state.activeView = { type: "adventureEditor", id: adventure.id };
+    render();
+}
+
+async function saveAdventures() {
+    await saveStructure(state.structure);
+}
+
+async function deleteAdventure(adventureId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure || !confirm(`Delete ${adventure.title}? This does not delete any source photos or GIFs.`)) return;
+    state.structure.settings.adventures = getAdventures().filter((item) => item.id !== adventureId);
+    state.structure.settings.adventureSessions = (state.structure.settings.adventureSessions || [])
+        .filter((session) => session.adventureId !== adventureId);
+    if (state.activeAdventureSessionId && !getAdventureSessions(adventureId).some((session) => session.id === state.activeAdventureSessionId)) {
+        state.activeAdventureSessionId = null;
+    }
+    await saveAdventures();
+    state.activeView = { type: "adventureStudio", id: "studio" };
+    render();
+}
+
+async function addAdventureScene(adventureId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure) return;
+    adventure.scenes.push({
+        id: crypto.randomUUID(),
+        title: `Scene ${adventure.scenes.length + 1}`,
+        text: "",
+        isEnding: false,
+        mediaRefs: [],
+        choices: []
+    });
+    await saveAdventures();
+    renderMessages();
+}
+
+async function deleteAdventureScene(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure || adventure.scenes.length <= 1 || !confirm("Delete this scene and its choices?")) return;
+    adventure.scenes = adventure.scenes.filter((scene) => scene.id !== sceneId);
+    adventure.scenes.forEach((scene) => {
+        scene.choices = (scene.choices || []).map((choice) => (
+            choice.targetSceneId === sceneId ? { ...choice, targetSceneId: null } : choice
+        ));
+    });
+    if (adventure.startSceneId === sceneId) adventure.startSceneId = adventure.scenes[0].id;
+    await saveAdventures();
+    renderMessages();
+}
+
+async function duplicateAdventureScene(adventureId, sceneId) {
+    const adventure = getAdventure(adventureId);
+    const sceneIndex = adventure?.scenes.findIndex((scene) => scene.id === sceneId) ?? -1;
+    if (!adventure || sceneIndex < 0) return;
+    const original = adventure.scenes[sceneIndex];
+    const copy = structuredClone(original);
+    copy.id = crypto.randomUUID();
+    copy.title = `${original.title || "Untitled scene"} copy`;
+    copy.choices = (copy.choices || []).map((choice) => ({ ...choice, id: crypto.randomUUID() }));
+    if (copy.randomEvent?.type === "quiz") {
+        copy.randomEvent.answers = (copy.randomEvent.answers || []).map((answer) => ({ ...answer, id: crypto.randomUUID() }));
+    }
+    adventure.scenes.splice(sceneIndex + 1, 0, copy);
+    await saveAdventures();
+    renderMessages();
+}
+
+async function pickAdventureMedia(adventureId, sceneId, replaceRef = null) {
+    await ensureServerMessagesLoaded();
+    const options = getAdventureMediaOptions();
+    if (state.structure.settings.thumbnailMediaPicker) {
+        openAdventureMediaPicker(adventureId, sceneId, options, replaceRef);
+        return;
+    }
+    if (options.length === 0) {
+        alert("Add an image or GIF to any server first.");
+        return;
+    }
+    const visible = options.slice(0, 100);
+    const selected = Number.parseInt(prompt(`Add which local image or GIF?\n${visible.map((item, index) => `${index + 1}. ${item.label}`).join("\n")}`), 10);
+    const option = visible[selected - 1];
+    if (!option) return;
+    await applyAdventureMediaReference(adventureId, sceneId, option.ref, replaceRef);
+}
+
+function getAdventureMediaOptions() {
+    return getWorkspaceEntries().flatMap((entry) => (
+        (entry.message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+            .map((attachment) => ({
+                ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id },
+                label: `#${getChannelById(entry.channelId)?.name || "channel"} · ${attachment.note || attachment.name || "image"}`
+            }))
+    ));
+}
+
+async function applyAdventureMediaReference(adventureId, sceneId, ref, replaceRef = null) {
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    if (replaceRef) {
+        scene.mediaRefs = (scene.mediaRefs || []).map((item) => photoRefKey(item) === photoRefKey(replaceRef) ? ref : item);
+    } else {
+        const exists = (scene.mediaRefs || []).some((item) => photoRefKey(item) === photoRefKey(ref));
+        if (!exists) scene.mediaRefs = [...(scene.mediaRefs || []), ref];
+    }
+    await saveAdventures();
+    renderMessages();
+}
+
+function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef) {
+    if (options.length === 0) {
+        alert("Add an image or GIF to any server first.");
+        return;
+    }
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard";
+    const heading = document.createElement("h3");
+    heading.textContent = replaceRef ? "Repair media reference" : "Choose local image or GIF";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search filename, note, or channel";
+    const grid = document.createElement("div");
+    grid.className = "adventureMediaPickerGrid";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Close";
+    const dismiss = () => modal.remove();
+    close.addEventListener("click", dismiss);
+    const renderOptions = () => {
+        grid.innerHTML = "";
+        const query = search.value.trim().toLowerCase();
+        options.filter((option) => !query || option.label.toLowerCase().includes(query)).slice(0, 120).forEach((option) => {
+            const attachment = findAttachment(option.ref);
+            if (!attachment) return;
+            const button = document.createElement("button");
+            button.type = "button";
+            const image = document.createElement("img");
+            const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+            image.src = objectUrl || attachment.dataUrl || "";
+            image.alt = option.label;
+            if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+            const label = document.createElement("span");
+            label.textContent = option.label;
+            button.append(image, label);
+            button.addEventListener("click", async () => {
+                dismiss();
+                await applyAdventureMediaReference(adventureId, sceneId, option.ref, replaceRef);
+            });
+            grid.appendChild(button);
+        });
+    };
+    search.addEventListener("input", renderOptions);
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    card.append(heading, search, grid, close);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    renderOptions();
+}
+
+async function removeAdventureMedia(adventureId, sceneId, ref) {
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!scene) return;
+    scene.mediaRefs = (scene.mediaRefs || []).filter((item) => photoRefKey(item) !== photoRefKey(ref));
+    await saveAdventures();
+    renderMessages();
+}
+
+async function setAdventureRandomImageSources(adventureId, sceneId) {
+    await ensureServerMessagesLoaded();
+    const channels = getAllChannels().filter((channel) => (
+        (state.messagesByChannel.get(channel.id) || []).some((message) => (
+            message.attachments?.some((attachment) => attachment.type?.startsWith("image/"))
+        ))
+    ));
+    if (channels.length === 0) {
+        alert("Add images or GIFs to a channel first.");
+        return;
+    }
+    const collections = state.structure.settings.photoCollections || [];
+    const sources = [
+        ...channels.map((channel) => ({ type: "channel", id: channel.id, label: `#${channel.name} (${getChannelServer(channel.id)?.name || "server"})` })),
+        ...collections.map((collection) => ({ type: "collection", id: collection.id, label: `@${collection.name} (collection)` }))
+    ];
+    const response = prompt(`Choose image channels or collections by number (separate multiple numbers with commas):\n${sources.map((source, index) => `${index + 1}. ${source.label}`).join("\n")}`);
+    if (response === null) return;
+    const selected = response.split(",")
+        .map((value) => sources[Number.parseInt(value.trim(), 10) - 1])
+        .filter(Boolean);
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!scene?.randomEvent || scene.randomEvent.type !== "image") return;
+    scene.randomEvent.channelIds = [...new Set(selected.filter((item) => item.type === "channel").map((item) => item.id))];
+    scene.randomEvent.collectionIds = [...new Set(selected.filter((item) => item.type === "collection").map((item) => item.id))];
+    await saveAdventures();
+    renderMessages();
+}
+
+function findAttachment(ref) {
+    const message = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
+    return message?.attachments.find((attachment) => attachment.id === ref.attachmentId) || null;
 }
 
 function renderMessage(message, sourceChannelId = state.activeChannelId) {
@@ -1106,11 +3966,12 @@ function renderMessage(message, sourceChannelId = state.activeChannelId) {
 }
 
 function renderAttachments(attachments, message, channelId) {
-    return attachments.map((attachment) => {
+    return attachments.filter(shouldShowAttachment).map((attachment) => {
         if (attachment.type?.startsWith("image/")) {
             const figure = document.createElement("figure");
             figure.className = "imageAttachment";
-            figure.title = "Click to view fullscreen";
+            figure.classList.toggle("isFavorite", Boolean(attachment.favorite));
+            figure.title = "Tap to view fullscreen · hold for actions";
 
             const image = document.createElement("img");
             const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
@@ -1143,8 +4004,17 @@ function renderAttachments(attachments, message, channelId) {
                 addPhotosToCollection([{ channelId, messageId: message.id, attachmentId: attachment.id }]);
             });
 
+            const viewerItems = [{ attachment, alt: image.alt, channelName: getChannelById(channelId)?.name || "channel", date: message.createdAt, tags: message.tags || [] }];
             figure.append(image, caption, noteButton, collectionButton);
-            figure.addEventListener("click", () => requestFullscreenForElement(figure));
+            bindPhotoQuickActions(figure, { message, attachment, channelId, viewerItems, alt: image.alt });
+            figure.addEventListener("click", (event) => {
+                if (figure.dataset.longPressHandled === "1") {
+                    figure.dataset.longPressHandled = "";
+                    event.preventDefault();
+                    return;
+                }
+                openImageViewer(attachment, image.alt, viewerItems);
+            });
             return figure;
         }
 
@@ -1167,6 +4037,8 @@ function renderComposer() {
     els.randomChannelBtn.disabled = !state.ready || !state.isUnlocked || allChannels().length === 0;
     els.randomMessageBtn.disabled = !enabled;
     els.randomPhotoArrayBtn.disabled = !state.ready || !state.isUnlocked;
+    els.randomMetronomeBtn.disabled = !state.ready || !state.isUnlocked;
+    els.metronomeToggleBtn.disabled = !state.ready || !state.isUnlocked;
 
     els.attachmentPreview.innerHTML = "";
     state.draftAttachments.forEach((attachment) => {
@@ -1287,6 +4159,10 @@ function getServerCollections(server = getActiveServer()) {
     return (state.structure.settings.photoCollections || []).filter((collection) => collection.serverId === server?.id);
 }
 
+function getAnyPhotoCollection(collectionId) {
+    return (state.structure.settings.photoCollections || []).find((collection) => collection.id === collectionId);
+}
+
 function getCollectionEntries(collectionId) {
     const collection = getServerCollections().find((item) => item.id === collectionId);
     return (collection?.photoRefs || []).flatMap((ref) => {
@@ -1376,6 +4252,7 @@ async function sendMessage() {
     render();
 
     await saveChannelMessages(state.activeChannelId, messages);
+    els.messages.scrollTop = els.messages.scrollHeight;
     refreshStorageEstimate();
 }
 
@@ -1709,6 +4586,8 @@ async function moveInboxMessage(messageId, inboxChannelId) {
 }
 
 async function selectRandomChannel() {
+    await maybeRandomizeMetronome("channel");
+    await maybeRandomizeTimer("channel");
     const channels = getAllChannels();
     const channel = randomItem(channels);
     if (!channel) return;
@@ -1726,6 +4605,8 @@ async function selectRandomMessageInActiveChannel() {
 }
 
 async function selectRandomMessage(channelId) {
+    await maybeRandomizeMetronome("message");
+    await maybeRandomizeTimer("message");
     if (!channelId) return;
 
     if (channelId !== state.activeChannelId) {
@@ -1750,14 +4631,16 @@ async function selectRandomMessage(channelId) {
 }
 
 async function createRandomPhotoArray() {
+    await maybeRandomizeMetronome("array");
+    await maybeRandomizeTimer("array");
     const requested = Number.parseInt(els.randomPhotoCount.value, 10);
     const count = Math.min(Math.max(requested || 9, 1), 500);
     els.randomPhotoCount.value = count;
 
     await ensureServerMessagesLoaded();
-    const candidates = getWorkspaceEntries().flatMap((entry) => (
+    const candidates = getServerEntries().flatMap((entry) => (
         (entry.message.attachments || [])
-            .filter((attachment) => attachment.type?.startsWith("image/"))
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
             .map((attachment) => ({ channelId: entry.channelId, message: entry.message, attachment }))
     ));
 
@@ -1885,6 +4768,25 @@ function hydrateSettingsControls() {
     els.randomMax.value = state.structure.settings.randomMax;
     els.photoGridToggle.checked = Boolean(state.structure.settings.photoGridEnabled);
     els.embedControlsToggle.checked = Boolean(state.structure.settings.discordEmbedControls);
+    els.thumbnailMediaPickerToggle.checked = state.structure.settings.thumbnailMediaPicker !== false;
+    els.showHiddenPhotosToggle.checked = Boolean(state.structure.settings.showHiddenPhotos);
+    els.metronomeBpm.value = state.structure.settings.metronomeBpm;
+    els.metronomeMin.value = state.structure.settings.metronomeMin;
+    els.metronomeMax.value = state.structure.settings.metronomeMax;
+    els.randomBpmOnMessage.checked = Boolean(state.structure.settings.randomBpmOnMessage);
+    els.randomBpmOnChannel.checked = Boolean(state.structure.settings.randomBpmOnChannel);
+    els.randomBpmOnArray.checked = Boolean(state.structure.settings.randomBpmOnArray);
+    els.timerSeconds.value = state.structure.settings.timerSeconds;
+    els.timerMinSeconds.value = state.structure.settings.timerMinSeconds;
+    els.timerMaxSeconds.value = state.structure.settings.timerMaxSeconds;
+    els.timerCoupleMetronome.checked = Boolean(state.structure.settings.timerCoupleMetronome);
+    els.timerRepeatWithRandomBpm.checked = Boolean(state.structure.settings.timerRepeatWithRandomBpm);
+    els.randomTimerOnMessage.checked = Boolean(state.structure.settings.randomTimerOnMessage);
+    els.randomTimerOnChannel.checked = Boolean(state.structure.settings.randomTimerOnChannel);
+    els.randomTimerOnArray.checked = Boolean(state.structure.settings.randomTimerOnArray);
+    renderMetronome();
+    if (!countdownTimer) countdownRemaining = state.structure.settings.timerSeconds;
+    renderCountdownTimer();
 }
 
 async function togglePhotoGrid() {
@@ -1897,6 +4799,213 @@ async function toggleEmbedControls() {
     state.structure.settings.discordEmbedControls = els.embedControlsToggle.checked;
     await saveStructure(state.structure);
     renderMessages();
+}
+
+async function toggleThumbnailMediaPicker() {
+    state.structure.settings.thumbnailMediaPicker = els.thumbnailMediaPickerToggle.checked;
+    await saveStructure(state.structure);
+}
+
+async function toggleShowHiddenPhotos() {
+    state.structure.settings.showHiddenPhotos = els.showHiddenPhotosToggle.checked;
+    await saveStructure(state.structure);
+    renderMessages();
+}
+
+function getMetronomeSettings() {
+    const clamp = (value, fallback) => Math.min(300, Math.max(20, Number.parseInt(value, 10) || fallback));
+    return {
+        bpm: clamp(els.metronomeBpm.value, DEFAULT_STRUCTURE.settings.metronomeBpm),
+        min: clamp(els.metronomeMin.value, DEFAULT_STRUCTURE.settings.metronomeMin),
+        max: clamp(els.metronomeMax.value, DEFAULT_STRUCTURE.settings.metronomeMax)
+    };
+}
+
+async function saveMetronomeSettings() {
+    const settings = getMetronomeSettings();
+    state.structure.settings.metronomeBpm = settings.bpm;
+    state.structure.settings.metronomeMin = settings.min;
+    state.structure.settings.metronomeMax = settings.max;
+    els.metronomeBpm.value = settings.bpm;
+    els.metronomeMin.value = settings.min;
+    els.metronomeMax.value = settings.max;
+    await saveStructure(state.structure);
+    if (metronomeTimer) startMetronome();
+}
+
+async function selectRandomMetronomeBpm() {
+    const settings = getMetronomeSettings();
+    const min = Math.min(settings.min, settings.max);
+    const max = Math.max(settings.min, settings.max);
+    els.metronomeBpm.value = Math.floor(Math.random() * (max - min + 1)) + min;
+    await saveMetronomeSettings();
+}
+
+async function maybeRandomizeMetronome(trigger) {
+    const setting = {
+        message: "randomBpmOnMessage",
+        channel: "randomBpmOnChannel",
+        array: "randomBpmOnArray"
+    }[trigger];
+    if (setting && state.structure.settings[setting]) {
+        await selectRandomMetronomeBpm();
+    }
+}
+
+async function saveMetronomeTriggers() {
+    state.structure.settings.randomBpmOnMessage = els.randomBpmOnMessage.checked;
+    state.structure.settings.randomBpmOnChannel = els.randomBpmOnChannel.checked;
+    state.structure.settings.randomBpmOnArray = els.randomBpmOnArray.checked;
+    await saveStructure(state.structure);
+}
+
+async function toggleMetronome() {
+    if (metronomeTimer) {
+        stopMetronome();
+        return;
+    }
+    await saveMetronomeSettings();
+    startMetronome();
+}
+
+function startMetronome() {
+    stopMetronome(false);
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+        els.metronomeStatus.textContent = "Audio unavailable";
+        return;
+    }
+    metronomeContext ||= new AudioContextClass();
+    metronomeContext.resume().catch(() => {});
+    const period = 60000 / getMetronomeSettings().bpm;
+    playMetronomeClick();
+    metronomeTimer = window.setInterval(playMetronomeClick, period);
+    renderMetronome();
+}
+
+function stopMetronome(render = true) {
+    if (metronomeTimer) window.clearInterval(metronomeTimer);
+    metronomeTimer = undefined;
+    if (render) renderMetronome();
+}
+
+function playMetronomeClick() {
+    if (!metronomeContext) return;
+    const oscillator = metronomeContext.createOscillator();
+    const gain = metronomeContext.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 1000;
+    gain.gain.setValueAtTime(0.11, metronomeContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, metronomeContext.currentTime + 0.045);
+    oscillator.connect(gain).connect(metronomeContext.destination);
+    oscillator.start();
+    oscillator.stop(metronomeContext.currentTime + 0.05);
+}
+
+function renderMetronome() {
+    const running = Boolean(metronomeTimer);
+    els.metronomeToggleBtn.textContent = running ? "Stop" : "Start";
+    els.metronomeStatus.textContent = running ? `${els.metronomeBpm.value || 120} BPM` : "Stopped";
+}
+
+function getTimerSettings() {
+    const clamp = (value, fallback) => Math.min(7200, Math.max(1, Number.parseInt(value, 10) || fallback));
+    return {
+        seconds: clamp(els.timerSeconds.value, DEFAULT_STRUCTURE.settings.timerSeconds),
+        min: clamp(els.timerMinSeconds.value, DEFAULT_STRUCTURE.settings.timerMinSeconds),
+        max: clamp(els.timerMaxSeconds.value, DEFAULT_STRUCTURE.settings.timerMaxSeconds)
+    };
+}
+
+function formatTimer(seconds) {
+    const value = Math.max(0, Math.ceil(Number(seconds) || 0));
+    return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+}
+
+async function saveTimerSettings() {
+    const settings = getTimerSettings();
+    state.structure.settings.timerSeconds = settings.seconds;
+    state.structure.settings.timerMinSeconds = settings.min;
+    state.structure.settings.timerMaxSeconds = settings.max;
+    els.timerSeconds.value = settings.seconds;
+    els.timerMinSeconds.value = settings.min;
+    els.timerMaxSeconds.value = settings.max;
+    if (!countdownTimer) countdownRemaining = settings.seconds;
+    await saveStructure(state.structure);
+    renderCountdownTimer();
+}
+
+async function selectRandomTimer() {
+    const settings = getTimerSettings();
+    const min = Math.min(settings.min, settings.max);
+    const max = Math.max(settings.min, settings.max);
+    els.timerSeconds.value = Math.floor(Math.random() * (max - min + 1)) + min;
+    await saveTimerSettings();
+}
+
+async function maybeRandomizeTimer(trigger) {
+    const setting = { message: "randomTimerOnMessage", channel: "randomTimerOnChannel", array: "randomTimerOnArray" }[trigger];
+    if (setting && state.structure.settings[setting]) await selectRandomTimer();
+}
+
+async function saveTimerTriggers() {
+    state.structure.settings.randomTimerOnMessage = els.randomTimerOnMessage.checked;
+    state.structure.settings.randomTimerOnChannel = els.randomTimerOnChannel.checked;
+    state.structure.settings.randomTimerOnArray = els.randomTimerOnArray.checked;
+    await saveStructure(state.structure);
+}
+
+async function saveTimerCoupling() {
+    state.structure.settings.timerCoupleMetronome = els.timerCoupleMetronome.checked;
+    state.structure.settings.timerRepeatWithRandomBpm = els.timerRepeatWithRandomBpm.checked;
+    await saveStructure(state.structure);
+}
+
+async function toggleCountdownTimer() {
+    if (countdownTimer) {
+        window.clearInterval(countdownTimer);
+        countdownTimer = undefined;
+        countdownRemaining = Math.max(0, Math.ceil((countdownEndsAt - Date.now()) / 1000));
+        countdownEndsAt = null;
+        if (state.structure.settings.timerCoupleMetronome) stopMetronome();
+    } else {
+        if (countdownRemaining <= 0) countdownRemaining = getTimerSettings().seconds;
+        countdownEndsAt = Date.now() + countdownRemaining * 1000;
+        countdownTimer = window.setInterval(() => {
+            countdownRemaining = Math.max(0, Math.ceil((countdownEndsAt - Date.now()) / 1000));
+            if (countdownRemaining <= 0) {
+                if (state.structure.settings.timerCoupleMetronome && state.structure.settings.timerRepeatWithRandomBpm) {
+                    void selectRandomMetronomeBpm().then(() => {
+                        if (countdownTimer && metronomeTimer) startMetronome();
+                    });
+                    countdownRemaining = getTimerSettings().seconds;
+                    countdownEndsAt = Date.now() + countdownRemaining * 1000;
+                } else {
+                    window.clearInterval(countdownTimer);
+                    countdownTimer = undefined;
+                    countdownEndsAt = null;
+                    if (state.structure.settings.timerCoupleMetronome) stopMetronome();
+                }
+            }
+            renderCountdownTimer();
+        }, 250);
+        if (state.structure.settings.timerCoupleMetronome && !metronomeTimer) startMetronome();
+    }
+    renderCountdownTimer();
+}
+
+function resetCountdownTimer() {
+    if (countdownTimer) window.clearInterval(countdownTimer);
+    countdownTimer = undefined;
+    countdownEndsAt = null;
+    if (state.structure.settings.timerCoupleMetronome) stopMetronome();
+    countdownRemaining = getTimerSettings().seconds;
+    renderCountdownTimer();
+}
+
+function renderCountdownTimer() {
+    els.timerStatus.textContent = formatTimer(countdownTimer ? Math.ceil((countdownEndsAt - Date.now()) / 1000) : countdownRemaining);
+    els.timerToggleBtn.textContent = countdownTimer ? "Pause" : "Start";
 }
 
 function createMessage(text, attachments) {
@@ -2080,6 +5189,135 @@ async function requestPersistentStorage() {
     } catch {
         // Browsers may deny persistence silently; IndexedDB still remains local to this device.
     }
+}
+
+function openPhotoCompare(refs) {
+    const items = refs.map((ref) => {
+        const attachment = findAttachment(ref);
+        const message = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
+        return attachment ? { attachment, alt: attachment.note || attachment.name || "Local photo", channelName: getChannelById(ref.channelId)?.name || "channel", date: message?.createdAt, tags: message?.tags || [] } : null;
+    }).filter(Boolean);
+    if (items.length < 2) return;
+    const modal = document.createElement("div");
+    modal.className = "photoCompare";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Close compare";
+    close.addEventListener("click", () => modal.remove());
+    const grid = document.createElement("div");
+    grid.className = "photoCompareGrid";
+    items.forEach((item, index) => {
+        const image = document.createElement("img");
+        const objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
+        image.src = objectUrl || item.attachment.dataUrl || "";
+        image.alt = item.alt;
+        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        image.addEventListener("click", () => openImageViewer(item.attachment, item.alt, items, index));
+        grid.appendChild(image);
+    });
+    modal.append(close, grid);
+    document.body.appendChild(modal);
+}
+
+function openSlideshow(items) {
+    if (!items?.length) return;
+    const modal = document.createElement("div");
+    modal.className = "slideshowViewer";
+    let index = 0;
+    let paused = false;
+    let objectUrl = "";
+    const image = document.createElement("img");
+    const caption = document.createElement("p");
+    const controls = document.createElement("div");
+    const close = document.createElement("button");
+    close.type = "button"; close.textContent = "Close";
+    const pause = document.createElement("button");
+    pause.type = "button"; pause.textContent = "Pause";
+    const previous = document.createElement("button");
+    previous.type = "button"; previous.textContent = "Previous";
+    const next = document.createElement("button");
+    next.type = "button"; next.textContent = "Next";
+    const show = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        const item = items[index];
+        objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
+        image.src = objectUrl || item.attachment.dataUrl || "";
+        image.alt = item.alt;
+        caption.textContent = `${index + 1} / ${items.length} · ${item.alt}`;
+    };
+    const change = (offset) => { index = (index + offset + items.length) % items.length; show(); };
+    const interval = window.setInterval(() => { if (!paused) change(1); }, 4000);
+    const dismiss = () => { window.clearInterval(interval); if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
+    close.addEventListener("click", dismiss);
+    pause.addEventListener("click", () => { paused = !paused; pause.textContent = paused ? "Play" : "Pause"; });
+    previous.addEventListener("click", () => change(-1));
+    next.addEventListener("click", () => change(1));
+    image.addEventListener("click", () => openImageViewer(items[index].attachment, items[index].alt, items, index));
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    controls.append(close, previous, pause, next);
+    modal.append(controls, image, caption);
+    document.body.appendChild(modal);
+    show();
+}
+
+function openImageViewer(attachment, altText = "Local photo", items = null, initialIndex = 0) {
+    const gallery = items?.length ? items : [{ attachment, alt: altText }];
+    let index = Math.max(0, Math.min(initialIndex, gallery.length - 1));
+    const viewer = document.createElement("div");
+    viewer.className = "imageViewer";
+    viewer.setAttribute("role", "dialog");
+    viewer.setAttribute("aria-modal", "true");
+    viewer.setAttribute("aria-label", "Image preview");
+    const image = document.createElement("img");
+    let objectUrl = "";
+    let zoom = 1;
+    let panX = 0;
+    let panY = 0;
+    const controls = document.createElement("div");
+    controls.className = "imageViewerControls";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Close";
+    const dismiss = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        viewer.remove();
+    };
+    const draw = () => { image.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`; };
+    const show = () => {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        const item = gallery[index];
+        objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
+        image.src = objectUrl || item.attachment.dataUrl || "";
+        image.alt = item.alt || item.attachment.name || "Local photo";
+        zoom = 1; panX = 0; panY = 0; draw();
+        info.textContent = [`# ${item.channelName || "local"}`, item.date ? formatDate(item.date) : "", item.tags?.length ? item.tags.map((tag) => `#${tag}`).join(" ") : ""].filter(Boolean).join(" · ");
+        count.textContent = gallery.length > 1 ? `${index + 1} / ${gallery.length}` : "";
+    };
+    close.addEventListener("click", dismiss);
+    viewer.addEventListener("click", (event) => {
+        if (event.target === viewer) dismiss();
+    });
+    const previous = document.createElement("button");
+    previous.type = "button"; previous.textContent = "Previous"; previous.disabled = gallery.length < 2;
+    previous.addEventListener("click", () => { index = (index - 1 + gallery.length) % gallery.length; show(); });
+    const next = document.createElement("button");
+    next.type = "button"; next.textContent = "Next"; next.disabled = gallery.length < 2;
+    next.addEventListener("click", () => { index = (index + 1) % gallery.length; show(); });
+    const zoomIn = document.createElement("button");
+    zoomIn.type = "button"; zoomIn.textContent = "+"; zoomIn.addEventListener("click", () => { zoom = Math.min(4, zoom + .5); draw(); });
+    const zoomOut = document.createElement("button");
+    zoomOut.type = "button"; zoomOut.textContent = "−"; zoomOut.addEventListener("click", () => { zoom = Math.max(1, zoom - .5); if (zoom === 1) { panX = 0; panY = 0; } draw(); });
+    const count = document.createElement("output");
+    const info = document.createElement("p"); info.className = "imageViewerInfo";
+    controls.append(close, previous, next, zoomOut, zoomIn, count);
+    let startX = 0; let startY = 0; let startPanX = 0; let startPanY = 0;
+    image.addEventListener("pointerdown", (event) => { startX = event.clientX; startY = event.clientY; startPanX = panX; startPanY = panY; image.setPointerCapture(event.pointerId); });
+    image.addEventListener("pointermove", (event) => { if (!image.hasPointerCapture(event.pointerId)) return; const dx = event.clientX - startX; const dy = event.clientY - startY; if (zoom > 1) { panX = startPanX + dx; panY = startPanY + dy; draw(); } });
+    image.addEventListener("pointerup", (event) => { const dx = event.clientX - startX; if (zoom === 1 && Math.abs(dx) > 70 && gallery.length > 1) { index = dx < 0 ? (index + 1) % gallery.length : (index - 1 + gallery.length) % gallery.length; show(); } });
+    image.addEventListener("dblclick", () => { zoom = zoom === 1 ? 2 : 1; panX = 0; panY = 0; draw(); });
+    viewer.append(controls, image, info);
+    document.body.appendChild(viewer);
+    show();
 }
 
 function requestFullscreenForElement(element) {
