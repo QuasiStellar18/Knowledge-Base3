@@ -58,6 +58,7 @@ const state = {
     messagesByChannel: new Map(),
     search: "",
     draftAttachments: [],
+    draftLinkedPhotoRefs: [],
     storageText: "Storage: checking",
     randomNumberText: "",
     randomText: "",
@@ -68,6 +69,7 @@ const state = {
     loadingChannelId: null,
     selectedPhotoRefs: [],
     focusMode: false,
+    focusSessionCollectionId: null,
     activeAdventureSessionId: null,
     focusAdventureSceneId: null
 };
@@ -102,11 +104,14 @@ const els = {
     newCategoryBtn: document.getElementById("newCategoryBtn"),
     deleteChannelBtn: document.getElementById("deleteChannelBtn"),
     randomChannelBtn: document.getElementById("randomChannelBtn"),
+    randomServerMessageBtn: document.getElementById("randomServerMessageBtn"),
     randomMessageBtn: document.getElementById("randomMessageBtn"),
+    comparePhotosBtn: document.getElementById("comparePhotosBtn"),
     saveRandomArrayBtn: document.getElementById("saveRandomArrayBtn"),
     lockWorkspaceBtn: document.getElementById("lockWorkspaceBtn"),
     imageInput: document.getElementById("imageInput"),
     attachImageBtn: document.getElementById("attachImageBtn"),
+    linkPhotosBtn: document.getElementById("linkPhotosBtn"),
     attachmentPreview: document.getElementById("attachmentPreview"),
     searchInput: document.getElementById("searchInput"),
     randomMin: document.getElementById("randomMin"),
@@ -141,6 +146,9 @@ const els = {
     timerToggleBtn: document.getElementById("timerToggleBtn"),
     timerResetBtn: document.getElementById("timerResetBtn"),
     timerStatus: document.getElementById("timerStatus"),
+    chatTimerQuick: document.getElementById("chatTimerQuick"),
+    chatTimerStatus: document.getElementById("chatTimerStatus"),
+    chatTimerProgress: document.getElementById("chatTimerProgress"),
     timerCoupleMetronome: document.getElementById("timerCoupleMetronome"),
     timerRepeatWithRandomBpm: document.getElementById("timerRepeatWithRandomBpm"),
     randomTimerOnMessage: document.getElementById("randomTimerOnMessage"),
@@ -198,6 +206,7 @@ function bindEvents() {
 
     els.noteInput.addEventListener("paste", handlePaste);
     els.attachImageBtn.addEventListener("click", () => els.imageInput.click());
+    els.linkPhotosBtn.addEventListener("click", openLinkedPhotoPicker);
     els.imageInput.addEventListener("change", () => addImageFiles([...els.imageInput.files]));
 
     els.newServerBtn.addEventListener("click", createServer);
@@ -206,7 +215,9 @@ function bindEvents() {
     els.newChannelBtn.addEventListener("click", createChannel);
     els.deleteChannelBtn.addEventListener("click", deleteActiveChannel);
     els.randomChannelBtn.addEventListener("click", selectRandomChannel);
-    els.randomMessageBtn.addEventListener("click", selectRandomMessageInActiveChannel);
+    els.randomServerMessageBtn.addEventListener("click", selectRandomMessageInAnyChannel);
+    els.randomMessageBtn.addEventListener("click", selectRandomMessageForCurrentView);
+    els.comparePhotosBtn.addEventListener("click", openComparePicker);
     els.saveRandomArrayBtn.addEventListener("click", saveRandomPhotoArray);
     els.lockWorkspaceBtn.addEventListener("click", lockWorkspace);
     els.unlockForm.addEventListener("submit", unlockWorkspace);
@@ -238,6 +249,7 @@ function bindEvents() {
     els.randomTimerBtn.addEventListener("click", selectRandomTimer);
     els.timerToggleBtn.addEventListener("click", toggleCountdownTimer);
     els.timerResetBtn.addEventListener("click", resetCountdownTimer);
+    els.chatTimerQuick.addEventListener("click", toggleCountdownTimer);
     els.timerCoupleMetronome.addEventListener("change", saveTimerCoupling);
     els.timerRepeatWithRandomBpm.addEventListener("change", saveTimerCoupling);
     [els.randomTimerOnMessage, els.randomTimerOnChannel, els.randomTimerOnArray]
@@ -415,7 +427,12 @@ async function loadActiveChannelMessages() {
     if (!state.activeChannelId) return;
 
     const rawMessages = await getChannelMessages(state.activeChannelId);
-    state.messagesByChannel.set(state.activeChannelId, normalizeMessages(rawMessages));
+    const messages = normalizeMessages(rawMessages);
+    state.messagesByChannel.set(state.activeChannelId, messages);
+    const linkedChannels = [...new Set(messages.flatMap((message) => (message.linkedPhotoRefs || []).map((ref) => ref.channelId)).filter((channelId) => channelId && channelId !== state.activeChannelId && !state.messagesByChannel.has(channelId)))];
+    await Promise.all(linkedChannels.map(async (channelId) => {
+        state.messagesByChannel.set(channelId, normalizeMessages(await getChannelMessages(channelId)));
+    }));
     state.visibleMessageLimit = 100;
 }
 
@@ -432,7 +449,8 @@ function normalizeMessages(messages) {
             pinned: Boolean(message.pinned),
             reactions: Array.isArray(message.reactions) ? [...new Set(message.reactions)] : [],
             tags: Array.isArray(message.tags) ? message.tags : extractTags(message.text || ""),
-            attachments: Array.isArray(message.attachments) ? message.attachments : []
+            attachments: Array.isArray(message.attachments) ? message.attachments : [],
+            linkedPhotoRefs: Array.isArray(message.linkedPhotoRefs) ? message.linkedPhotoRefs.filter((ref) => ref?.channelId && ref?.messageId && ref?.attachmentId) : []
         };
     });
 }
@@ -505,12 +523,24 @@ function render() {
 function renderServers() {
     els.servers.innerHTML = "";
 
+    const heading = document.createElement("h2");
+    heading.className = "serverListTitle";
+    heading.textContent = "Workspaces";
+    els.servers.appendChild(heading);
+
     state.structure.servers.forEach((server) => {
         const button = document.createElement("button");
         button.className = `server ${server.id === state.activeServerId ? "active" : ""}`;
         button.type = "button";
-        button.textContent = initials(server.name);
         button.title = server.name;
+        button.setAttribute("aria-label", `Open ${server.name}`);
+        const icon = document.createElement("span");
+        icon.className = "serverIcon";
+        icon.textContent = initials(server.name);
+        const name = document.createElement("span");
+        name.className = "serverName";
+        name.textContent = server.name;
+        button.append(icon, name);
 
         button.addEventListener("click", async () => {
             state.activeServerId = server.id;
@@ -603,21 +633,31 @@ function renderChannels() {
         els.channels.appendChild(group);
     }
 
-    const emojis = getReactionEmojis();
-    if (emojis.length > 0) {
+    if (!server.isAdventureServer) {
         const group = document.createElement("section");
-        group.className = "category";
+        group.className = "category emojiReactionChannels";
         group.appendChild(staticCategoryHeader("Emoji collections"));
+        const emojis = getReactionEmojis();
 
-        emojis.forEach((emoji) => {
-            group.appendChild(renderSmartChannelRow({
-                id: emoji,
-                type: "emoji",
-                label: emoji,
-                prefix: emoji,
-                title: `${emoji} reactions`
-            }));
-        });
+        if (emojis.length > 0) {
+            emojis.forEach((emoji) => {
+                group.appendChild(renderSmartChannelRow({
+                    id: emoji,
+                    type: "emoji",
+                    label: emoji,
+                    prefix: emoji,
+                    title: `${emoji} reactions`
+                }));
+            });
+        } else {
+            const empty = document.createElement("button");
+            empty.className = "loadEmojiChannels";
+            empty.type = "button";
+            empty.textContent = "Find reaction channels";
+            empty.title = "Load reactions from this workspace";
+            empty.addEventListener("click", () => loadServerReactionChannels(server.id, empty));
+            group.appendChild(empty);
+        }
 
         els.channels.appendChild(group);
     }
@@ -660,6 +700,23 @@ function renderChannels() {
             }));
         });
         els.channels.appendChild(group);
+    }
+}
+
+async function loadServerReactionChannels(serverId, button) {
+    const server = state.structure.servers.find((item) => item.id === serverId);
+    if (!server) return;
+    if (button) {
+        button.disabled = true;
+        button.textContent = "Finding reactions…";
+    }
+    try {
+        await Promise.all(allChannels(server).map(async (channel) => {
+            if (state.messagesByChannel.has(channel.id)) return;
+            state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
+        }));
+    } finally {
+        if (state.activeServerId === serverId) renderChannels();
     }
 }
 
@@ -707,6 +764,20 @@ function renderSpecialViews() {
         label: "organization settings",
         prefix: "!",
         title: "Organization settings"
+    }));
+    group.appendChild(renderSmartChannelRow({
+        id: "stats",
+        type: "stats",
+        label: "statistics",
+        prefix: "#",
+        title: "Workspace statistics"
+    }));
+    group.appendChild(renderSmartChannelRow({
+        id: "focus-session",
+        type: "focusSession",
+        label: "focus session",
+        prefix: "◉",
+        title: "Timer, metronome, and collection slideshow"
     }));
     if (state.randomPhotoArray.length > 0) {
         group.appendChild(renderSmartChannelRow({
@@ -842,10 +913,26 @@ function renderHeader() {
     els.saveRandomArrayBtn.hidden = !isRandomArray;
     els.saveRandomArrayBtn.disabled = !isRandomArray || state.randomPhotoArray.length === 0;
     els.lockWorkspaceBtn.hidden = !state.isUnlocked;
+    els.randomMessageBtn.textContent = state.activeView.type === "collection" ? "Random collection note" : "Random note";
+    const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
+    els.comparePhotosBtn.hidden = !compareAvailable;
+    els.comparePhotosBtn.disabled = !compareAvailable;
 
     if (state.activeView.type === "settings") {
         els.activeTitle.textContent = "Organization settings";
         els.activeMeta.textContent = "Manage categories and create channels";
+        return;
+    }
+
+    if (state.activeView.type === "stats") {
+        els.activeTitle.textContent = "Workspace statistics";
+        els.activeMeta.textContent = `Local totals for ${getActiveServer()?.name || "this workspace"}`;
+        return;
+    }
+
+    if (state.activeView.type === "focusSession") {
+        els.activeTitle.textContent = "Focus session";
+        els.activeMeta.textContent = "Local timer, metronome, and collection slideshow";
         return;
     }
 
@@ -955,6 +1042,16 @@ function renderMessages() {
         return;
     }
 
+    if (state.activeView.type === "stats") {
+        renderStatsPage();
+        return;
+    }
+
+    if (state.activeView.type === "focusSession") {
+        renderFocusSession();
+        return;
+    }
+
     if (state.activeView.type === "adventureStudio") {
         renderAdventureStudio();
         return;
@@ -986,6 +1083,8 @@ function renderMessages() {
         slideshow.addEventListener("click", () => openSlideshow(slideshowItems));
         els.messages.appendChild(slideshow);
     }
+
+    renderBatchActions();
 
     if (messages.length === 0) {
         els.messages.appendChild(emptyPanel(state.search ? "No matching notes" : "No notes yet"));
@@ -1056,8 +1155,6 @@ function renderPhotoGrid(entries) {
         els.messages.appendChild(grid);
     }
 
-    renderBatchActions();
-
     entries
         .map((entry) => entry.message || entry)
         .filter((message) => !message.attachments?.some((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)))
@@ -1069,6 +1166,10 @@ function renderPhotoTile(message, attachment, channelId, viewerItems = null, vie
     figure.className = "photoTile";
     figure.classList.toggle("isFavorite", Boolean(attachment.favorite));
     figure.title = "Tap to view fullscreen · hold for actions";
+    const ref = { channelId, messageId: message.id, attachmentId: attachment.id };
+    const key = photoRefKey(ref);
+    figure.dataset.photoRef = key;
+    figure.classList.toggle("isSelected", state.selectedPhotoRefs.some((item) => photoRefKey(item) === key));
 
     const image = document.createElement("img");
     const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
@@ -1090,9 +1191,19 @@ function renderPhotoTile(message, attachment, channelId, viewerItems = null, vie
     description.textContent = attachment.note || message.text || attachment.name || "Local photo";
     caption.append(meta, description);
     figure.append(image, caption);
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "photoMenuButton";
+    more.textContent = "⋯";
+    more.title = "Photo actions";
+    more.setAttribute("aria-label", "Photo actions");
+    more.addEventListener("pointerdown", (event) => event.stopPropagation());
+    more.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openPhotoActionSheet({ message, attachment, channelId, viewerItems, viewerIndex, alt: image.alt });
+    });
+    figure.appendChild(more);
     if (canSelectPhotos()) {
-        const ref = { channelId, messageId: message.id, attachmentId: attachment.id };
-        const key = photoRefKey(ref);
         const selector = document.createElement("input");
         selector.className = "photoSelector";
         selector.type = "checkbox";
@@ -1141,20 +1252,49 @@ function renderPhotoTile(message, attachment, channelId, viewerItems = null, vie
 
 function bindPhotoQuickActions(element, photo) {
     let timer;
+    let startX = 0;
+    let startY = 0;
+    let opened = false;
     const open = () => {
+        if (opened) return;
+        opened = true;
+        window.clearTimeout(timer);
+        element.classList.remove("isPressing");
         element.dataset.longPressHandled = "1";
+        if (typeof navigator.vibrate === "function") navigator.vibrate(8);
         openPhotoActionSheet(photo);
+    };
+    const cancel = () => {
+        window.clearTimeout(timer);
+        timer = undefined;
+        element.classList.remove("isPressing");
     };
     element.addEventListener("pointerdown", (event) => {
         if (event.target.closest("button, input")) return;
-        if (event.button && event.pointerType === "mouse") return;
-        timer = window.setTimeout(open, 550);
+        if (event.button !== undefined && event.button !== 0) return;
+        opened = false;
+        startX = event.clientX;
+        startY = event.clientY;
+        element.classList.add("isPressing");
+        element.setPointerCapture?.(event.pointerId);
+        timer = window.setTimeout(open, 430);
     });
-    ["pointerup", "pointercancel", "pointerleave"].forEach((type) => element.addEventListener(type, () => window.clearTimeout(timer)));
+    element.addEventListener("pointermove", (event) => {
+        if (Math.hypot(event.clientX - startX, event.clientY - startY) > 12) cancel();
+    });
+    ["pointerup", "pointercancel"].forEach((type) => element.addEventListener(type, (event) => {
+        const wasOpened = opened;
+        cancel();
+        if (wasOpened) {
+            event.preventDefault();
+            window.setTimeout(() => { element.dataset.longPressHandled = ""; }, 0);
+        }
+    }));
+    element.addEventListener("pointerleave", (event) => { if (event.pointerType === "mouse") cancel(); });
     element.addEventListener("contextmenu", (event) => {
         if (event.target.closest("button, input")) return;
         event.preventDefault();
-        window.clearTimeout(timer);
+        cancel();
         open();
     });
 }
@@ -1181,7 +1321,7 @@ function openPhotoActionSheet({ message, attachment, channelId, viewerItems, vie
         action(attachment.favorite ? "Remove favorite" : "Favorite", () => toggleAttachmentFlag(ref, "favorite")),
         action("Add to collection", () => addPhotosToCollection([ref])),
         action(attachment.note ? "Edit image note" : "Add image note", () => editAttachmentNote(message.id, attachment.id, channelId)),
-        action(state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)) ? "Remove from compare" : "Add to compare", () => togglePhotoSelection(ref, !state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)))),
+        action(state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)) ? "Remove from compare" : "Add to compare (select 2–4 photos)", () => togglePhotoSelection(ref, !state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)))),
         action(attachment.hidden ? "Unhide photo" : "Hide photo", () => toggleAttachmentFlag(ref, "hidden"), !attachment.hidden),
         action("Start slideshow", () => openSlideshow(viewerItems?.length ? viewerItems : [{ attachment, alt: alt || attachment.name || "Local photo", channelName: getChannelById(channelId)?.name || "channel", date: message.createdAt, tags: message.tags || [] }])),
         action("Cancel", close)
@@ -1242,19 +1382,22 @@ async function movePhotoInCurrentView(from, offset) {
 }
 
 function renderBatchActions() {
+    els.messages.querySelector("#batchActions")?.remove();
     if (state.selectedPhotoRefs.length === 0 || !canSelectPhotos()) return;
     const bar = document.createElement("div");
+    bar.id = "batchActions";
     bar.className = "batchActions";
     const label = document.createElement("span");
-    label.textContent = `${state.selectedPhotoRefs.length} selected`;
+    const count = state.selectedPhotoRefs.length;
+    label.textContent = count === 1 ? "1 photo ready for comparison — add 1 to 3 more" : `${count} photos ready for comparison`;
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "Add to collection";
     add.addEventListener("click", () => addPhotosToCollection(state.selectedPhotoRefs));
     const compare = document.createElement("button");
     compare.type = "button";
-    compare.textContent = "Compare";
-    compare.disabled = state.selectedPhotoRefs.length < 2 || state.selectedPhotoRefs.length > 4;
+    compare.textContent = count >= 2 && count <= 4 ? `Compare ${count}` : "Compare";
+    compare.disabled = count < 2 || count > 4;
     compare.addEventListener("click", () => openPhotoCompare(state.selectedPhotoRefs));
     const clear = document.createElement("button");
     clear.type = "button";
@@ -1265,6 +1408,279 @@ function renderBatchActions() {
     });
     bar.append(label, add, compare, clear);
     els.messages.prepend(bar);
+}
+
+function getWorkspaceStats() {
+    const channels = allChannels();
+    const channelStats = new Map(channels.map((channel) => [channel.id, {
+        channel,
+        notes: 0,
+        photos: 0,
+        gifs: 0,
+        pinned: 0,
+        favorites: 0,
+        reactions: 0
+    }]));
+    const reactions = new Map();
+    const tags = new Map();
+    let notes = 0;
+    let photos = 0;
+    let gifs = 0;
+    let pinned = 0;
+    let favorites = 0;
+    let reactionTotal = 0;
+    getServerEntries().forEach((entry) => {
+        const stat = channelStats.get(entry.channelId);
+        const message = entry.message;
+        notes += 1;
+        if (stat) stat.notes += 1;
+        if (message.pinned) { pinned += 1; if (stat) stat.pinned += 1; }
+        (message.attachments || []).forEach((attachment) => {
+            if (!attachment.type?.startsWith("image/")) return;
+            photos += 1;
+            if (stat) stat.photos += 1;
+            if (attachment.type === "image/gif") { gifs += 1; if (stat) stat.gifs += 1; }
+            if (attachment.favorite) { favorites += 1; if (stat) stat.favorites += 1; }
+        });
+        (message.reactions || []).forEach((emoji) => {
+            reactionTotal += 1;
+            if (stat) stat.reactions += 1;
+            if (!reactions.has(emoji)) reactions.set(emoji, { emoji, total: 0, channels: new Map() });
+            const reaction = reactions.get(emoji);
+            reaction.total += 1;
+            reaction.channels.set(entry.channelId, (reaction.channels.get(entry.channelId) || 0) + 1);
+        });
+        (message.tags || []).forEach((tag) => tags.set(tag, (tags.get(tag) || 0) + 1));
+    });
+    return {
+        channels: [...channelStats.values()],
+        reactions: [...reactions.values()].sort((a, b) => b.total - a.total || a.emoji.localeCompare(b.emoji)),
+        tags: [...tags.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
+        notes,
+        photos,
+        gifs,
+        pinned,
+        favorites,
+        reactionTotal
+    };
+}
+
+function renderFocusSession() {
+    const collections = getServerCollections();
+    const page = document.createElement("section");
+    page.className = "focusSession";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    const title = document.createElement("h3");
+    title.textContent = "Focus session";
+    const description = document.createElement("p");
+    description.textContent = "Use one collection as a calm visual backdrop while your local timer and metronome run.";
+    intro.append(title, description);
+    if (collections.length === 0) {
+        intro.appendChild(emptyPanel("Create a photo collection first, then return here to use it in a focus session."));
+        page.appendChild(intro);
+        els.messages.appendChild(page);
+        return;
+    }
+    const selectedCollection = collections.find((collection) => collection.id === state.focusSessionCollectionId) || collections[0];
+    state.focusSessionCollectionId = selectedCollection.id;
+    const collectionLabel = document.createElement("label");
+    collectionLabel.textContent = "Photo collection";
+    const collectionSelect = document.createElement("select");
+    collections.forEach((collection) => {
+        const option = document.createElement("option");
+        option.value = collection.id;
+        option.textContent = `${collection.name} (${collection.photoRefs?.length || 0})`;
+        option.selected = collection.id === selectedCollection.id;
+        collectionSelect.appendChild(option);
+    });
+    collectionSelect.addEventListener("change", () => { state.focusSessionCollectionId = collectionSelect.value; renderMessages(); });
+    collectionLabel.appendChild(collectionSelect);
+    const secondsLabel = document.createElement("label");
+    secondsLabel.textContent = "Timer seconds";
+    const seconds = document.createElement("input");
+    seconds.type = "number";
+    seconds.min = "1";
+    seconds.max = "7200";
+    seconds.inputMode = "numeric";
+    seconds.value = els.timerSeconds.value || state.structure.settings.timerSeconds;
+    secondsLabel.appendChild(seconds);
+    const bpmLabel = document.createElement("label");
+    bpmLabel.textContent = "Metronome BPM";
+    const bpm = document.createElement("input");
+    bpm.type = "number";
+    bpm.min = "20";
+    bpm.max = "300";
+    bpm.inputMode = "numeric";
+    bpm.value = els.metronomeBpm.value || state.structure.settings.metronomeBpm;
+    bpmLabel.appendChild(bpm);
+    const setup = document.createElement("section");
+    setup.className = "focusSessionSetup";
+    setup.append(collectionLabel, secondsLabel, bpmLabel);
+    const controls = document.createElement("section");
+    controls.className = "focusSessionControls";
+    const timer = document.createElement("button");
+    timer.type = "button";
+    timer.className = "adventurePrimary";
+    timer.textContent = countdownTimer ? `Pause timer (${formatTimer(Math.ceil((countdownEndsAt - Date.now()) / 1000))})` : `Start timer (${formatTimer(seconds.value)})`;
+    timer.addEventListener("click", async () => {
+        els.timerSeconds.value = seconds.value;
+        await saveTimerSettings();
+        toggleCountdownTimer();
+        renderMessages();
+    });
+    const metronome = document.createElement("button");
+    metronome.type = "button";
+    metronome.textContent = metronomeTimer ? `Stop metronome (${els.metronomeBpm.value} BPM)` : `Start metronome (${bpm.value} BPM)`;
+    metronome.addEventListener("click", async () => {
+        els.metronomeBpm.value = bpm.value;
+        await saveMetronomeSettings();
+        toggleMetronome();
+        renderMessages();
+    });
+    const randomTime = document.createElement("button");
+    randomTime.type = "button";
+    randomTime.textContent = "Random time";
+    randomTime.addEventListener("click", async () => { await selectRandomTimer(); renderMessages(); });
+    const slideshow = document.createElement("button");
+    slideshow.type = "button";
+    slideshow.textContent = "Start collection slideshow";
+    slideshow.addEventListener("click", () => {
+        const entries = getCollectionEntries(state.focusSessionCollectionId);
+        const items = entries.flatMap((entry) => (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/")).map((attachment) => ({
+            attachment,
+            alt: attachment.note || entry.message.text || attachment.name || "Local photo",
+            channelName: getChannelById(entry.channelId)?.name || "collection",
+            date: entry.message.createdAt,
+            tags: entry.message.tags || []
+        })));
+        if (items.length === 0) { alert("This collection has no available photos or GIFs."); return; }
+        openSlideshow(items);
+    });
+    const distractionFree = document.createElement("button");
+    distractionFree.type = "button";
+    distractionFree.textContent = state.focusMode ? "Exit distraction-free" : "Enter distraction-free";
+    distractionFree.addEventListener("click", () => { state.focusMode = !state.focusMode; render(); });
+    controls.append(timer, metronome, randomTime, slideshow, distractionFree);
+    const note = document.createElement("p");
+    note.className = "focusSessionNote";
+    note.textContent = "The timer and metronome stay local and keep running while you view the slideshow.";
+    page.append(intro, setup, controls, note);
+    els.messages.appendChild(page);
+}
+
+function renderStatsPage() {
+    const stats = getWorkspaceStats();
+    const page = document.createElement("section");
+    page.className = "statsPage";
+    const intro = document.createElement("section");
+    intro.className = "statsIntro";
+    const title = document.createElement("h3");
+    title.textContent = `${getActiveServer()?.name || "Workspace"} at a glance`;
+    const description = document.createElement("p");
+    description.textContent = "These counts use only the notes and media stored locally in this workspace.";
+    intro.append(title, description);
+    const metricGrid = document.createElement("div");
+    metricGrid.className = "statsMetricGrid";
+    [
+        ["Notes", stats.notes],
+        ["Photos / GIFs", stats.photos],
+        ["GIFs", stats.gifs],
+        ["Reaction uses", stats.reactionTotal],
+        ["Pinned notes", stats.pinned],
+        ["Favorite photos", stats.favorites]
+    ].forEach(([label, value]) => {
+        const card = document.createElement("div");
+        card.className = "statsMetric";
+        const number = document.createElement("strong");
+        number.textContent = String(value);
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        card.append(number, caption);
+        metricGrid.appendChild(card);
+    });
+    const reactionSection = document.createElement("section");
+    reactionSection.className = "statsSection";
+    const reactionHeading = document.createElement("h3");
+    reactionHeading.textContent = "Emoji reactions";
+    const reactionHelp = document.createElement("p");
+    reactionHelp.textContent = "Each card shows the total uses of an emoji and the channels where it appears most.";
+    reactionSection.append(reactionHeading, reactionHelp);
+    if (stats.reactions.length === 0) reactionSection.appendChild(emptyPanel("No emoji reactions in this workspace yet."));
+    else {
+        const grid = document.createElement("div");
+        grid.className = "statsReactionGrid";
+        stats.reactions.forEach((reaction) => {
+            const card = document.createElement("article");
+            card.className = "statsReactionCard";
+            const emoji = document.createElement("strong");
+            emoji.textContent = reaction.emoji;
+            const total = document.createElement("span");
+            total.textContent = `${reaction.total} total`;
+            const channelList = document.createElement("div");
+            channelList.className = "statsReactionChannels";
+            [...reaction.channels.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).forEach(([channelId, count]) => {
+                const channel = getChannelById(channelId);
+                const row = document.createElement("button");
+                row.type = "button";
+                row.textContent = `# ${channel?.name || "missing"} · ${count}`;
+                row.addEventListener("click", () => openView("channel", channelId));
+                channelList.appendChild(row);
+            });
+            const open = document.createElement("button");
+            open.type = "button";
+            open.className = "statsOpenReaction";
+            open.textContent = "Open reactions";
+            open.addEventListener("click", () => openView("emoji", reaction.emoji));
+            card.append(emoji, total, channelList, open);
+            grid.appendChild(card);
+        });
+        reactionSection.appendChild(grid);
+    }
+    const channelSection = document.createElement("section");
+    channelSection.className = "statsSection";
+    const channelHeading = document.createElement("h3");
+    channelHeading.textContent = "Channel activity";
+    const channelHelp = document.createElement("p");
+    channelHelp.textContent = "Most active channels in this workspace, including reactions received.";
+    const channelList = document.createElement("div");
+    channelList.className = "statsChannelList";
+    stats.channels.sort((a, b) => (b.reactions + b.notes + b.photos) - (a.reactions + a.notes + a.photos) || a.channel.name.localeCompare(b.channel.name)).forEach((item) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        const name = document.createElement("strong");
+        name.textContent = `# ${item.channel.name}`;
+        const detail = document.createElement("span");
+        detail.textContent = `${item.notes} notes · ${item.photos} photos · ${item.reactions} reactions`;
+        row.append(name, detail);
+        row.addEventListener("click", () => openView("channel", item.channel.id));
+        channelList.appendChild(row);
+    });
+    channelSection.append(channelHeading, channelHelp, channelList);
+    const tagSection = document.createElement("section");
+    tagSection.className = "statsSection";
+    const tagHeading = document.createElement("h3");
+    tagHeading.textContent = "Popular tags";
+    tagSection.appendChild(tagHeading);
+    if (stats.tags.length === 0) tagSection.appendChild(emptyPanel("No #tags in this workspace yet."));
+    else {
+        const tags = document.createElement("div");
+        tags.className = "statsTags";
+        stats.tags.slice(0, 24).forEach(([tag, count]) => {
+            const chip = document.createElement("button");
+            chip.type = "button";
+            chip.textContent = `#${tag} · ${count}`;
+            chip.addEventListener("click", () => {
+                els.searchInput.value = `#${tag}`;
+                state.search = `#${tag}`.toLowerCase();
+                openView("channel", state.activeChannelId);
+            });
+            tags.appendChild(chip);
+        });
+        tagSection.appendChild(tags);
+    }
+    page.append(intro, metricGrid, reactionSection, channelSection, tagSection);
+    els.messages.appendChild(page);
 }
 
 function renderSettingsPage() {
@@ -1657,15 +2073,32 @@ function renderAdventureEditor(adventureId) {
     play.className = "adventurePrimary";
     play.textContent = "Play adventure";
     play.addEventListener("click", () => startAdventurePlay(adventure.id));
-    details.append(title, description, startScene, editorMode, modeHelp, adventureMetronome, adventureBpm.label, inventory, enableVariables, showStats, showProgress, vibration);
-    if ((adventure.editorMode || "basic") === "advanced") details.appendChild(variables.element);
-    details.append(saveStatus, saveDetails, play, map, back);
-    page.appendChild(details);
+    const actions = document.createElement("div");
+    actions.className = "adventureEditorActions";
+    actions.append(play, map, saveDetails, back);
+    const options = document.createElement("details");
+    options.className = "adventureEditorOptions";
+    const optionsSummary = document.createElement("summary");
+    optionsSummary.textContent = "Adventure setup and playback options";
+    options.append(optionsSummary, startScene, editorMode, modeHelp, adventureMetronome, adventureBpm.label, inventory, enableVariables, showStats, showProgress, vibration);
+    if ((adventure.editorMode || "basic") === "advanced") options.appendChild(variables.element);
+    details.append(title, description, actions, saveStatus, options);
+    const creatorIntro = document.createElement("section");
+    creatorIntro.className = "adventureCreatorGuide";
+    creatorIntro.innerHTML = "<h3>Adventure creator</h3><p>Build one scene at a time. Keep it simple: write the moment, add local media, then add the paths a player can take.</p>";
+    const steps = document.createElement("ol");
+    ["Name the adventure and choose its opening scene below.", "Open a scene, write its text, and add an image or GIF if you want one.", "Add choices and set where each choice goes. Use Test from here whenever you want to check it."].forEach((text, index) => {
+        const step = document.createElement("li");
+        step.innerHTML = `<strong>${index + 1}.</strong> ${escapeHTML(text)}`;
+        steps.appendChild(step);
+    });
+    creatorIntro.appendChild(steps);
+    page.append(creatorIntro, details);
     page.appendChild(renderAdventureValidation(adventure));
 
     const heading = document.createElement("div");
     heading.className = "adventureSceneHeading";
-    heading.innerHTML = `<h3>Scenes (${adventure.scenes.length})</h3>`;
+    heading.innerHTML = `<h3>Scenes (${adventure.scenes.length})</h3><p>Each scene is one moment in the story.</p>`;
     const addScene = document.createElement("button");
     addScene.type = "button";
     addScene.textContent = "Add scene";
@@ -1724,7 +2157,9 @@ function renderAdventureSceneEditor(adventure, scene, index) {
     section.className = "adventureScene";
     section.open = scene.id === state.focusAdventureSceneId || (index === 0 && !state.focusAdventureSceneId);
     const summary = document.createElement("summary");
-    summary.textContent = `${index + 1}. ${scene.title || "Untitled scene"}${scene.isEnding ? " · ending" : ""}`;
+    const mediaCount = (scene.mediaRefs || []).length;
+    const choiceCount = (scene.choices || []).filter((choice) => choice.label).length;
+    summary.textContent = `${index + 1}. ${scene.title || "Untitled scene"}${scene.isEnding ? " · ending" : ` · ${choiceCount} path${choiceCount === 1 ? "" : "s"}${mediaCount ? ` · ${mediaCount} media` : ""}`}`;
     section.appendChild(summary);
 
     const title = document.createElement("input");
@@ -1794,8 +2229,9 @@ function renderAdventureSceneEditor(adventure, scene, index) {
     });
     const addMedia = document.createElement("button");
     addMedia.type = "button";
-    addMedia.textContent = "Add local image/GIF";
+    addMedia.textContent = "Add image or GIF";
     addMedia.addEventListener("click", () => pickAdventureMedia(adventure.id, scene.id));
+    const templateLibrary = renderAdventureTemplateLibrary(adventure, scene);
 
     const choices = document.createElement("div");
     choices.className = "adventureChoices";
@@ -1854,7 +2290,7 @@ function renderAdventureSceneEditor(adventure, scene, index) {
     });
     const addChoice = document.createElement("button");
     addChoice.type = "button";
-    addChoice.textContent = "Add choice";
+    addChoice.textContent = "Add path / choice";
     addChoice.addEventListener("click", () => {
         const choice = { id: crypto.randomUUID(), label: "", targetSceneId: "" };
         scene.choices = [...(scene.choices || []), choice];
@@ -1905,7 +2341,7 @@ function renderAdventureSceneEditor(adventure, scene, index) {
     testScene.textContent = "Test from here";
     testScene.addEventListener("click", () => startAdventureTest(adventure.id, scene.id));
     const template = document.createElement("select");
-    [["", "Apply scene template…"], ["imageQuiz", "Image source quiz"], ["timer", "Timer challenge"], ["wheel", "Wheel choice"], ["ending", "Ending scene"], ...(state.structure.settings.adventureComponents || []).map((component) => [`component:${component.id}`, `Saved: ${component.name}`])].forEach(([value, label]) => {
+    [["", "Apply a saved template…"], ...(state.structure.settings.adventureComponents || []).map((component) => [`component:${component.id}`, `Saved: ${component.name}`])].forEach(([value, label]) => {
         const option = document.createElement("option");
         option.value = value;
         option.textContent = label;
@@ -1938,11 +2374,28 @@ function renderAdventureSceneEditor(adventure, scene, index) {
         if (sourceId && sourceId !== scene.id) moveAdventureSceneTo(adventure.id, sourceId, scene.id);
     });
 
-    section.append(title, text, ending, readyPrompt, collectible, media, addMedia, choices, addChoice, ambience.element);
-    if (sceneEffects) section.appendChild(sceneEffects.element);
-    if (randomEditor) section.appendChild(randomEditor.element);
-    if (autoAdvance) section.appendChild(autoAdvance.element);
-    section.append(template, saveComponent, moveUp, moveDown, save, duplicateScene, testScene, removeScene);
+    const optional = document.createElement("details");
+    optional.className = "adventureSceneOptional";
+    const optionalSummary = document.createElement("summary");
+    optionalSummary.textContent = advanced ? "More scene options and advanced mechanics" : "More scene options";
+    optional.append(optionalSummary, readyPrompt, ambience.element);
+    if (adventure.enableInventory) optional.appendChild(collectible);
+    if (sceneEffects) optional.appendChild(sceneEffects.element);
+    if (randomEditor) optional.appendChild(randomEditor.element);
+    if (autoAdvance) optional.appendChild(autoAdvance.element);
+    section.append(templateLibrary, title, text, media, addMedia, choices, addChoice, ending, optional);
+    const tools = document.createElement("details");
+    tools.className = "adventureSceneTools";
+    const toolsSummary = document.createElement("summary");
+    toolsSummary.textContent = "Scene tools (template, reorder, reusable component)";
+    const toolsContent = document.createElement("div");
+    toolsContent.className = "adventureSceneToolsContent";
+    toolsContent.append(template, saveComponent, moveUp, moveDown);
+    tools.append(toolsSummary, toolsContent);
+    const actions = document.createElement("div");
+    actions.className = "adventureSceneActions";
+    actions.append(save, duplicateScene, testScene, removeScene);
+    section.append(tools, actions);
     return section;
 }
 
@@ -1953,6 +2406,41 @@ async function moveSceneMedia(adventureId, sceneId, from, offset) {
     [scene.mediaRefs[from], scene.mediaRefs[to]] = [scene.mediaRefs[to], scene.mediaRefs[from]];
     await saveAdventures();
     renderMessages();
+}
+
+function renderAdventureTemplateLibrary(adventure, scene) {
+    const panel = document.createElement("section");
+    panel.className = "adventureTemplateLibrary";
+    const heading = document.createElement("strong");
+    heading.textContent = "Start with a scene template";
+    const help = document.createElement("p");
+    help.textContent = "Templates give this scene a useful shape. You can change every part after choosing one.";
+    const grid = document.createElement("div");
+    grid.className = "adventureTemplateGrid";
+    [
+        ["twoPath", "Two paths", "A simple left-or-right decision"],
+        ["imageScene", "Image scene", "A moment built around an image or GIF"],
+        ["randomImage", "Random image", "Reveal a local photo or GIF at random"],
+        ["dice", "Dice check", "Roll to take a success or failure path"],
+        ["weighted", "Weighted path", "Let chance choose between paths"],
+        ["wheel", "Spinning wheel", "Spin for the next scene"],
+        ["timer", "Timer challenge", "A countdown before continuing"],
+        ["imageQuiz", "Image source quiz", "Guess which channel a picture came from"],
+        ["quiz", "Quick quiz", "Ask a question with answer paths"],
+        ["ending", "Ending", "A clean final scene"]
+    ].forEach(([id, label, description]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        const title = document.createElement("strong");
+        title.textContent = label;
+        const text = document.createElement("span");
+        text.textContent = description;
+        button.append(title, text);
+        button.addEventListener("click", () => applyAdventureSceneTemplate(adventure.id, scene.id, id));
+        grid.appendChild(button);
+    });
+    panel.append(heading, help, grid);
+    return panel;
 }
 
 async function applyAdventureSceneTemplate(adventureId, sceneId, template) {
@@ -1974,13 +2462,48 @@ async function applyAdventureSceneTemplate(adventureId, sceneId, template) {
         renderMessages();
         return;
     }
-    if (template === "imageQuiz") {
+    if (["dice", "weighted", "wheel", "timer", "randomImage", "imageQuiz", "quiz"].includes(template)) adventure.editorMode = "advanced";
+    if (template === "twoPath") {
+        scene.isEnding = false;
+        scene.randomEvent = null;
+        scene.text ||= "Choose what to do next.";
+        scene.choices = [{ id: crypto.randomUUID(), label: "Take the first path", targetSceneId: null }, { id: crypto.randomUUID(), label: "Take the second path", targetSceneId: null }];
+    } else if (template === "imageScene") {
+        scene.isEnding = false;
+        scene.randomEvent = null;
+        scene.text ||= "Add an image or GIF, then write the moment around it.";
+        scene.choices = scene.choices?.length ? scene.choices : [{ id: crypto.randomUUID(), label: "Continue", targetSceneId: null }];
+    } else if (template === "randomImage") {
+        scene.isEnding = false;
+        scene.randomEvent = defaultRandomEvent("image");
+        scene.text ||= "Reveal a random local image or GIF.";
+        scene.choices = [];
+    } else if (template === "dice") {
+        scene.isEnding = false;
+        scene.randomEvent = defaultRandomEvent("dice");
+        scene.text ||= "Roll to see what happens.";
+        scene.choices = [];
+    } else if (template === "weighted") {
+        scene.isEnding = false;
+        scene.randomEvent = defaultRandomEvent("weighted");
+        scene.text ||= "Let chance choose the next path.";
+        scene.choices = [];
+    } else if (template === "imageQuiz") {
         scene.randomEvent = { type: "quiz", mode: "source-choice", question: "Which channel did this image come from?", mediaRef: scene.mediaRefs?.[0] || null, channelIds: [], successTargetId: null, failureTargetId: null };
+        scene.isEnding = false;
+        scene.choices = [];
+    } else if (template === "quiz") {
+        scene.isEnding = false;
+        scene.randomEvent = defaultRandomEvent("quiz");
+        scene.text ||= "Choose the best answer.";
+        scene.choices = [];
     } else if (template === "timer") {
         scene.randomEvent = defaultRandomEvent("timer");
+        scene.isEnding = false;
         scene.text ||= "Complete the timer challenge.";
     } else if (template === "wheel") {
         scene.randomEvent = defaultRandomEvent("wheel");
+        scene.isEnding = false;
         scene.text ||= "Let the wheel decide what happens next.";
     } else if (template === "ending") {
         scene.isEnding = true;
@@ -2841,7 +3364,7 @@ function renderAdventurePlayer(adventureId) {
                 const button = document.createElement("button");
                 button.type = "button";
                 button.className = "adventureChoiceButton";
-                button.textContent = window.matchMedia("(max-width: 700px)").matches && choice.shortLabel ? choice.shortLabel : choice.label;
+                button.textContent = isMobileLayout() && choice.shortLabel ? choice.shortLabel : choice.label;
                 button.addEventListener("click", () => advanceAdventure(adventureId, scene.id, choice));
                 choiceList.appendChild(button);
             });
@@ -3180,6 +3703,7 @@ function renderAdventureTimerAction(adventure, scene, session) {
     const panel = document.createElement("section");
     panel.className = "adventureRandomAction adventureTimerAction";
     const display = document.createElement("strong");
+    display.dataset.adventureTimerDisplay = scene.id;
     display.textContent = timer.completed ? "Timer complete" : formatTimer(timer.remaining);
     const note = document.createElement("p");
     note.textContent = timer.completed ? "The timer has already taken its completion path." : "Start, pause, or reset this scene timer.";
@@ -3262,7 +3786,8 @@ function startAdventureTimerTick(adventureId, sceneId) {
             await completeAdventureTimer(adventureId, sceneId);
             return;
         }
-        render();
+        const display = document.querySelector(`[data-adventure-timer-display="${CSS.escape(sceneId)}"]`);
+        if (display) display.textContent = formatTimer(timer.remaining);
     }, 250);
 }
 
@@ -3662,6 +4187,51 @@ async function duplicateAdventureScene(adventureId, sceneId) {
 }
 
 async function pickAdventureMedia(adventureId, sceneId, replaceRef = null) {
+    openAdventureMediaSourcePicker(adventureId, sceneId, replaceRef);
+}
+
+function openAdventureMediaSourcePicker(adventureId, sceneId, replaceRef) {
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard adventureMediaSourceCard";
+    const heading = document.createElement("h3");
+    heading.textContent = replaceRef ? "Repair adventure media" : "Add image or GIF";
+    const help = document.createElement("p");
+    help.textContent = "Start with a channel to find a specific photo, or browse your whole local media gallery.";
+    const choices = document.createElement("div");
+    choices.className = "adventureMediaSourceChoices";
+    const channel = document.createElement("button");
+    channel.type = "button";
+    channel.textContent = "Choose a channel first";
+    const gallery = document.createElement("button");
+    gallery.type = "button";
+    gallery.textContent = "Browse all media";
+    const upload = document.createElement("button");
+    upload.type = "button";
+    upload.textContent = "Upload from this device";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Cancel";
+    const dismiss = () => modal.remove();
+    upload.addEventListener("click", () => {
+        dismiss();
+        chooseAdventureDeviceMedia(adventureId, sceneId, replaceRef);
+    });
+    channel.addEventListener("click", async () => {
+        dismiss();
+        await openAdventureMediaChannelPicker(adventureId, sceneId, replaceRef);
+    });
+    gallery.addEventListener("click", async () => { dismiss(); await pickAdventureMediaFromLibrary(adventureId, sceneId, replaceRef); });
+    close.addEventListener("click", dismiss);
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    choices.append(channel, gallery, upload, close);
+    card.append(heading, help, choices);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+}
+
+async function pickAdventureMediaFromLibrary(adventureId, sceneId, replaceRef = null) {
     await ensureServerMessagesLoaded();
     const options = getAdventureMediaOptions();
     if (state.structure.settings.thumbnailMediaPicker) {
@@ -3677,6 +4247,120 @@ async function pickAdventureMedia(adventureId, sceneId, replaceRef = null) {
     const option = visible[selected - 1];
     if (!option) return;
     await applyAdventureMediaReference(adventureId, sceneId, option.ref, replaceRef);
+}
+
+async function openAdventureMediaChannelPicker(adventureId, sceneId, replaceRef = null) {
+    await ensureServerMessagesLoaded();
+    const options = getAdventureMediaOptions();
+    const channelCounts = new Map();
+    options.forEach((option) => channelCounts.set(option.ref.channelId, (channelCounts.get(option.ref.channelId) || 0) + 1));
+    if (channelCounts.size === 0) {
+        alert("Add an image or GIF to a channel first.");
+        return;
+    }
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard adventureMediaChannelCard";
+    const heading = document.createElement("h3");
+    heading.textContent = "Choose a channel";
+    const help = document.createElement("p");
+    help.textContent = "Only channels with local images or GIFs are shown.";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search channels or servers";
+    const list = document.createElement("div");
+    list.className = "adventureMediaChannelList";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Back";
+    const dismiss = () => modal.remove();
+    close.addEventListener("click", dismiss);
+    const renderChannels = () => {
+        list.innerHTML = "";
+        const query = search.value.trim().toLowerCase();
+        [...channelCounts.keys()].map((channelId) => {
+            const selectedChannel = getChannelById(channelId);
+            return { channelId, channel: selectedChannel, server: getChannelServer(channelId), count: channelCounts.get(channelId) };
+        }).filter((item) => item.channel).filter((item) => !query || `${item.channel.name} ${item.server?.name || ""}`.toLowerCase().includes(query)).forEach((item) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            const name = document.createElement("strong");
+            name.textContent = `# ${item.channel.name}`;
+            const meta = document.createElement("span");
+            meta.textContent = `${item.server?.name || "Local"} · ${item.count} ${item.count === 1 ? "item" : "items"}`;
+            button.append(name, meta);
+            button.addEventListener("click", () => {
+                dismiss();
+                openAdventureMediaPicker(adventureId, sceneId, options.filter((option) => option.ref.channelId === item.channelId), replaceRef, item.channel);
+            });
+            list.appendChild(button);
+        });
+    };
+    search.addEventListener("input", renderChannels);
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    card.append(heading, help, search, list, close);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    renderChannels();
+}
+
+function chooseAdventureDeviceMedia(adventureId, sceneId, replaceRef = null) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.multiple = true;
+    input.hidden = true;
+    input.addEventListener("change", async () => {
+        const files = [...(input.files || [])];
+        input.remove();
+        await importAdventureDeviceMedia(adventureId, sceneId, files, replaceRef);
+    }, { once: true });
+    document.body.appendChild(input);
+    input.click();
+}
+
+function ensureAdventureAssetsChannel() {
+    const server = state.structure.servers.find((item) => item.isAdventureServer) || getActiveServer();
+    if (!server) return null;
+    let category = server.categories.find((item) => item.id === "adventure-assets");
+    if (!category) {
+        category = { id: "adventure-assets", name: "Adventure assets", collapsed: false, channels: [] };
+        server.categories.unshift(category);
+    }
+    let channel = category.channels.find((item) => item.id === "adventure-assets:uploads");
+    if (!channel) {
+        channel = { id: "adventure-assets:uploads", name: "adventure-uploads", isAdventureAssetsChannel: true };
+        category.channels.push(channel);
+    }
+    return channel;
+}
+
+async function importAdventureDeviceMedia(adventureId, sceneId, files, replaceRef = null) {
+    const selected = files.filter((file) => file.type.startsWith("image/")).slice(0, 12);
+    const accepted = selected.filter((file) => file.size <= 25 * 1024 * 1024);
+    if (accepted.length === 0) {
+        alert("Choose an image or GIF under 25 MB. Up to 12 files can be added at once.");
+        return;
+    }
+    if (accepted.length < selected.length) alert("Some files were skipped because they are over 25 MB.");
+    const channel = ensureAdventureAssetsChannel();
+    const scene = getAdventure(adventureId)?.scenes.find((item) => item.id === sceneId);
+    if (!channel || !scene) return;
+    if (!state.messagesByChannel.has(channel.id)) {
+        state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
+    }
+    const message = createMessage("Adventure upload", accepted.map(fileToAttachment));
+    const messages = [...state.messagesByChannel.get(channel.id), message];
+    const refs = message.attachments.map((attachment) => ({ channelId: channel.id, messageId: message.id, attachmentId: attachment.id }));
+    state.messagesByChannel.set(channel.id, messages);
+    if (replaceRef && refs[0]) scene.mediaRefs = (scene.mediaRefs || []).map((item) => photoRefKey(item) === photoRefKey(replaceRef) ? refs[0] : item);
+    const existing = new Set((scene.mediaRefs || []).map(photoRefKey));
+    scene.mediaRefs = [...(scene.mediaRefs || []), ...refs.slice(replaceRef ? 1 : 0).filter((ref) => !existing.has(photoRefKey(ref)))];
+    await saveChannelMessages(channel.id, messages);
+    await saveAdventures();
+    renderMessages();
+    refreshStorageEstimate();
 }
 
 function getAdventureMediaOptions() {
@@ -3703,7 +4387,7 @@ async function applyAdventureMediaReference(adventureId, sceneId, ref, replaceRe
     renderMessages();
 }
 
-function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef) {
+function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef, channel = null) {
     if (options.length === 0) {
         alert("Add an image or GIF to any server first.");
         return;
@@ -3713,10 +4397,10 @@ function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef) {
     const card = document.createElement("div");
     card.className = "adventureMediaPickerCard";
     const heading = document.createElement("h3");
-    heading.textContent = replaceRef ? "Repair media reference" : "Choose local image or GIF";
+    heading.textContent = replaceRef ? "Repair media reference" : channel ? `Choose from #${channel.name}` : "Browse local media";
     const search = document.createElement("input");
     search.type = "search";
-    search.placeholder = "Search filename, note, or channel";
+    search.placeholder = channel ? "Search this channel" : "Search filename, note, or channel";
     const grid = document.createElement("div");
     grid.className = "adventureMediaPickerGrid";
     const close = document.createElement("button");
@@ -3724,10 +4408,15 @@ function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef) {
     close.textContent = "Close";
     const dismiss = () => modal.remove();
     close.addEventListener("click", dismiss);
+    const more = document.createElement("button");
+    more.type = "button";
+    let visibleLimit = 36;
     const renderOptions = () => {
         grid.innerHTML = "";
+        more.hidden = true;
         const query = search.value.trim().toLowerCase();
-        options.filter((option) => !query || option.label.toLowerCase().includes(query)).slice(0, 120).forEach((option) => {
+        const matching = options.filter((option) => !query || option.label.toLowerCase().includes(query));
+        matching.slice(0, visibleLimit).forEach((option) => {
             const attachment = findAttachment(option.ref);
             if (!attachment) return;
             const button = document.createElement("button");
@@ -3746,10 +4435,15 @@ function openAdventureMediaPicker(adventureId, sceneId, options, replaceRef) {
             });
             grid.appendChild(button);
         });
+        if (matching.length > visibleLimit) {
+            more.hidden = false;
+            more.textContent = `Show ${Math.min(36, matching.length - visibleLimit)} more (${matching.length} total)`;
+        }
     };
-    search.addEventListener("input", renderOptions);
+    search.addEventListener("input", () => { visibleLimit = 36; renderOptions(); });
+    more.addEventListener("click", () => { visibleLimit += 36; renderOptions(); });
     modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
-    card.append(heading, search, grid, close);
+    card.append(heading, search, grid, more, close);
     modal.appendChild(card);
     document.body.appendChild(modal);
     renderOptions();
@@ -3856,6 +4550,8 @@ function renderMessage(message, sourceChannelId = state.activeChannelId) {
     }
 
     renderAttachments(message.attachments, message, sourceChannelId).forEach((attachment) => article.appendChild(attachment));
+    const linkedPhotos = renderLinkedPhotoReferences(message);
+    if (linkedPhotos) article.appendChild(linkedPhotos);
 
     const url = firstURL(message.text);
     const embed = createEmbed(url);
@@ -3965,6 +4661,38 @@ function renderMessage(message, sourceChannelId = state.activeChannelId) {
     return article;
 }
 
+function renderLinkedPhotoReferences(message) {
+    const refs = (message.linkedPhotoRefs || []).filter((ref) => findAttachment(ref));
+    if (refs.length === 0) return null;
+    const section = document.createElement("section");
+    section.className = "linkedPhotoReferences";
+    const heading = document.createElement("strong");
+    heading.textContent = `Linked photos (${refs.length})`;
+    const grid = document.createElement("div");
+    grid.className = "linkedPhotoReferenceGrid";
+    const gallery = refs.map((ref) => {
+        const attachment = findAttachment(ref);
+        const sourceMessage = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
+        return { attachment, alt: attachment?.note || attachment?.name || "Linked photo", channelName: getChannelById(ref.channelId)?.name || "channel", date: sourceMessage?.createdAt, tags: sourceMessage?.tags || [] };
+    }).filter((item) => item.attachment);
+    gallery.forEach((item, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        const image = document.createElement("img");
+        const objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
+        image.src = objectUrl || item.attachment.dataUrl || "";
+        image.alt = item.alt;
+        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        const label = document.createElement("span");
+        label.textContent = `# ${item.channelName}`;
+        button.append(image, label);
+        button.addEventListener("click", () => openImageViewer(item.attachment, item.alt, gallery, index));
+        grid.appendChild(button);
+    });
+    section.append(heading, grid);
+    return section;
+}
+
 function renderAttachments(attachments, message, channelId) {
     return attachments.filter(shouldShowAttachment).map((attachment) => {
         if (attachment.type?.startsWith("image/")) {
@@ -3972,6 +4700,10 @@ function renderAttachments(attachments, message, channelId) {
             figure.className = "imageAttachment";
             figure.classList.toggle("isFavorite", Boolean(attachment.favorite));
             figure.title = "Tap to view fullscreen · hold for actions";
+            const ref = { channelId, messageId: message.id, attachmentId: attachment.id };
+            const key = photoRefKey(ref);
+            figure.dataset.photoRef = key;
+            figure.classList.toggle("isSelected", state.selectedPhotoRefs.some((item) => photoRefKey(item) === key));
 
             const image = document.createElement("img");
             const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
@@ -4005,7 +4737,15 @@ function renderAttachments(attachments, message, channelId) {
             });
 
             const viewerItems = [{ attachment, alt: image.alt, channelName: getChannelById(channelId)?.name || "channel", date: message.createdAt, tags: message.tags || [] }];
-            figure.append(image, caption, noteButton, collectionButton);
+            const moreButton = document.createElement("button");
+            moreButton.className = "imageNoteButton";
+            moreButton.type = "button";
+            moreButton.textContent = "More photo actions";
+            moreButton.addEventListener("click", (event) => {
+                event.stopPropagation();
+                openPhotoActionSheet({ message, attachment, channelId, viewerItems, alt: image.alt });
+            });
+            figure.append(image, caption, noteButton, collectionButton, moreButton);
             bindPhotoQuickActions(figure, { message, attachment, channelId, viewerItems, alt: image.alt });
             figure.addEventListener("click", (event) => {
                 if (figure.dataset.longPressHandled === "1") {
@@ -4031,11 +4771,14 @@ function renderComposer() {
     els.noteInput.disabled = !enabled;
     els.sendBtn.disabled = !enabled;
     els.attachImageBtn.disabled = !enabled;
+    els.linkPhotosBtn.disabled = !enabled;
     els.newChannelBtn.disabled = !state.ready || !state.isUnlocked;
     els.newCategoryBtn.disabled = !state.ready || !state.isUnlocked;
     els.deleteChannelBtn.disabled = !enabled;
     els.randomChannelBtn.disabled = !state.ready || !state.isUnlocked || allChannels().length === 0;
-    els.randomMessageBtn.disabled = !enabled;
+    els.randomServerMessageBtn.disabled = !state.ready || !state.isUnlocked || getAllChannels().length === 0;
+    const collectionHasNotes = state.activeView.type === "collection" && getCollectionEntries(state.activeView.id).length > 0;
+    els.randomMessageBtn.disabled = !state.ready || !state.isUnlocked || (!enabled && !collectionHasNotes);
     els.randomPhotoArrayBtn.disabled = !state.ready || !state.isUnlocked;
     els.randomMetronomeBtn.disabled = !state.ready || !state.isUnlocked;
     els.metronomeToggleBtn.disabled = !state.ready || !state.isUnlocked;
@@ -4049,6 +4792,19 @@ function renderComposer() {
         chip.title = "Remove image";
         chip.addEventListener("click", () => {
             state.draftAttachments = state.draftAttachments.filter((item) => item.id !== attachment.id);
+            renderComposer();
+        });
+        els.attachmentPreview.appendChild(chip);
+    });
+    state.draftLinkedPhotoRefs.forEach((ref) => {
+        const attachment = findAttachment(ref);
+        const chip = document.createElement("button");
+        chip.className = "attachmentChip linkedPhotoChip";
+        chip.type = "button";
+        chip.textContent = `Linked: ${attachment?.note || attachment?.name || "photo"} x`;
+        chip.title = "Remove linked photo";
+        chip.addEventListener("click", () => {
+            state.draftLinkedPhotoRefs = state.draftLinkedPhotoRefs.filter((item) => photoRefKey(item) !== photoRefKey(ref));
             renderComposer();
         });
         els.attachmentPreview.appendChild(chip);
@@ -4184,7 +4940,13 @@ function togglePhotoSelection(ref, selected) {
     state.selectedPhotoRefs = selected
         ? [...state.selectedPhotoRefs.filter((item) => photoRefKey(item) !== key), ref]
         : state.selectedPhotoRefs.filter((item) => photoRefKey(item) !== key);
-    renderMessages();
+    document.querySelectorAll("[data-photo-ref]").forEach((element) => {
+        const isSelected = state.selectedPhotoRefs.some((item) => photoRefKey(item) === element.dataset.photoRef);
+        element.classList.toggle("isSelected", isSelected);
+        const checkbox = element.querySelector(".photoSelector");
+        if (checkbox) checkbox.checked = isSelected;
+    });
+    renderBatchActions();
 }
 
 async function addPhotosToCollection(refs) {
@@ -4236,7 +4998,7 @@ async function sendMessage() {
     const text = els.noteInput.value.trim();
 
     if (
-        (!text && state.draftAttachments.length === 0)
+        (!text && state.draftAttachments.length === 0 && state.draftLinkedPhotoRefs.length === 0)
         || !state.activeChannelId
         || !state.ready
         || state.activeView.type !== "channel"
@@ -4244,9 +5006,10 @@ async function sendMessage() {
         return;
     }
 
-    const messages = [...getActiveMessages(), createMessage(text, state.draftAttachments)];
+    const messages = [...getActiveMessages(), createMessage(text, state.draftAttachments, state.draftLinkedPhotoRefs)];
     state.messagesByChannel.set(state.activeChannelId, messages);
     state.draftAttachments = [];
+    state.draftLinkedPhotoRefs = [];
     state.visibleMessageLimit = 100;
     els.noteInput.value = "";
     render();
@@ -4600,13 +5363,59 @@ async function selectRandomChannel() {
     showMobileStage("chat");
 }
 
-async function selectRandomMessageInActiveChannel() {
+async function selectRandomMessageForCurrentView() {
+    if (state.activeView.type === "collection") {
+        await selectRandomMessageInCollection();
+        return;
+    }
     await selectRandomMessage(state.activeChannelId);
 }
 
-async function selectRandomMessage(channelId) {
+async function selectRandomMessageInCollection() {
     await maybeRandomizeMetronome("message");
     await maybeRandomizeTimer("message");
+    const entry = randomItem(getCollectionEntries(state.activeView.id));
+    if (!entry?.message || !entry.channelId) {
+        alert("This collection has no available source notes.");
+        return;
+    }
+    state.activeChannelId = entry.channelId;
+    state.activeServerId = getChannelServer(entry.channelId)?.id || state.activeServerId;
+    state.activeView = { type: "channel", id: entry.channelId };
+    await loadActiveChannelMessages();
+    render();
+    showMobileStage("chat");
+    requestAnimationFrame(() => {
+        const node = els.messages.querySelector(`[data-message-id="${entry.message.id}"]`);
+        node?.scrollIntoView({ behavior: "smooth", block: "center" });
+        node?.classList.add("selected");
+        setTimeout(() => node?.classList.remove("selected"), 1400);
+    });
+}
+
+async function selectRandomMessageInAnyChannel() {
+    await maybeRandomizeMetronome("message");
+    await maybeRandomizeTimer("message");
+    const channels = getAllChannels().filter((channel) => !channel.hidden && !getChannelCategory(channel.id)?.hidden);
+    if (channels.length === 0) return;
+
+    const shuffled = [...channels].sort(() => Math.random() - .5);
+    for (const channel of shuffled) {
+        if (!state.messagesByChannel.has(channel.id)) {
+            state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
+        }
+        if ((state.messagesByChannel.get(channel.id) || []).length === 0) continue;
+        await selectRandomMessage(channel.id, true);
+        return;
+    }
+    alert("There are no notes in any visible channel yet.");
+}
+
+async function selectRandomMessage(channelId, skipRandomizers = false) {
+    if (!skipRandomizers) {
+        await maybeRandomizeMetronome("message");
+        await maybeRandomizeTimer("message");
+    }
     if (!channelId) return;
 
     if (channelId !== state.activeChannelId) {
@@ -5004,11 +5813,17 @@ function resetCountdownTimer() {
 }
 
 function renderCountdownTimer() {
-    els.timerStatus.textContent = formatTimer(countdownTimer ? Math.ceil((countdownEndsAt - Date.now()) / 1000) : countdownRemaining);
+    const remaining = countdownTimer ? Math.ceil((countdownEndsAt - Date.now()) / 1000) : countdownRemaining;
+    const display = formatTimer(remaining);
+    els.timerStatus.textContent = display;
     els.timerToggleBtn.textContent = countdownTimer ? "Pause" : "Start";
+    els.chatTimerStatus.textContent = display;
+    els.chatTimerQuick.classList.toggle("running", Boolean(countdownTimer));
+    els.chatTimerQuick.setAttribute("aria-label", countdownTimer ? "Pause timer" : "Start timer");
+    els.chatTimerProgress.style.width = `${Math.min(100, Math.max(0, (remaining / Math.max(1, getTimerSettings().seconds)) * 100))}%`;
 }
 
-function createMessage(text, attachments) {
+function createMessage(text, attachments, linkedPhotoRefs = []) {
     return {
         id: crypto.randomUUID(),
         text,
@@ -5016,7 +5831,8 @@ function createMessage(text, attachments) {
         pinned: false,
         reactions: [],
         tags: extractTags(text),
-        attachments: structuredClone(attachments)
+        attachments: structuredClone(attachments),
+        linkedPhotoRefs: structuredClone(linkedPhotoRefs)
     };
 }
 
@@ -5219,6 +6035,211 @@ function openPhotoCompare(refs) {
     document.body.appendChild(modal);
 }
 
+async function openComparePicker() {
+    await ensureServerMessagesLoaded();
+    const options = getServerEntries().flatMap((entry) => (
+        (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
+            ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id },
+            attachment,
+            label: attachment.note || attachment.name || "Local photo",
+            channelName: getChannelById(entry.channelId)?.name || "channel"
+        }))
+    ));
+    if (options.length < 2) {
+        alert("Add at least two local photos or GIFs to this workspace to compare them.");
+        return;
+    }
+    const allowed = new Set(options.map((option) => photoRefKey(option.ref)));
+    const selected = new Set(state.selectedPhotoRefs.map(photoRefKey).filter((key) => allowed.has(key)).slice(0, 4));
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard comparePickerCard";
+    const heading = document.createElement("h3");
+    heading.textContent = "Compare photos";
+    const help = document.createElement("p");
+    help.textContent = "Choose 2 to 4 photos or GIFs from this workspace. Tap one afterward to expand it.";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search image name, note, or channel";
+    const status = document.createElement("p");
+    status.className = "comparePickerStatus";
+    const grid = document.createElement("div");
+    grid.className = "adventureMediaPickerGrid comparePickerGrid";
+    const more = document.createElement("button");
+    more.type = "button";
+    const actions = document.createElement("div");
+    actions.className = "comparePickerActions";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "Cancel";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "Clear";
+    const compare = document.createElement("button");
+    compare.type = "button";
+    compare.className = "adventurePrimary";
+    const dismiss = () => modal.remove();
+    let visibleLimit = 48;
+    const syncSelection = () => {
+        status.textContent = selected.size === 0 ? "Select 2 to 4 photos." : `${selected.size} of 4 selected`;
+        compare.textContent = selected.size >= 2 ? `Compare ${selected.size} photos` : "Choose at least 2 photos";
+        compare.disabled = selected.size < 2;
+        grid.querySelectorAll("button[data-photo-key]").forEach((button) => button.classList.toggle("isSelected", selected.has(button.dataset.photoKey)));
+    };
+    const renderOptions = () => {
+        grid.innerHTML = "";
+        more.hidden = true;
+        const query = search.value.trim().toLowerCase();
+        const matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
+        matching.slice(0, visibleLimit).forEach((option) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.dataset.photoKey = photoRefKey(option.ref);
+            const image = document.createElement("img");
+            const objectUrl = option.attachment.blob ? URL.createObjectURL(option.attachment.blob) : "";
+            image.src = objectUrl || option.attachment.dataUrl || "";
+            image.alt = option.label;
+            if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+            const label = document.createElement("span");
+            label.textContent = `#${option.channelName} · ${option.label}`;
+            button.append(image, label);
+            button.addEventListener("click", () => {
+                const key = button.dataset.photoKey;
+                if (selected.has(key)) selected.delete(key);
+                else if (selected.size < 4) selected.add(key);
+                else { status.textContent = "You can compare up to 4 photos at once."; return; }
+                syncSelection();
+            });
+            grid.appendChild(button);
+        });
+        if (matching.length > visibleLimit) {
+            more.hidden = false;
+            more.textContent = `Show ${Math.min(48, matching.length - visibleLimit)} more (${matching.length} total)`;
+        }
+        syncSelection();
+    };
+    search.addEventListener("input", () => { visibleLimit = 48; renderOptions(); });
+    more.addEventListener("click", () => { visibleLimit += 48; renderOptions(); });
+    clear.addEventListener("click", () => { selected.clear(); syncSelection(); });
+    close.addEventListener("click", dismiss);
+    compare.addEventListener("click", () => {
+        const refs = options.filter((option) => selected.has(photoRefKey(option.ref))).map((option) => option.ref);
+        if (refs.length < 2) return;
+        state.selectedPhotoRefs = refs;
+        dismiss();
+        renderBatchActions();
+        openPhotoCompare(refs);
+    });
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    actions.append(close, clear, compare);
+    card.append(heading, help, search, status, grid, more, actions);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    renderOptions();
+}
+
+async function openLinkedPhotoPicker() {
+    await ensureServerMessagesLoaded();
+    const options = getServerEntries().flatMap((entry) => (
+        (entry.message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({
+            ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id },
+            attachment,
+            label: attachment.note || attachment.name || "Local photo",
+            channelName: getChannelById(entry.channelId)?.name || "channel"
+        }))
+    ));
+    if (options.length === 0) {
+        alert("Add an image or GIF to this workspace first.");
+        return;
+    }
+    const available = new Set(options.map((option) => photoRefKey(option.ref)));
+    const selected = new Set(state.draftLinkedPhotoRefs.map(photoRefKey).filter((key) => available.has(key)).slice(0, 12));
+    const modal = document.createElement("section");
+    modal.className = "adventureMediaPicker";
+    const card = document.createElement("div");
+    card.className = "adventureMediaPickerCard comparePickerCard";
+    const heading = document.createElement("h3");
+    heading.textContent = "Link existing photos";
+    const help = document.createElement("p");
+    help.textContent = "Choose up to 12 local photos or GIFs. The note will reference them without making extra copies.";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.placeholder = "Search image name, note, or channel";
+    const status = document.createElement("p");
+    status.className = "comparePickerStatus";
+    const grid = document.createElement("div");
+    grid.className = "adventureMediaPickerGrid comparePickerGrid";
+    const more = document.createElement("button");
+    more.type = "button";
+    const actions = document.createElement("div");
+    actions.className = "comparePickerActions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "Clear";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "adventurePrimary";
+    const dismiss = () => modal.remove();
+    let visibleLimit = 48;
+    const syncSelection = () => {
+        status.textContent = selected.size ? `${selected.size} of 12 linked` : "Select photos to link to this note.";
+        add.textContent = selected.size ? `Link ${selected.size} photo${selected.size === 1 ? "" : "s"}` : "Link selected photos";
+        add.disabled = selected.size === 0;
+        grid.querySelectorAll("button[data-photo-key]").forEach((button) => button.classList.toggle("isSelected", selected.has(button.dataset.photoKey)));
+    };
+    const renderOptions = () => {
+        grid.innerHTML = "";
+        more.hidden = true;
+        const query = search.value.trim().toLowerCase();
+        const matching = options.filter((option) => !query || `${option.label} ${option.channelName}`.toLowerCase().includes(query));
+        matching.slice(0, visibleLimit).forEach((option) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.dataset.photoKey = photoRefKey(option.ref);
+            const image = document.createElement("img");
+            const objectUrl = option.attachment.blob ? URL.createObjectURL(option.attachment.blob) : "";
+            image.src = objectUrl || option.attachment.dataUrl || "";
+            image.alt = option.label;
+            if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+            const label = document.createElement("span");
+            label.textContent = `#${option.channelName} · ${option.label}`;
+            button.append(image, label);
+            button.addEventListener("click", () => {
+                const key = button.dataset.photoKey;
+                if (selected.has(key)) selected.delete(key);
+                else if (selected.size < 12) selected.add(key);
+                else { status.textContent = "You can link up to 12 photos at once."; return; }
+                syncSelection();
+            });
+            grid.appendChild(button);
+        });
+        if (matching.length > visibleLimit) {
+            more.hidden = false;
+            more.textContent = `Show ${Math.min(48, matching.length - visibleLimit)} more (${matching.length} total)`;
+        }
+        syncSelection();
+    };
+    search.addEventListener("input", () => { visibleLimit = 48; renderOptions(); });
+    more.addEventListener("click", () => { visibleLimit += 48; renderOptions(); });
+    cancel.addEventListener("click", dismiss);
+    clear.addEventListener("click", () => { selected.clear(); syncSelection(); });
+    add.addEventListener("click", () => {
+        state.draftLinkedPhotoRefs = options.filter((option) => selected.has(photoRefKey(option.ref))).map((option) => option.ref);
+        dismiss();
+        renderComposer();
+    });
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    actions.append(cancel, clear, add);
+    card.append(heading, help, search, status, grid, more, actions);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    renderOptions();
+}
+
 function openSlideshow(items) {
     if (!items?.length) return;
     const modal = document.createElement("div");
@@ -5226,6 +6247,9 @@ function openSlideshow(items) {
     let index = 0;
     let paused = false;
     let objectUrl = "";
+    let intervalMs = 5000;
+    let autoplayTimer;
+    let pointerStartX = 0;
     const image = document.createElement("img");
     const caption = document.createElement("p");
     const controls = document.createElement("div");
@@ -5237,27 +6261,68 @@ function openSlideshow(items) {
     previous.type = "button"; previous.textContent = "Previous";
     const next = document.createElement("button");
     next.type = "button"; next.textContent = "Next";
+    const open = document.createElement("button");
+    open.type = "button"; open.textContent = "Expand";
+    const speed = document.createElement("select");
+    [[3000, "3 sec"], [5000, "5 sec"], [8000, "8 sec"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = String(value); option.textContent = label; option.selected = value === intervalMs; speed.appendChild(option);
+    });
+    speed.setAttribute("aria-label", "Slideshow speed");
+    const progress = document.createElement("div");
+    progress.className = "slideshowProgress";
+    const progressFill = document.createElement("span");
+    progress.appendChild(progressFill);
     const show = () => {
         if (objectUrl) URL.revokeObjectURL(objectUrl);
         const item = items[index];
         objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
         image.src = objectUrl || item.attachment.dataUrl || "";
         image.alt = item.alt;
-        caption.textContent = `${index + 1} / ${items.length} · ${item.alt}`;
+        caption.textContent = `${index + 1} / ${items.length} · ${item.alt}${item.channelName ? ` · # ${item.channelName}` : ""}`;
+        progressFill.style.transition = "none";
+        progressFill.style.width = "0%";
+        if (!paused) requestAnimationFrame(() => {
+            progressFill.style.transition = `width ${intervalMs}ms linear`;
+            progressFill.style.width = "100%";
+        });
     };
-    const change = (offset) => { index = (index + offset + items.length) % items.length; show(); };
-    const interval = window.setInterval(() => { if (!paused) change(1); }, 4000);
-    const dismiss = () => { window.clearInterval(interval); if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
+    const schedule = () => {
+        window.clearTimeout(autoplayTimer);
+        if (!paused) autoplayTimer = window.setTimeout(() => { change(1); }, intervalMs);
+    };
+    const change = (offset) => { index = (index + offset + items.length) % items.length; show(); schedule(); };
+    const dismiss = () => { window.clearTimeout(autoplayTimer); window.removeEventListener("keydown", onKeydown); if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
+    const onKeydown = (event) => {
+        if (event.key === "Escape") dismiss();
+        if (event.key === "ArrowLeft") change(-1);
+        if (event.key === "ArrowRight") change(1);
+        if (event.key === " ") { event.preventDefault(); pause.click(); }
+    };
     close.addEventListener("click", dismiss);
-    pause.addEventListener("click", () => { paused = !paused; pause.textContent = paused ? "Play" : "Pause"; });
+    pause.addEventListener("click", () => {
+        paused = !paused;
+        pause.textContent = paused ? "Play" : "Pause";
+        if (paused) { window.clearTimeout(autoplayTimer); progressFill.style.transition = "none"; }
+        else { show(); schedule(); }
+    });
     previous.addEventListener("click", () => change(-1));
     next.addEventListener("click", () => change(1));
-    image.addEventListener("click", () => openImageViewer(items[index].attachment, items[index].alt, items, index));
+    open.addEventListener("click", () => openImageViewer(items[index].attachment, items[index].alt, items, index));
+    speed.addEventListener("change", () => { intervalMs = Number.parseInt(speed.value, 10) || 5000; show(); schedule(); });
+    image.addEventListener("pointerdown", (event) => { pointerStartX = event.clientX; });
+    image.addEventListener("pointerup", (event) => {
+        const delta = event.clientX - pointerStartX;
+        if (Math.abs(delta) > 50) change(delta < 0 ? 1 : -1);
+        else pause.click();
+    });
     modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
-    controls.append(close, previous, pause, next);
-    modal.append(controls, image, caption);
+    controls.append(close, previous, pause, next, open, speed);
+    modal.append(controls, image, caption, progress);
     document.body.appendChild(modal);
     show();
+    schedule();
+    window.addEventListener("keydown", onKeydown);
 }
 
 function openImageViewer(attachment, altText = "Local photo", items = null, initialIndex = 0) {
@@ -5311,9 +6376,50 @@ function openImageViewer(attachment, altText = "Local photo", items = null, init
     const info = document.createElement("p"); info.className = "imageViewerInfo";
     controls.append(close, previous, next, zoomOut, zoomIn, count);
     let startX = 0; let startY = 0; let startPanX = 0; let startPanY = 0;
-    image.addEventListener("pointerdown", (event) => { startX = event.clientX; startY = event.clientY; startPanX = panX; startPanY = panY; image.setPointerCapture(event.pointerId); });
-    image.addEventListener("pointermove", (event) => { if (!image.hasPointerCapture(event.pointerId)) return; const dx = event.clientX - startX; const dy = event.clientY - startY; if (zoom > 1) { panX = startPanX + dx; panY = startPanY + dy; draw(); } });
-    image.addEventListener("pointerup", (event) => { const dx = event.clientX - startX; if (zoom === 1 && Math.abs(dx) > 70 && gallery.length > 1) { index = dx < 0 ? (index + 1) % gallery.length : (index - 1 + gallery.length) % gallery.length; show(); } });
+    let pinchDistance = 0; let pinchZoom = 1; let usedPinch = false;
+    const pointers = new Map();
+    const distanceBetweenPointers = () => {
+        const [first, second] = [...pointers.values()];
+        return first && second ? Math.hypot(first.x - second.x, first.y - second.y) : 0;
+    };
+    image.addEventListener("pointerdown", (event) => {
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        image.setPointerCapture(event.pointerId);
+        if (pointers.size === 1) {
+            startX = event.clientX; startY = event.clientY; startPanX = panX; startPanY = panY; usedPinch = false;
+        } else if (pointers.size === 2) {
+            pinchDistance = distanceBetweenPointers();
+            pinchZoom = zoom;
+            usedPinch = true;
+        }
+    });
+    image.addEventListener("pointermove", (event) => {
+        if (!pointers.has(event.pointerId)) return;
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (pointers.size >= 2) {
+            const distance = distanceBetweenPointers();
+            if (pinchDistance > 0) zoom = Math.min(4, Math.max(1, pinchZoom * (distance / pinchDistance)));
+            draw();
+            return;
+        }
+        const dx = event.clientX - startX; const dy = event.clientY - startY;
+        if (zoom > 1) { panX = startPanX + dx; panY = startPanY + dy; draw(); }
+    });
+    const finishPointer = (event) => {
+        const dx = event.clientX - startX;
+        const wasPinch = usedPinch || pointers.size > 1;
+        pointers.delete(event.pointerId);
+        if (pointers.size === 1) {
+            const remaining = [...pointers.values()][0];
+            startX = remaining.x; startY = remaining.y; startPanX = panX; startPanY = panY;
+        }
+        if (!wasPinch && zoom === 1 && Math.abs(dx) > 70 && gallery.length > 1) {
+            index = dx < 0 ? (index + 1) % gallery.length : (index - 1 + gallery.length) % gallery.length;
+            show();
+        }
+    };
+    image.addEventListener("pointerup", finishPointer);
+    image.addEventListener("pointercancel", finishPointer);
     image.addEventListener("dblclick", () => { zoom = zoom === 1 ? 2 : 1; panX = 0; panY = 0; draw(); });
     viewer.append(controls, image, info);
     document.body.appendChild(viewer);
@@ -5440,7 +6546,7 @@ function getCurrentMobileStage() {
 }
 
 function isMobileLayout() {
-    return window.matchMedia("(max-width: 700px)").matches;
+    return window.matchMedia("(max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse)").matches;
 }
 
 function debounce(callback, delay) {
