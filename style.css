@@ -1141,6 +1141,180 @@ select:focus-visible {
     margin: 0 auto;
 }
 
+.channelQuizPlay {
+    width: min(980px, 100%);
+}
+
+.channelQuizPlayHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.channelQuizPlayHeader h3 {
+    margin: 0 0 5px;
+}
+
+.channelQuizPlayHeader > button {
+    min-height: 40px;
+    padding: 0 11px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.channelQuizPlayContent {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(210px, .85fr);
+    align-items: stretch;
+    gap: 12px;
+    min-height: min(58dvh, 590px);
+}
+
+.channelQuizMedia,
+.channelQuizMedia .adventurePlayerMediaItem {
+    min-height: 0;
+    height: 100%;
+}
+
+.channelQuizMedia .adventurePlayerMediaItem {
+    display: grid;
+}
+
+.channelQuizMedia .adventurePlayerMediaItem img {
+    height: 100%;
+    max-height: none;
+}
+
+.channelQuizMedia.isCropped .adventurePlayerMediaItem {
+    overflow: hidden;
+}
+
+.channelQuizMedia.isCropped .adventurePlayerMediaItem img {
+    object-fit: cover;
+    transition: transform 220ms ease;
+}
+
+.channelQuizAnswerPanel {
+    display: grid;
+    align-content: start;
+    gap: 10px;
+    min-height: 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.channelQuizAnswerPanel h3 {
+    margin: 0;
+    font-size: 15px;
+}
+
+.channelQuizAnswerPanel .adventurePlayerChoices {
+    max-height: min(47dvh, 500px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.channelQuizAnswerPanel input {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.channelQuizSuggestions {
+    display: grid;
+    gap: 5px;
+}
+
+.channelQuizSuggestions[hidden] {
+    display: none;
+}
+
+.channelQuizSuggestions button {
+    min-height: 36px;
+    padding: 0 9px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.channelQuizSuggestions button:hover {
+    border-color: var(--accent);
+    background: rgba(35, 165, 89, .14);
+}
+
+.randomZoom {
+    display: grid;
+    gap: 14px;
+    width: min(900px, 100%);
+    margin: 0 auto;
+}
+
+.randomZoomControls {
+    display: flex;
+    justify-content: center;
+}
+
+.randomZoomControls button,
+.randomZoom > button {
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.randomZoom > button {
+    justify-self: center;
+    background: var(--panel-hover);
+    color: var(--text);
+}
+
+.randomZoomFrame {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: min(64dvh, 640px);
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #111214;
+}
+
+.randomZoomFrame img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    object-fit: cover;
+    cursor: zoom-in;
+    transition: transform 260ms ease;
+}
+
+.randomZoomFrame figcaption {
+    overflow: hidden;
+    padding: 9px 11px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .channelQuizSetup {
     display: grid;
     gap: 10px;
@@ -3531,6 +3705,43 @@ button:disabled {
     }
 
     .channelLoadingPhotoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .channelQuizPlay { gap: 9px; }
+
+    .channelQuizPlayHeader > button {
+        min-height: 36px;
+        padding: 0 8px;
+        font-size: 12px;
+    }
+
+    .channelQuizPlayContent {
+        grid-template-columns: minmax(0, 1.2fr) minmax(126px, .8fr);
+        gap: 8px;
+        min-height: min(42dvh, 390px);
+    }
+
+    .channelQuizAnswerPanel {
+        gap: 8px;
+        padding: 9px;
+    }
+
+    .channelQuizAnswerPanel h3 { font-size: 13px; }
+
+    .channelQuizAnswerPanel .adventurePlayerChoices {
+        max-height: min(34dvh, 330px);
+        gap: 7px;
+    }
+
+    .channelQuizAnswerPanel .adventureChoiceButton {
+        min-height: 38px;
+        padding: 7px 8px;
+        font-size: 12px;
+        line-height: 1.2;
+    }
+
+    .randomZoom { gap: 10px; }
+    .randomZoomFrame { min-height: min(48dvh, 500px); }
+    .randomZoomFrame figcaption { padding: 8px 9px; }
 
     .adventureChoiceRow {
         grid-template-columns: 1fr;
