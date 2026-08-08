@@ -68,6 +68,7 @@ const state = {
     error: "",
     visibleMessageLimit: 100,
     randomPhotoArray: [],
+    randomZoom: null,
     isUnlocked: sessionStorage.getItem(UNLOCK_SESSION_KEY) === "1",
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -76,7 +77,7 @@ const state = {
     activeAdventureSessionId: null,
     focusAdventureSceneId: null,
     adventureEditorStage: "setup",
-    channelQuiz: { channelIds: [], useAllChannels: false, answerMode: "choice", current: null, score: 0, rounds: 0, ended: false }
+    channelQuiz: { channelIds: [], useAllChannels: false, answerMode: "choice", current: null, score: 0, rounds: 0, ended: false, screen: "setup", lastChannelId: null, answering: false }
 };
 
 let adventureAutosaveTimer;
@@ -802,6 +803,13 @@ function renderSpecialViews() {
             prefix: "?",
             title: "Guess which channel a random image came from"
         }));
+        group.appendChild(renderSmartChannelRow({
+            id: "random-zoom",
+            type: "randomZoom",
+            label: "random zoom",
+            prefix: "⌕",
+            title: "Reveal a random detail from a local image"
+        }));
     }
     if (state.randomPhotoArray.length > 0) {
         group.appendChild(renderSmartChannelRow({
@@ -937,7 +945,11 @@ function renderHeader() {
     els.saveRandomArrayBtn.hidden = !isRandomArray;
     els.saveRandomArrayBtn.disabled = !isRandomArray || state.randomPhotoArray.length === 0;
     els.lockWorkspaceBtn.hidden = !state.isUnlocked;
-    els.randomMessageBtn.textContent = state.activeView.type === "collection" ? "Random collection note" : "Random note";
+    els.randomMessageBtn.textContent = state.activeView.type === "collection"
+        ? "Random collection note"
+        : state.activeView.type === "randomArray"
+            ? "Random array note"
+            : "Random note";
     const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "channelQuiz", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
     els.comparePhotosBtn.hidden = !compareAvailable;
     els.comparePhotosBtn.disabled = !compareAvailable;
@@ -963,6 +975,12 @@ function renderHeader() {
     if (state.activeView.type === "channelQuiz") {
         els.activeTitle.textContent = "Channel quiz";
         els.activeMeta.textContent = "Guess where a random local image came from";
+        return;
+    }
+
+    if (state.activeView.type === "randomZoom") {
+        els.activeTitle.textContent = "Random zoom";
+        els.activeMeta.textContent = "A random close-up from a local image in this workspace";
         return;
     }
 
@@ -1055,7 +1073,7 @@ function renderMessages() {
         return;
     }
 
-    if (["randomArray", "adventurePlay"].includes(state.activeView.type)) {
+    if (["channel", "randomArray", "adventurePlay"].includes(state.activeView.type)) {
         const focus = document.createElement("button");
         focus.type = "button";
         focus.className = "focusModeButton";
@@ -1084,6 +1102,11 @@ function renderMessages() {
 
     if (state.activeView.type === "channelQuiz") {
         renderChannelQuiz();
+        return;
+    }
+
+    if (state.activeView.type === "randomZoom") {
+        renderRandomZoom();
         return;
     }
 
@@ -1630,6 +1653,10 @@ function renderFocusSession() {
 
 function renderChannelQuiz() {
     const quiz = state.channelQuiz;
+    if (quiz.screen === "play") {
+        renderChannelQuizPlay();
+        return;
+    }
     const quizSettings = getChannelQuizSettings();
     const highScore = getChannelQuizHighScore();
     const page = document.createElement("section");
@@ -1767,119 +1794,285 @@ function renderChannelQuiz() {
     punishmentSecondsInput.max = "60";
     punishmentSecondsInput.value = quizSettings.punishmentSeconds;
     punishmentSeconds.appendChild(punishmentSecondsInput);
+    const randomCrop = document.createElement("label");
+    const randomCropInput = document.createElement("input");
+    randomCropInput.type = "checkbox";
+    randomCropInput.checked = Boolean(quizSettings.randomCropEnabled);
+    randomCrop.append(randomCropInput, " Randomly crop every quiz image");
+    const cropSize = document.createElement("label");
+    cropSize.textContent = "Visible crop size (%) — lower is harder";
+    const cropSizeInput = document.createElement("input");
+    cropSizeInput.type = "number";
+    cropSizeInput.min = "20";
+    cropSizeInput.max = "100";
+    cropSizeInput.value = quizSettings.randomCropSize;
+    cropSize.appendChild(cropSizeInput);
     const saveQuizSettings = async () => {
         saveChannelQuizSettings({
             increaseBpmOnWrong: bpmPenaltyInput.checked,
             bpmIncrease: clampAdventureNumber(bpmStepInput.value, 1, 100, 10),
             punishmentEnabled: punishmentInput.checked,
             punishmentChannelId: punishmentChannelInput.value || null,
-            punishmentSeconds: clampAdventureNumber(punishmentSecondsInput.value, 1, 60, 5)
+            punishmentSeconds: clampAdventureNumber(punishmentSecondsInput.value, 1, 60, 5),
+            randomCropEnabled: randomCropInput.checked,
+            randomCropSize: clampAdventureNumber(cropSizeInput.value, 20, 100, 60)
         });
     };
-    [bpmPenaltyInput, bpmStepInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
-    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds);
+    [bpmPenaltyInput, bpmStepInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput, randomCropInput, cropSizeInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
+    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds, randomCrop, cropSize);
     const start = document.createElement("button");
     start.type = "button";
     start.className = "adventurePrimary";
-    start.textContent = quiz.current ? "Next question" : quiz.ended ? "Start new quiz" : "Start quiz";
+    start.textContent = quiz.current ? "Resume quiz" : quiz.ended ? "Start new quiz" : "Start quiz";
     start.addEventListener("click", () => {
+        quiz.useAllChannels = allInput.checked;
+        quiz.channelIds = [...sourceInput.selectedOptions].map((option) => option.value);
+        quiz.answerMode = modeInput.value;
+        if (quiz.current) {
+            quiz.screen = "play";
+            renderMessages();
+            return;
+        }
         if (quiz.ended) {
             quiz.score = 0;
             quiz.rounds = 0;
             quiz.ended = false;
         }
-        quiz.useAllChannels = allInput.checked;
-        quiz.channelIds = [...sourceInput.selectedOptions].map((option) => option.value);
-        quiz.answerMode = modeInput.value;
+        quiz.lastChannelId = null;
+        quiz.answering = false;
+        quiz.screen = "play";
         drawChannelQuizQuestion();
     });
     setup.append(all, sources, mode, presets, settings, start);
     page.append(intro, setup);
+    els.messages.appendChild(page);
+}
+
+function renderChannelQuizPlay() {
+    const quiz = state.channelQuiz;
+    const quizSettings = getChannelQuizSettings();
+    const highScore = getChannelQuizHighScore();
+    const page = document.createElement("section");
+    page.className = "channelQuiz channelQuizPlay";
+    const header = document.createElement("section");
+    header.className = "channelQuizPlayHeader";
+    const title = document.createElement("div");
+    const heading = document.createElement("h3");
+    heading.textContent = "Which channel?";
     const score = document.createElement("p");
     score.className = "channelQuizScore";
     score.textContent = `${quiz.score} correct out of ${quiz.rounds} answered · high score: ${highScore.bestCorrect} correct`;
-    page.appendChild(score);
-    const quizActions = document.createElement("div");
-    quizActions.className = "channelQuizActions";
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.textContent = "Start a fresh score";
-    reset.addEventListener("click", () => {
+    title.append(heading, score);
+    const setupButton = document.createElement("button");
+    setupButton.type = "button";
+    setupButton.textContent = "Quiz settings";
+    setupButton.addEventListener("click", () => { quiz.screen = "setup"; renderMessages(); });
+    header.append(title, setupButton);
+    page.appendChild(header);
+
+    const actions = document.createElement("div");
+    actions.className = "channelQuizActions";
+    const fresh = document.createElement("button");
+    fresh.type = "button";
+    fresh.textContent = "Start a fresh score";
+    fresh.addEventListener("click", () => {
         window.clearTimeout(channelQuizPunishmentTimer);
         quiz.score = 0;
         quiz.rounds = 0;
         quiz.current = null;
         quiz.punishment = null;
         quiz.ended = false;
+        quiz.lastChannelId = null;
+        quiz.answering = false;
+        quiz.screen = "setup";
         renderMessages();
     });
-    quizActions.appendChild(reset);
-    if (!quiz.ended && (quiz.current || quiz.punishment || quiz.rounds > 0)) {
+    actions.appendChild(fresh);
+    if (!quiz.ended) {
         const busted = document.createElement("button");
         busted.type = "button";
         busted.className = "channelQuizBustedButton";
         busted.textContent = "Busted — end quiz";
         busted.addEventListener("click", finishChannelQuizAsBusted);
-        quizActions.appendChild(busted);
+        actions.appendChild(busted);
     }
-    page.appendChild(quizActions);
+    page.appendChild(actions);
+
     if (quiz.ended) {
         const result = document.createElement("section");
         result.className = "channelQuizBusted";
-        const title = document.createElement("h3");
-        title.textContent = "Quiz busted";
+        const resultHeading = document.createElement("h3");
+        resultHeading.textContent = "Quiz busted";
         const message = document.createElement("p");
-        message.textContent = `Final score: ${quiz.score} correct out of ${quiz.rounds}. Start a new quiz when you are ready.`;
-        result.append(title, message);
+        message.textContent = `Final score: ${quiz.score} correct out of ${quiz.rounds}.`;
+        result.append(resultHeading, message);
         page.appendChild(result);
         els.messages.appendChild(page);
         return;
     }
+
     if (quiz.punishment) {
         const punishmentPanel = document.createElement("section");
         punishmentPanel.className = "channelQuizPunishment";
         const note = document.createElement("p");
-        note.textContent = `Wrong answer. Returning to the quiz in ${quizSettings.punishmentSeconds} seconds…`;
+        note.textContent = `Wrong answer. Returning to a new question in ${quizSettings.punishmentSeconds} seconds…`;
         punishmentPanel.append(note, renderAdventurePlayerMedia(quiz.punishment.ref));
         page.appendChild(punishmentPanel);
         els.messages.appendChild(page);
         return;
     }
-    if (quiz.current) {
-        const attachment = findAttachment(quiz.current.ref);
-        if (attachment) {
-            const media = renderAdventurePlayerMedia(quiz.current.ref);
-            page.appendChild(media);
-            const question = document.createElement("h3");
-            question.textContent = quiz.answerMode === "text" ? "Type the channel name" : "Which channel did this image come from?";
-            page.appendChild(question);
-            const answerArea = document.createElement("div");
-            answerArea.className = "adventurePlayerChoices";
-            if (quiz.answerMode === "text") {
-                const input = document.createElement("input");
-                input.type = "text";
-                input.placeholder = "Channel name";
-                const submit = document.createElement("button");
-                submit.type = "button";
-                submit.className = "adventureChoiceButton adventurePrimary";
-                submit.textContent = "Check answer";
-                submit.addEventListener("click", () => answerChannelQuiz(input.value));
-                answerArea.append(input, submit);
-            } else {
-                const eligible = quiz.useAllChannels ? allChannels().map((channel) => channel.id) : quiz.channelIds;
-                [...new Set([quiz.current.ref.channelId, ...eligible])].map((id) => getChannelById(id)).filter(Boolean).sort(() => Math.random() - .5).forEach((channel) => {
-                    const button = document.createElement("button");
-                    button.type = "button";
-                    button.className = "adventureChoiceButton";
-                    button.textContent = `# ${channel.name}`;
-                    button.addEventListener("click", () => answerChannelQuiz(channel.id));
-                    answerArea.appendChild(button);
-                });
-            }
-            page.appendChild(answerArea);
+
+    const attachment = quiz.current ? findAttachment(quiz.current.ref) : null;
+    if (!attachment) {
+        const recovery = document.createElement("button");
+        recovery.type = "button";
+        recovery.className = "adventurePrimary";
+        recovery.textContent = "Draw next question";
+        recovery.addEventListener("click", drawChannelQuizQuestion);
+        page.appendChild(recovery);
+        els.messages.appendChild(page);
+        return;
+    }
+
+    const content = document.createElement("section");
+    content.className = "channelQuizPlayContent";
+    const media = renderAdventurePlayerMedia(quiz.current.ref);
+    media.classList.add("channelQuizMedia");
+    if (quiz.crop) {
+        media.classList.add("isCropped");
+        const image = media.querySelector("img");
+        if (image) {
+            image.style.transform = `scale(${quiz.crop.scale})`;
+            image.style.transformOrigin = `${quiz.crop.x}% ${quiz.crop.y}%`;
         }
     }
+    const answerPanel = document.createElement("section");
+    answerPanel.className = "channelQuizAnswerPanel";
+    const question = document.createElement("h3");
+    question.textContent = quiz.answerMode === "text" ? "Type the channel name" : "Which channel did this image come from?";
+    const answerArea = document.createElement("div");
+    answerArea.className = "adventurePlayerChoices";
+    if (quiz.answerMode === "text") {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = "Channel name";
+        const suggestions = document.createElement("div");
+        suggestions.className = "channelQuizSuggestions";
+        const eligible = [...new Set([quiz.current.ref.channelId, ...(quiz.useAllChannels ? allChannels().map((channel) => channel.id) : quiz.channelIds)])]
+            .map((id) => getChannelById(id))
+            .filter(Boolean);
+        const renderSuggestions = () => {
+            const typed = input.value.trim().replace(/^#\s*/, "").toLowerCase();
+            suggestions.replaceChildren();
+            if (!typed) {
+                suggestions.hidden = true;
+                return;
+            }
+            eligible
+                .filter((channel) => channel.name.toLowerCase().includes(typed))
+                .slice(0, 5)
+                .forEach((channel) => {
+                    const suggestion = document.createElement("button");
+                    suggestion.type = "button";
+                    suggestion.textContent = `# ${channel.name}`;
+                    suggestion.addEventListener("click", () => answerChannelQuiz(channel.name));
+                    suggestions.appendChild(suggestion);
+                });
+            suggestions.hidden = suggestions.childElementCount === 0;
+        };
+        const submit = document.createElement("button");
+        submit.type = "button";
+        submit.className = "adventureChoiceButton adventurePrimary";
+        submit.textContent = "Check answer";
+        submit.addEventListener("click", () => answerChannelQuiz(input.value));
+        input.addEventListener("input", renderSuggestions);
+        input.addEventListener("keydown", (event) => { if (event.key === "Enter") answerChannelQuiz(input.value); });
+        answerArea.append(input, suggestions, submit);
+        requestAnimationFrame(() => input.focus());
+    } else {
+        const eligible = quiz.useAllChannels ? allChannels().map((channel) => channel.id) : quiz.channelIds;
+        [...new Set([quiz.current.ref.channelId, ...eligible])]
+            .map((id) => getChannelById(id))
+            .filter(Boolean)
+            .sort(() => Math.random() - .5)
+            .forEach((channel) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "adventureChoiceButton";
+                button.textContent = `# ${channel.name}`;
+                button.addEventListener("click", () => answerChannelQuiz(channel.id));
+                answerArea.appendChild(button);
+            });
+    }
+    answerPanel.append(question, answerArea);
+    content.append(media, answerPanel);
+    page.appendChild(content);
     els.messages.appendChild(page);
+}
+
+function renderRandomZoom() {
+    const page = document.createElement("section");
+    page.className = "randomZoom";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Random zoom</h3><p>Reveal a randomly cropped detail from one local photo or GIF in this workspace.</p>";
+    const controls = document.createElement("div");
+    controls.className = "randomZoomControls";
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "adventurePrimary";
+    next.textContent = state.randomZoom ? "Another random zoom" : "Reveal random detail";
+    next.addEventListener("click", drawRandomZoom);
+    controls.appendChild(next);
+    page.append(intro, controls);
+
+    const zoom = state.randomZoom;
+    const attachment = zoom ? findAttachment(zoom.ref) : null;
+    if (zoom && attachment) {
+        const frame = document.createElement("figure");
+        frame.className = "randomZoomFrame";
+        const image = document.createElement("img");
+        const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+        image.src = objectUrl || attachment.dataUrl || "";
+        image.alt = attachment.note || attachment.name || "Random local photo";
+        image.style.transform = `scale(${zoom.scale})`;
+        image.style.transformOrigin = `${zoom.x}% ${zoom.y}%`;
+        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        const caption = document.createElement("figcaption");
+        caption.textContent = `# ${getChannelById(zoom.ref.channelId)?.name || "channel"} · ${attachment.note || attachment.name || "Local image"} · tap to view full image`;
+        frame.append(image, caption);
+        const full = document.createElement("button");
+        full.type = "button";
+        full.textContent = "View full image";
+        full.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        page.append(frame, full);
+    }
+    els.messages.appendChild(page);
+}
+
+function drawRandomZoom() {
+    const candidates = getServerEntries().flatMap((entry) => (
+        (entry.message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+            .map((attachment) => ({
+                ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id }
+            }))
+    ));
+    const chosen = randomItem(candidates);
+    if (!chosen) {
+        alert("Add a local image or GIF to this workspace first.");
+        return;
+    }
+    state.randomZoom = {
+        ref: chosen.ref,
+        scale: 1.7 + Math.random() * 2.1,
+        x: 18 + Math.random() * 64,
+        y: 18 + Math.random() * 64
+    };
+    renderMessages();
 }
 
 function drawChannelQuizQuestion() {
@@ -1889,12 +2082,22 @@ function drawChannelQuizQuestion() {
     const chosen = randomItem(candidates);
     if (!chosen) { alert("Choose at least one channel with local images, or use all channels."); return; }
     quiz.current = chosen;
+    const settings = getChannelQuizSettings();
+    const visiblePercent = clampAdventureNumber(settings.randomCropSize, 20, 100, 60);
+    quiz.crop = settings.randomCropEnabled ? {
+        scale: 100 / visiblePercent,
+        x: 18 + Math.random() * 64,
+        y: 18 + Math.random() * 64
+    } : null;
+    quiz.screen = "play";
+    quiz.answering = false;
     renderMessages();
 }
 
 async function answerChannelQuiz(answer) {
     const quiz = state.channelQuiz;
-    if (!quiz.current) return;
+    if (!quiz.current || quiz.answering) return;
+    quiz.answering = true;
     const source = getChannelById(quiz.current.ref.channelId);
     const typed = String(answer || "").trim().replace(/^#\s*/, "").toLowerCase();
     const correct = quiz.answerMode === "text" ? typed === String(source?.name || "").toLowerCase() : answer === quiz.current.ref.channelId;
@@ -1903,8 +2106,7 @@ async function answerChannelQuiz(answer) {
         quiz.score += 1;
         await saveChannelQuizHighScore();
         alert(`Correct — it was #${source?.name || "channel"}.`);
-        quiz.current = null;
-        renderMessages();
+        drawChannelQuizQuestion();
         return;
     }
     const settings = getChannelQuizSettings();
@@ -1920,14 +2122,12 @@ async function answerChannelQuiz(answer) {
         window.clearTimeout(channelQuizPunishmentTimer);
         channelQuizPunishmentTimer = window.setTimeout(() => {
             quiz.punishment = null;
-            quiz.current = null;
-            renderMessages();
+            drawChannelQuizQuestion();
         }, settings.punishmentSeconds * 1000);
         return;
     }
     alert(`Not quite — it was #${source?.name || "channel"}.`);
-    quiz.current = null;
-    renderMessages();
+    drawChannelQuizQuestion();
 }
 
 async function finishChannelQuizAsBusted() {
@@ -1936,6 +2136,7 @@ async function finishChannelQuizAsBusted() {
     window.clearTimeout(channelQuizPunishmentTimer);
     quiz.current = null;
     quiz.punishment = null;
+    quiz.answering = false;
     quiz.ended = true;
     await saveChannelQuizHighScore();
     renderMessages();
@@ -1951,6 +2152,8 @@ function getChannelQuizSettings() {
         punishmentEnabled: false,
         punishmentChannelId: defaultPunishment,
         punishmentSeconds: 5,
+        randomCropEnabled: false,
+        randomCropSize: 60,
         ...saved
     };
 }
@@ -5389,12 +5592,14 @@ function renderComposer() {
     els.randomChannelBtn.disabled = !state.ready || !state.isUnlocked || allChannels().length === 0;
     els.randomServerMessageBtn.disabled = !state.ready || !state.isUnlocked || getAllChannels().length === 0;
     const collectionHasNotes = state.activeView.type === "collection" && getCollectionEntries(state.activeView.id).length > 0;
-    els.randomMessageBtn.disabled = !state.ready || !state.isUnlocked || (!enabled && !collectionHasNotes);
+    const randomArrayHasNotes = state.activeView.type === "randomArray" && state.randomPhotoArray.length > 0;
+    const canRandomizeCurrentView = enabled || collectionHasNotes || randomArrayHasNotes;
+    els.randomMessageBtn.disabled = !state.ready || !state.isUnlocked || !canRandomizeCurrentView;
     els.randomPhotoArrayBtn.disabled = !state.ready || !state.isUnlocked;
     els.randomMetronomeBtn.disabled = !state.ready || !state.isUnlocked;
     els.metronomeToggleBtn.disabled = !state.ready || !state.isUnlocked;
     els.mobileBackBtn.disabled = !state.ready || !state.isUnlocked;
-    els.mobileRandomBtn.disabled = !state.ready || !state.isUnlocked || (!enabled && !collectionHasNotes);
+    els.mobileRandomBtn.disabled = !state.ready || !state.isUnlocked || !canRandomizeCurrentView;
     els.mobileAddImageBtn.disabled = !enabled;
     els.mobileMoreBtn.disabled = !state.ready || !state.isUnlocked;
 
@@ -5453,6 +5658,7 @@ function openMobileQuickActions() {
         makeAction("Link local photos", openLinkedPhotoPicker, !isChannel),
         makeAction("Compare photos", openComparePicker, els.comparePhotosBtn.hidden || els.comparePhotosBtn.disabled),
         makeAction("Search this view", () => { els.searchInput.focus(); }, !isChannel),
+        makeAction(state.focusMode ? "Exit focus mode" : "Focus this channel", () => { state.focusMode = !state.focusMode; render(); }, !isChannel),
         makeAction("Lock workspace", lockWorkspace, !state.isUnlocked),
         makeAction("Delete this channel", deleteActiveChannel, !isChannel, true)
     );
@@ -6020,6 +6226,10 @@ async function selectRandomMessageForCurrentView() {
         await selectRandomMessageInCollection();
         return;
     }
+    if (state.activeView.type === "randomArray") {
+        await selectRandomMessageInRandomArray();
+        return;
+    }
     await selectRandomMessage(state.activeChannelId);
 }
 
@@ -6029,6 +6239,28 @@ async function selectRandomMessageInCollection() {
     const entry = randomItem(getCollectionEntries(state.activeView.id));
     if (!entry?.message || !entry.channelId) {
         alert("This collection has no available source notes.");
+        return;
+    }
+    state.activeChannelId = entry.channelId;
+    state.activeServerId = getChannelServer(entry.channelId)?.id || state.activeServerId;
+    state.activeView = { type: "channel", id: entry.channelId };
+    await loadActiveChannelMessages();
+    render();
+    showMobileStage("chat");
+    requestAnimationFrame(() => {
+        const node = els.messages.querySelector(`[data-message-id="${entry.message.id}"]`);
+        node?.scrollIntoView({ behavior: "smooth", block: "center" });
+        node?.classList.add("selected");
+        setTimeout(() => node?.classList.remove("selected"), 1400);
+    });
+}
+
+async function selectRandomMessageInRandomArray() {
+    await maybeRandomizeMetronome("message");
+    await maybeRandomizeTimer("message");
+    const entry = randomItem(state.randomPhotoArray);
+    if (!entry?.message || !entry.channelId) {
+        alert("This random array has no available source notes.");
         return;
     }
     state.activeChannelId = entry.channelId;
