@@ -61,6 +61,10 @@ button {
     background: var(--server-bg);
 }
 
+.serverListTitle {
+    display: none;
+}
+
 .server {
     display: grid;
     place-items: center;
@@ -72,6 +76,17 @@ button {
     cursor: pointer;
     font-weight: 800;
     transition: border-radius 140ms ease, background 140ms ease;
+}
+
+.serverIcon {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+}
+
+.serverName {
+    display: none;
 }
 
 .server:hover,
@@ -251,6 +266,7 @@ button {
 .sidebarTools button,
 .topActions > button,
 #attachImageBtn,
+#linkPhotosBtn,
 #sendBtn,
 .randomRange button {
     border-radius: var(--radius);
@@ -272,6 +288,7 @@ button {
 .sidebarTools button:hover,
 .topActions > button:hover,
 #attachImageBtn:hover,
+#linkPhotosBtn:hover,
 .randomRange button:hover {
     background: var(--panel-hover);
     color: var(--text);
@@ -288,6 +305,7 @@ button {
 .sidebarTools button,
 .topActions > button,
 #attachImageBtn,
+#linkPhotosBtn,
 .randomRange button {
     min-height: 34px;
     padding: 0 10px;
@@ -295,9 +313,13 @@ button {
     color: var(--muted);
 }
 
-#randomChannelBtn,
 #settingsBtn {
     grid-column: 1 / -1;
+}
+
+#randomChannelBtn,
+#randomServerMessageBtn {
+    font-weight: 700;
 }
 
 #channels {
@@ -375,6 +397,16 @@ button {
 .staticCategoryHeader:hover {
     background: transparent;
     color: var(--subtle);
+}
+
+.loadEmojiChannels {
+    width: 100%;
+    min-height: 36px;
+    padding: 0 12px;
+    border-radius: 6px;
+    background: var(--panel-bg);
+    color: var(--muted);
+    text-align: left;
 }
 
 .channelRow {
@@ -615,6 +647,52 @@ button {
     flex: 0 0 auto;
 }
 
+.chatTimerQuick {
+    display: grid;
+    grid-template-columns: auto auto;
+    align-items: center;
+    column-gap: 6px;
+    min-width: 104px;
+    min-height: 40px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 750;
+    text-align: left;
+}
+
+.chatTimerQuick output {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.chatTimerQuick.running {
+    border-color: var(--accent);
+    background: rgba(35, 165, 89, .16);
+}
+
+.chatTimerBar {
+    grid-column: 1 / -1;
+    display: block;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .16);
+}
+
+.chatTimerBar > span {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-strong);
+    transition: width 220ms linear;
+}
+
 .searchWrap {
     display: grid;
     gap: 4px;
@@ -647,6 +725,8 @@ button {
     min-height: 0;
     overflow-y: auto;
     padding: 18px 20px 28px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
 
 .message {
@@ -656,6 +736,8 @@ button {
     border-left: 3px solid transparent;
     border-radius: var(--radius);
     background: transparent;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 170px;
 }
 
 .message:hover {
@@ -766,6 +848,203 @@ button {
     width: min(900px, 100%);
 }
 
+.statsPage {
+    display: grid;
+    gap: 14px;
+    width: min(900px, 100%);
+}
+
+.statsIntro,
+.statsSection {
+    display: grid;
+    gap: 9px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.statsIntro h3,
+.statsIntro p,
+.statsSection h3,
+.statsSection > p {
+    margin: 0;
+}
+
+.statsIntro p,
+.statsSection > p {
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.statsMetricGrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.statsMetric {
+    display: grid;
+    gap: 3px;
+    min-height: 76px;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(30, 31, 34, .62);
+}
+
+.statsMetric strong {
+    font-size: clamp(22px, 5vw, 30px);
+    font-variant-numeric: tabular-nums;
+}
+
+.statsMetric span,
+.statsReactionCard > span,
+.statsChannelList span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.statsReactionGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+.statsReactionCard {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 5px 8px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(30, 31, 34, .62);
+}
+
+.statsReactionCard > strong {
+    grid-row: span 2;
+    font-size: 28px;
+}
+
+.statsReactionChannels {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 4px;
+    margin-top: 3px;
+}
+
+.statsReactionChannels button,
+.statsOpenReaction,
+.statsChannelList button,
+.statsTags button {
+    border-radius: 6px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.statsReactionChannels button,
+.statsOpenReaction {
+    min-height: 30px;
+    padding: 0 8px;
+    font-size: 12px;
+    text-align: left;
+}
+
+.statsOpenReaction {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+    background: transparent;
+    color: var(--muted);
+}
+
+.statsChannelList {
+    display: grid;
+    gap: 6px;
+}
+
+.statsChannelList button {
+    display: grid;
+    gap: 3px;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    text-align: left;
+}
+
+.statsTags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.statsTags button {
+    min-height: 30px;
+    padding: 0 9px;
+    font-size: 12px;
+}
+
+.focusSession {
+    display: grid;
+    gap: 14px;
+    width: min(760px, 100%);
+    margin: 0 auto;
+}
+
+.focusSessionIntro,
+.focusSessionSetup,
+.focusSessionControls,
+.focusSessionNote {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.focusSessionIntro h3,
+.focusSessionIntro p,
+.focusSessionNote { margin: 0; }
+.focusSessionIntro p,
+.focusSessionNote { color: var(--muted); }
+
+.focusSessionSetup {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.focusSessionSetup label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.focusSessionSetup input,
+.focusSessionSetup select {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.focusSessionControls {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.focusSessionControls button {
+    min-height: 44px;
+    padding: 0 11px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 700;
+}
+
 .adventureStudio,
 .adventureEditor {
     display: grid;
@@ -776,7 +1055,8 @@ button {
 .adventureIntro,
 .adventureDetails,
 .adventureCard,
-.adventureScene {
+.adventureScene,
+.adventureCreatorGuide {
     padding: 14px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -791,7 +1071,8 @@ button {
 }
 
 .adventureIntro p,
-.adventureCard p {
+.adventureCard p,
+.adventureCreatorGuide p {
     margin-top: 6px;
     color: var(--muted);
 }
@@ -799,6 +1080,75 @@ button {
 .adventureDetails {
     display: grid;
     gap: 8px;
+}
+
+.adventureCreatorGuide h3,
+.adventureCreatorGuide p {
+    margin: 0;
+}
+
+.adventureCreatorGuide ol {
+    display: grid;
+    gap: 8px;
+    margin: 14px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.adventureCreatorGuide li {
+    padding: 9px 10px;
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .55);
+    color: var(--muted);
+}
+
+.adventureCreatorGuide li strong { color: var(--accent-strong); }
+
+.adventureEditorActions,
+.adventureSceneActions,
+.adventureSceneToolsContent {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.adventureEditorActions button,
+.adventureSceneActions button,
+.adventureSceneToolsContent button,
+.adventureSceneToolsContent select {
+    min-width: 0;
+}
+
+.adventureEditorOptions {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .55);
+}
+
+.adventureSceneOptional,
+.adventureSceneTools {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .55);
+}
+
+.adventureSceneOptional summary,
+.adventureSceneTools summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 700;
+}
+
+.adventureEditorOptions summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 700;
 }
 
 .adventureSaveStatus,
@@ -910,14 +1260,76 @@ button {
     margin: 0;
 }
 
+.adventureSceneHeading p {
+    margin: 0 auto 0 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .adventureScene {
     display: grid;
     gap: 10px;
+    border-left: 3px solid transparent;
 }
 
 .adventureScene summary {
+    padding: 7px 8px;
+    border-radius: 6px;
     cursor: pointer;
     font-weight: 700;
+}
+
+.adventureScene[open] {
+    border-left-color: var(--accent);
+}
+
+.adventureScene[open] summary {
+    background: rgba(35, 165, 89, .1);
+}
+
+.adventureTemplateLibrary {
+    display: grid;
+    gap: 8px;
+    padding: 11px;
+    border: 1px solid rgba(35, 165, 89, .48);
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, rgba(35, 165, 89, .13), rgba(30, 31, 34, .72));
+}
+
+.adventureTemplateLibrary > p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.adventureTemplateGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 7px;
+}
+
+.adventureTemplateGrid button {
+    display: grid;
+    gap: 3px;
+    min-height: 68px;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: rgba(30, 31, 34, .72);
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.adventureTemplateGrid button:hover {
+    border-color: var(--accent);
+    background: rgba(35, 165, 89, .16);
+}
+
+.adventureTemplateGrid button span {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.25;
 }
 
 .adventureMediaList {
@@ -1264,7 +1676,7 @@ body.focusMode #mobileStageNav { display: none; }
     z-index: 315;
     inset: 0;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
     gap: 10px;
     padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
     background: rgba(0, 0, 0, .92);
@@ -1282,12 +1694,38 @@ body.focusMode #mobileStageNav { display: none; }
     height: 100%;
     min-height: 0;
     object-fit: contain;
+    touch-action: pan-y;
+    cursor: pointer;
 }
 
 .slideshowViewer p {
     margin: 0;
     color: var(--muted);
     text-align: center;
+}
+
+.slideshowViewer select {
+    min-height: 36px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-bg);
+    color: var(--text);
+}
+
+.slideshowProgress {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .16);
+}
+
+.slideshowProgress span {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-strong);
 }
 
 .adventurePlayerControls {
@@ -1370,6 +1808,100 @@ body.focusMode #mobileStageNav { display: none; }
 
 .adventureMediaPickerCard h3 {
     margin: 0;
+}
+
+.comparePickerCard {
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto;
+}
+
+.comparePickerCard > p {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.comparePickerStatus {
+    color: var(--text) !important;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.comparePickerGrid button.isSelected {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 2px rgba(45, 199, 112, .28);
+}
+
+.comparePickerActions {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 8px;
+}
+
+.comparePickerActions button {
+    min-height: 42px;
+    padding: 0 10px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+}
+
+.adventureMediaChannelCard > p {
+    margin: 0;
+    color: var(--muted);
+}
+
+.adventureMediaChannelList {
+    display: grid;
+    gap: 7px;
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+
+.adventureMediaChannelList button {
+    display: grid;
+    gap: 3px;
+    min-height: 58px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: #1e1f22;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.adventureMediaChannelList button:hover {
+    border-color: var(--accent);
+    background: var(--panel-hover);
+}
+
+.adventureMediaChannelList span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.adventureMediaSourceCard {
+    grid-template-rows: auto auto auto;
+    width: min(520px, 100%);
+}
+
+.adventureMediaSourceCard p {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.45;
+}
+
+.adventureMediaSourceChoices {
+    display: grid;
+    gap: 8px;
+}
+
+.adventureMediaSourceChoices button,
+.adventureMediaPickerCard > button {
+    min-height: 44px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
 }
 
 .adventureMediaPickerCard input {
@@ -1693,6 +2225,9 @@ video.embed {
     position: relative;
     width: min(720px, 100%);
     margin: 12px 0 0;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    user-select: none;
 }
 
 .imageAttachment img {
@@ -1725,6 +2260,52 @@ video.embed {
     background: var(--panel-hover);
     color: var(--text);
 }
+
+.linkedPhotoReferences {
+    display: grid;
+    gap: 7px;
+    width: min(720px, 100%);
+    margin-top: 10px;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: rgba(30, 31, 34, .5);
+}
+
+.linkedPhotoReferences > strong {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.linkedPhotoReferenceGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+    gap: 6px;
+}
+
+.linkedPhotoReferenceGrid button {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 10px;
+    text-align: left;
+}
+
+.linkedPhotoReferenceGrid img {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 4px;
+    object-fit: contain;
+    background: #111214;
+}
+
+.linkedPhotoChip { border-color: rgba(35, 165, 89, .55); }
 
 .lockScreen {
     position: fixed;
@@ -1852,6 +2433,10 @@ video.embed {
     border-radius: var(--radius);
     background: var(--panel-bg);
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-touch-callout: none;
+    user-select: none;
+    transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
 
 .photoSelector {
@@ -1861,6 +2446,29 @@ video.embed {
     width: 20px;
     height: 20px;
     accent-color: var(--accent);
+}
+
+.photoMenuButton {
+    position: absolute;
+    z-index: 3;
+    top: 7px;
+    left: 7px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(17, 18, 20, .88);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.photoMenuButton:hover,
+.photoMenuButton:focus-visible {
+    border-color: var(--accent);
+    background: var(--panel-hover);
 }
 
 .photoOrderControls {
@@ -1896,6 +2504,7 @@ video.embed {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--panel-bg);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, .18);
 }
 
 .batchActions span {
@@ -1918,6 +2527,18 @@ video.embed {
     border-color: var(--accent);
 }
 
+.photoTile.isSelected,
+.imageAttachment.isSelected {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 2px rgba(45, 199, 112, .24);
+}
+
+.photoTile.isPressing,
+.imageAttachment.isPressing {
+    transform: scale(.985);
+    border-color: var(--accent);
+}
+
 .photoTile.isFavorite,
 .imageAttachment.isFavorite {
     border-color: var(--pin);
@@ -1936,6 +2557,10 @@ video.embed {
     content: "★";
 }
 
+.photoTile.isFavorite::before {
+    left: 43px;
+}
+
 .photoActionSheet {
     position: fixed;
     z-index: 320;
@@ -1944,6 +2569,7 @@ video.embed {
     align-items: end;
     padding: 14px;
     background: rgba(0, 0, 0, .62);
+    animation: actionSheetFade 150ms ease-out;
 }
 
 .photoActionSheetCard {
@@ -1955,6 +2581,7 @@ video.embed {
     border: 1px solid var(--border);
     border-radius: 14px;
     background: #1e1f22;
+    animation: actionSheetRise 180ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .photoActionSheetCard strong {
@@ -1970,6 +2597,21 @@ video.embed {
     background: var(--panel-hover);
     color: var(--text);
     text-align: left;
+    cursor: pointer;
+}
+
+.photoActionSheetCard button:active {
+    transform: scale(.985);
+}
+
+@keyframes actionSheetFade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes actionSheetRise {
+    from { opacity: 0; transform: translateY(18px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 .photoTile img {
@@ -2014,7 +2656,7 @@ video.embed {
 
 #input-bar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 10px;
     padding: 12px 20px max(12px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--border);
@@ -2141,17 +2783,18 @@ button:disabled {
     }
 
     #input-bar {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         padding: 12px;
     }
 
     #sendBtn,
-    #attachImageBtn {
+    #attachImageBtn,
+    #linkPhotosBtn {
         width: 100%;
     }
 }
 
-@media (max-width: 700px) {
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
     :root {
         --mobile-stage-nav-height: calc(58px + env(safe-area-inset-bottom));
     }
@@ -2226,22 +2869,59 @@ button:disabled {
     #servers {
         display: grid;
         grid-auto-rows: min-content;
-        grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+        grid-template-columns: minmax(0, 1fr);
         align-content: start;
-        justify-items: center;
-        gap: 14px;
+        justify-items: stretch;
+        gap: 10px;
         overflow-y: auto;
         min-height: 0;
         overscroll-behavior: contain;
         -webkit-overflow-scrolling: touch;
-        padding: max(18px, env(safe-area-inset-top)) 18px 18px;
+        padding: max(18px, env(safe-area-inset-top)) 14px 18px;
+    }
+
+    .serverListTitle {
+        display: block;
+        margin: 0 0 4px;
+        padding: 0 4px;
+        color: var(--muted);
+        font-size: 13px;
+        letter-spacing: .04em;
+        text-transform: uppercase;
     }
 
     .server {
-        width: 64px;
-        height: 64px;
-        border-radius: 18px;
-        font-size: 18px;
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr);
+        justify-items: stretch;
+        width: 100%;
+        height: 58px;
+        padding: 0 12px 0 0;
+        border-radius: 12px;
+        font-size: 16px;
+        text-align: left;
+    }
+
+    .serverIcon {
+        width: 42px;
+        height: 42px;
+        align-self: center;
+        justify-self: center;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, .08);
+        font-size: 15px;
+    }
+
+    .server.active .serverIcon {
+        background: rgba(0, 0, 0, .18);
+    }
+
+    .serverName {
+        display: block;
+        align-self: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     #sidebar {
@@ -2272,19 +2952,21 @@ button:disabled {
     }
 
     .sidebarTools {
+        position: sticky;
+        top: 0;
+        z-index: 6;
         grid-template-columns: 1fr 1fr;
         gap: 8px;
         padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--sidebar-bg);
+        box-shadow: 0 8px 14px rgba(0, 0, 0, .16);
     }
 
     .sidebarTools button {
         min-height: 42px;
         padding: 0 8px;
         white-space: normal;
-    }
-
-    #randomChannelBtn {
-        grid-column: 1 / -1;
     }
 
     #settingsBtn {
@@ -2351,6 +3033,14 @@ button:disabled {
         min-height: 40px;
     }
 
+    .statsMetricGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .focusSessionSetup {
+        grid-template-columns: 1fr;
+    }
+
     .searchWrap {
         grid-column: 1 / -1;
         width: 100%;
@@ -2401,7 +3091,7 @@ button:disabled {
     }
 
     #input-bar {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
         padding: 10px;
     }
@@ -2419,6 +3109,7 @@ button:disabled {
     }
 
     #attachImageBtn,
+    #linkPhotosBtn,
     #sendBtn {
         width: 100%;
         min-height: 44px;
@@ -2426,6 +3117,19 @@ button:disabled {
 
     .adventureChoiceRow {
         grid-template-columns: 1fr;
+    }
+
+    .adventureEditorActions,
+    .adventureSceneActions {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .adventureSceneToolsContent {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .adventureSceneToolsContent select {
+        grid-column: 1 / -1;
     }
 
     .adventureWeightedRow {
@@ -2441,7 +3145,8 @@ button:disabled {
     .adventureScene,
     .adventureDetails,
     .adventureIntro,
-    .adventureCard {
+    .adventureCard,
+    .adventureCreatorGuide {
         padding: 12px;
     }
 
@@ -2478,4 +3183,224 @@ button:disabled {
     .adventurePlayerText {
         font-size: 16px;
     }
+}
+
+@media (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    :root {
+        --mobile-stage-nav-height: calc(44px + env(safe-area-inset-bottom));
+    }
+
+    #mobileStageNav {
+        gap: 4px;
+        padding: 4px 8px max(4px, env(safe-area-inset-bottom));
+    }
+
+    #mobileStageNav button {
+        min-height: 32px;
+        font-size: 12px;
+    }
+
+    #servers {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        padding: max(8px, env(safe-area-inset-top)) 10px 10px;
+    }
+
+    .serverListTitle {
+        grid-column: 1 / -1;
+        margin-bottom: 0;
+    }
+
+    .server {
+        height: 46px;
+        grid-template-columns: 44px minmax(0, 1fr);
+        padding-right: 8px;
+        font-size: 14px;
+    }
+
+    .serverIcon {
+        width: 34px;
+        height: 34px;
+        font-size: 13px;
+    }
+
+    .sidebarHeader {
+        min-height: 50px;
+        padding: max(8px, env(safe-area-inset-top)) 10px 8px;
+    }
+
+    .sidebarHeader h1 { font-size: 16px; }
+    .eyebrow { display: none; }
+    #newServerBtn { width: 34px; height: 34px; }
+
+    .sidebarTools {
+        gap: 5px;
+        padding: 6px 10px;
+    }
+
+    .sidebarTools button,
+    .channel {
+        min-height: 34px;
+        font-size: 13px;
+    }
+
+    .channelRow { grid-template-columns: minmax(0, 1fr) repeat(4, 29px); }
+    .channelTool { width: 29px; height: 29px; }
+
+    #topbar {
+        flex-direction: row;
+        align-items: center;
+        min-height: 54px;
+        padding: max(7px, env(safe-area-inset-top)) 10px 7px;
+    }
+
+    #topbar > div:first-child {
+        min-width: 94px;
+        max-width: 150px;
+    }
+
+    #topbar h2 { font-size: 15px; }
+    #activeMeta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .topActions {
+        display: flex;
+        flex: 1;
+        flex-wrap: nowrap;
+        align-items: center;
+        overflow-x: auto;
+        padding-bottom: 1px;
+        scrollbar-width: none;
+    }
+
+    .topActions::-webkit-scrollbar { display: none; }
+
+    .topActions > button {
+        flex: 0 0 auto;
+        min-height: 32px;
+        padding: 0 8px;
+        font-size: 11px;
+    }
+
+    .chatTimerQuick {
+        min-width: 76px;
+        min-height: 32px;
+        padding: 4px 7px !important;
+    }
+
+    .searchWrap {
+        flex: 0 0 150px;
+        width: 150px;
+    }
+
+    .searchWrap input { height: 32px; font-size: 14px; }
+
+    #messages { padding: 8px 10px 10px; }
+    .message { margin-bottom: 7px; padding: 8px; }
+    .messageHeader { flex-direction: row; align-items: center; gap: 6px; }
+    .messageActions { width: auto; }
+    .imageAttachment img { max-height: 46vh; }
+
+    #input-bar { padding: 6px 10px; }
+    #noteInput { min-height: 38px; max-height: 68px; }
+    #attachImageBtn,
+    #linkPhotosBtn,
+    #sendBtn { min-height: 36px; }
+
+    .adventureStudio,
+    .adventureEditor {
+        gap: 8px;
+        width: min(1100px, 100%);
+    }
+
+    .focusSessionSetup { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .focusSessionControls { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .focusSessionControls button { min-height: 36px; padding: 0 7px; font-size: 12px; }
+
+    .adventureIntro,
+    .adventureDetails,
+    .adventureCard,
+    .adventureScene,
+    .adventureCreatorGuide {
+        padding: 10px;
+    }
+
+    .adventureStudio > .adventureCard {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+        align-items: center;
+    }
+
+    .adventureStudio > .adventureCard h4,
+    .adventureStudio > .adventureCard p {
+        grid-column: 1;
+        width: auto;
+    }
+
+    .adventureStudio > .adventureCard p { grid-row: 2; }
+    .adventureStudio > .adventureCard button { grid-row: 1 / span 2; }
+
+    .adventureCreatorGuide ol {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        margin-top: 8px;
+    }
+
+    .adventureCreatorGuide li { padding: 7px 8px; font-size: 12px; }
+
+    .adventureEditorActions,
+    .adventureSceneActions,
+    .adventureSceneToolsContent {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+    }
+
+    .adventureEditorActions button,
+    .adventureSceneActions button,
+    .adventureSceneToolsContent button,
+    .adventureSceneToolsContent select {
+        min-height: 32px;
+        padding: 0 7px;
+        font-size: 12px;
+    }
+
+    .adventureSceneToolsContent select { grid-column: auto; }
+
+    .adventureTemplateLibrary { padding: 8px; }
+    .adventureTemplateLibrary > p { font-size: 12px; }
+    .adventureTemplateGrid { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; }
+    .adventureTemplateGrid button { min-height: 58px; padding: 7px; font-size: 12px; }
+    .adventureTemplateGrid button span { font-size: 10px; }
+
+    .adventureMediaList { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+    .adventureMediaRef { gap: 4px; }
+    .adventureMediaRef button { min-height: 28px; padding: 0 5px; font-size: 11px; }
+
+    .adventureChoiceRow {
+        grid-template-columns: minmax(0, 1fr) minmax(0, .7fr) minmax(120px, .8fr) auto;
+        gap: 5px;
+        margin-top: 5px;
+    }
+
+    .adventureDetails textarea,
+    .adventureScene textarea { min-height: 54px; }
+
+    .adventureEditorOptions[open],
+    .adventureSceneOptional[open] {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px;
+        padding: 8px;
+    }
+
+    .adventureEditorOptions summary,
+    .adventureSceneOptional summary,
+    .adventureEditorOptions .adventureModeHelp,
+    .adventureSceneOptional .adventureAmbienceEditor,
+    .adventureSceneOptional .adventureRandomEditor,
+    .adventureSceneOptional .adventureAutoAdvanceEditor {
+        grid-column: 1 / -1;
+    }
+
+    .adventureSceneTools { padding: 8px; }
+    .adventureSceneHeading { gap: 6px; }
+    .adventureSceneHeading p { font-size: 12px; }
 }
