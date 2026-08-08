@@ -160,3 +160,37 @@ async function deleteChannelMessages(channelId) {
 
     await transactionDone(tx);
 }
+
+async function getAllChannelMessages() {
+    ensureDB();
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readonly");
+        const records = await requestToPromise(tx.objectStore("messageItems").getAll());
+        const grouped = new Map();
+        records.forEach((record) => grouped.set(record.channel, [...(grouped.get(record.channel) || []), record.message]));
+        return [...grouped.entries()].map(([channelId, messages]) => ({ channelId, messages }));
+    }
+    const tx = db.transaction("messages", "readonly");
+    const records = await requestToPromise(tx.objectStore("messages").getAll());
+    return records.map((record) => ({ channelId: record.channel, messages: record.messages || [] }));
+}
+
+async function replaceAllChannelMessages(channelEntries) {
+    ensureDB();
+    const entries = Array.isArray(channelEntries) ? channelEntries : [];
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readwrite");
+        const store = tx.objectStore("messageItems");
+        store.clear();
+        entries.forEach(({ channelId, messages }) => (messages || []).forEach((message) => {
+            if (message?.id) store.put({ id: message.id, channel: channelId, message });
+        }));
+        await transactionDone(tx);
+        return;
+    }
+    const tx = db.transaction("messages", "readwrite");
+    const store = tx.objectStore("messages");
+    store.clear();
+    entries.forEach(({ channelId, messages }) => store.put({ channel: channelId, messages: messages || [] }));
+    await transactionDone(tx);
+}
