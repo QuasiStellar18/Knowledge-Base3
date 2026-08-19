@@ -16,6 +16,71 @@
     --radius: 8px;
 }
 
+/* Palette choices keep every screen dark and high-contrast, including photos. */
+body[data-palette="midnight"] {
+    --server-bg: #111827;
+    --sidebar-bg: #172033;
+    --chat-bg: #0f172a;
+    --panel-bg: #22304a;
+    --panel-hover: #2e4163;
+    --text: #eef5ff;
+    --muted: #aebcd1;
+    --subtle: #7e91af;
+    --border: #263651;
+    --accent: #38bdf8;
+    --accent-strong: #7dd3fc;
+    --pin: #facc15;
+    --danger: #fb7185;
+}
+
+body[data-palette="violet"] {
+    --server-bg: #1d1728;
+    --sidebar-bg: #272037;
+    --chat-bg: #211a30;
+    --panel-bg: #342a49;
+    --panel-hover: #46365f;
+    --text: #f7f2ff;
+    --muted: #c2b6d1;
+    --subtle: #9283a6;
+    --border: #403353;
+    --accent: #a78bfa;
+    --accent-strong: #c4b5fd;
+    --pin: #fbbf24;
+    --danger: #fb7185;
+}
+
+body[data-palette="forest"] {
+    --server-bg: #13221e;
+    --sidebar-bg: #1c3029;
+    --chat-bg: #172822;
+    --panel-bg: #284238;
+    --panel-hover: #36574a;
+    --text: #f1fbf5;
+    --muted: #b6cfc1;
+    --subtle: #83a393;
+    --border: #315043;
+    --accent: #34d399;
+    --accent-strong: #6ee7b7;
+    --pin: #facc15;
+    --danger: #fb7185;
+}
+
+body[data-palette="sunset"] {
+    --server-bg: #281b1c;
+    --sidebar-bg: #352326;
+    --chat-bg: #2a1d20;
+    --panel-bg: #493033;
+    --panel-hover: #614044;
+    --text: #fff5f2;
+    --muted: #d9bbb4;
+    --subtle: #a8837d;
+    --border: #57383a;
+    --accent: #fb923c;
+    --accent-strong: #fdba74;
+    --pin: #facc15;
+    --danger: #fb7185;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -4081,4 +4146,917 @@ button:disabled {
     .adventureSceneTools { padding: 8px; }
     .adventureSceneHeading { gap: 6px; }
     .adventureSceneHeading p { font-size: 12px; }
+}
+
+/* Additional local reaction timing statistics. */
+.statsReactionTiming {
+    gap: 14px;
+}
+
+.statsInsightGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.statsInsightMetric {
+    display: grid;
+    gap: 4px;
+    min-height: 76px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--chat-bg) 64%, transparent);
+}
+
+.statsInsightMetric strong {
+    overflow: hidden;
+    font-size: clamp(17px, 3.7vw, 25px);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.statsInsightMetric span,
+.statsBarChart > p,
+.statsTimingList small {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.statsBarChart {
+    display: grid;
+    gap: 5px;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--chat-bg) 48%, transparent);
+}
+
+.statsBarChart h4,
+.statsBarChart p,
+.statsTimingList h4 {
+    margin: 0;
+}
+
+.statsBars {
+    display: grid;
+    grid-template-columns: repeat(14, minmax(28px, 1fr));
+    align-items: end;
+    gap: 4px;
+    min-height: 126px;
+    overflow-x: auto;
+    padding: 6px 2px 0;
+    scrollbar-width: thin;
+}
+
+.statsBarChart.hour .statsBars {
+    grid-template-columns: repeat(24, minmax(24px, 1fr));
+}
+
+.statsBarChart.weekday .statsBars {
+    grid-template-columns: repeat(7, minmax(34px, 1fr));
+}
+
+.statsBar {
+    display: grid;
+    grid-template-rows: 17px 78px 20px;
+    align-items: end;
+    min-width: 0;
+    color: var(--muted);
+    font-size: 10px;
+    text-align: center;
+}
+
+.statsBarValue {
+    min-height: 16px;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.statsBarFill {
+    align-self: end;
+    width: 100%;
+    min-height: 0;
+    border-radius: 5px 5px 2px 2px;
+    background: linear-gradient(180deg, var(--accent-strong), var(--accent));
+    box-shadow: 0 3px 12px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.statsBar small {
+    overflow: hidden;
+    padding-top: 4px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.statsTimingList {
+    display: grid;
+    gap: 6px;
+}
+
+.statsTimingList h4 {
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.statsTimingList button {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 1px 8px;
+    align-items: center;
+    min-height: 45px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--panel-hover) 76%, transparent);
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.statsTimingList button > strong {
+    grid-row: span 2;
+    font-size: 20px;
+}
+
+.statsTimingList button > span {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    .statsInsightGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .statsBarChart { padding: 9px; }
+    .statsBars { min-height: 116px; }
+}
+
+/* Optional streamlined interface. The classic layout above remains the default. */
+.streamlinedOnly { display: none; }
+
+.appearanceSettings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.appearanceSettings > h4,
+.appearanceSettings > p {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+.appearanceSettings > p {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.appearanceField {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.appearanceField select {
+    width: 100%;
+    min-height: 42px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+    color: var(--text);
+    padding: 0 10px;
+}
+
+body.interface-streamlined {
+    --radius: 14px;
+}
+
+body.interface-streamlined #app {
+    grid-template-columns: 76px 312px minmax(0, 1fr);
+    background: var(--server-bg);
+}
+
+body.interface-streamlined #servers {
+    gap: 10px;
+    padding-top: 14px;
+}
+
+body.interface-streamlined .server {
+    border: 1px solid transparent;
+    border-radius: 14px;
+    box-shadow: 0 5px 14px rgba(0, 0, 0, .12);
+}
+
+body.interface-streamlined .server.active {
+    border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+    box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+body.interface-streamlined #sidebar {
+    background: color-mix(in srgb, var(--sidebar-bg) 92%, var(--server-bg));
+}
+
+body.interface-streamlined .sidebarHeader {
+    min-height: 82px;
+    padding: 18px 16px;
+}
+
+body.interface-streamlined .sidebarTools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    padding: 10px 12px;
+}
+
+body.interface-streamlined .sidebarTools button {
+    min-height: 38px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel-bg) 80%, transparent);
+    color: var(--text);
+}
+
+body.interface-streamlined #settingsBtn {
+    grid-column: auto;
+}
+
+body.interface-streamlined #randomChannelBtn {
+    background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg));
+}
+
+body.interface-streamlined #channels {
+    padding: 12px 10px;
+}
+
+body.interface-streamlined .category {
+    overflow: hidden;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--panel-bg) 58%, transparent);
+}
+
+body.interface-streamlined .categoryHeaderRow {
+    padding: 3px 4px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+
+body.interface-streamlined .channel {
+    min-height: 40px;
+    margin: 2px 4px;
+    border-radius: 9px;
+}
+
+body.interface-streamlined .channelRow.active .channel {
+    background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg));
+    color: var(--text);
+}
+
+body.interface-streamlined #chat {
+    background: radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 8%, transparent), transparent 32%), var(--chat-bg);
+}
+
+body.interface-streamlined #topbar {
+    min-height: 74px;
+    padding: 12px 18px;
+    background: color-mix(in srgb, var(--chat-bg) 90%, transparent);
+    backdrop-filter: blur(14px);
+}
+
+body.interface-streamlined #input-bar {
+    margin: 0 12px 12px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--panel-bg) 94%, var(--chat-bg));
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+}
+
+body.interface-streamlined #sendBtn {
+    border-radius: 11px;
+    background: var(--accent);
+    color: #07140d;
+}
+
+.streamlinedHub {
+    position: fixed;
+    z-index: 80;
+    inset: 0;
+    display: grid;
+    align-items: end;
+    background: rgba(0, 0, 0, .56);
+    backdrop-filter: blur(5px);
+}
+
+.streamlinedHubCard {
+    display: grid;
+    gap: 16px;
+    max-width: 760px;
+    max-height: min(82dvh, 760px);
+    margin: 0 auto;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 22px 22px 0 0;
+    background: var(--sidebar-bg);
+    padding: 18px;
+    box-shadow: 0 -20px 60px rgba(0, 0, 0, .35);
+}
+
+.streamlinedHubHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.streamlinedHubHeader p,
+.streamlinedHubHeader h3,
+.streamlinedHubGroup h4 {
+    margin: 0;
+}
+
+.streamlinedHubHeader p {
+    margin-bottom: 3px;
+    color: var(--accent-strong);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: .09em;
+}
+
+.streamlinedHubHeader h3 { font-size: 20px; }
+
+.streamlinedHubClose {
+    min-height: 38px;
+    padding: 0 13px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+    color: var(--text);
+    font-weight: 800;
+}
+
+.streamlinedHubGroup {
+    display: grid;
+    gap: 8px;
+}
+
+.streamlinedHubGroup h4 {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.streamlinedHubActions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.streamlinedHubActions button {
+    min-height: 52px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel-bg);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 750;
+    line-height: 1.15;
+    text-align: left;
+}
+
+.streamlinedHubActions button:active { background: var(--panel-hover); }
+
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    body.interface-streamlined #mobileStageNav {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 5px;
+        background: color-mix(in srgb, var(--server-bg) 92%, transparent);
+    }
+
+    body.interface-streamlined .streamlinedOnly { display: block; }
+
+    body.interface-streamlined #mobileStageNav button {
+        min-height: 42px;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        color: var(--muted);
+    }
+
+    body.interface-streamlined #mobileStageNav button.active,
+    body.interface-streamlined #streamlinedHubBtn {
+        background: color-mix(in srgb, var(--accent) 19%, var(--panel-bg));
+        color: var(--text);
+    }
+
+    body.interface-streamlined #servers {
+        gap: 8px;
+        padding: max(14px, env(safe-area-inset-top)) 12px 12px;
+    }
+
+    body.interface-streamlined .server {
+        height: 62px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+    }
+
+    body.interface-streamlined #sidebar {
+        background: var(--chat-bg);
+    }
+
+    body.interface-streamlined .sidebarHeader {
+        min-height: 64px;
+        padding: max(10px, env(safe-area-inset-top)) 14px 10px;
+    }
+
+    body.interface-streamlined .sidebarTools {
+        position: static;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        padding: 8px 12px;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    body.interface-streamlined .sidebarTools button {
+        min-height: 40px;
+        padding: 0 7px;
+        font-size: 12px;
+    }
+
+    body.interface-streamlined #channels {
+        padding: 6px 10px 20px;
+    }
+
+    body.interface-streamlined .category {
+        margin-bottom: 8px;
+        border-radius: 14px;
+    }
+
+    body.interface-streamlined .categoryHeader {
+        min-height: 38px;
+    }
+
+    body.interface-streamlined .channel {
+        min-height: 46px;
+        margin: 3px 5px;
+        padding: 9px 10px;
+        font-size: 15px;
+    }
+
+    body.interface-streamlined #privacyPanel {
+        margin: 0 10px 18px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--panel-bg) 68%, transparent);
+    }
+
+    body.interface-streamlined #topbar {
+        gap: 7px;
+        min-height: auto;
+        padding: max(10px, env(safe-area-inset-top)) 12px 8px;
+    }
+
+    body.interface-streamlined .topActions {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+    }
+
+    body.interface-streamlined .topActions::-webkit-scrollbar { display: none; }
+    body.interface-streamlined .topActions > button { flex: 0 0 auto; min-height: 38px; }
+    body.interface-streamlined .searchWrap { flex: 0 0 180px; width: 180px; }
+    body.interface-streamlined #messages { padding: 10px 10px 16px; }
+
+    body.interface-streamlined #mobileQuickActions {
+        gap: 5px;
+        padding: 6px 9px;
+        background: color-mix(in srgb, var(--sidebar-bg) 95%, transparent);
+    }
+
+    body.interface-streamlined #input-bar {
+        margin: 0 8px 8px;
+        padding: 7px;
+        border-radius: 15px;
+    }
+
+    body.interface-streamlined .photoGrid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    body.interface-streamlined .settingsPage { gap: 10px; }
+    body.interface-streamlined .appearanceSettings { grid-template-columns: 1fr; }
+
+    .streamlinedHubCard {
+        width: 100%;
+        max-height: calc(100dvh - 54px);
+        padding: 16px 12px max(16px, env(safe-area-inset-bottom));
+    }
+
+    .streamlinedHubActions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .streamlinedHubActions button { min-height: 54px; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    body.interface-streamlined #mobileStageNav button { min-height: 31px; font-size: 11px; }
+    body.interface-streamlined .sidebarTools { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+    body.interface-streamlined .sidebarTools button { min-height: 33px; font-size: 10px; }
+    body.interface-streamlined #channels { padding: 5px 8px 10px; }
+    body.interface-streamlined .category { margin-bottom: 5px; }
+    body.interface-streamlined .channel { min-height: 35px; margin: 1px 4px; padding: 6px 8px; font-size: 12px; }
+    body.interface-streamlined #topbar { padding: max(6px, env(safe-area-inset-top)) 9px 5px; }
+    body.interface-streamlined #input-bar { margin: 0 7px 5px; }
+    .streamlinedHubCard { max-height: 94dvh; padding: 10px; }
+    .streamlinedHubActions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+    .streamlinedHubActions button { min-height: 40px; padding: 6px; font-size: 11px; }
+}
+
+/* Streamlined adventure builder: a deliberately small, staged editor for touch screens. */
+body.interface-streamlined .streamlinedAdventureEditor {
+    display: grid;
+    gap: 12px;
+    width: min(880px, 100%);
+    padding-bottom: max(14px, env(safe-area-inset-bottom));
+}
+
+body.interface-streamlined .streamlinedAdventureHeader,
+body.interface-streamlined .streamlinedSceneListHeading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+body.interface-streamlined .streamlinedAdventureHeader {
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, var(--panel-bg)), var(--panel-bg));
+}
+
+body.interface-streamlined .streamlinedAdventureHeader p,
+body.interface-streamlined .streamlinedAdventureHeader h3,
+body.interface-streamlined .streamlinedAdventureHeader span,
+body.interface-streamlined .streamlinedAdventurePanel h4,
+body.interface-streamlined .streamlinedAdventurePanel p,
+body.interface-streamlined .streamlinedSceneCard h5,
+body.interface-streamlined .streamlinedSceneCard p {
+    margin: 0;
+}
+
+body.interface-streamlined .streamlinedAdventureHeader p {
+    margin-bottom: 4px;
+    color: var(--accent-strong);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: .1em;
+}
+
+body.interface-streamlined .streamlinedAdventureHeader h3 { font-size: clamp(20px, 5vw, 28px); }
+body.interface-streamlined .streamlinedAdventureHeader span,
+body.interface-streamlined .streamlinedAdventurePanel > p,
+body.interface-streamlined .streamlinedSceneListHeading p,
+body.interface-streamlined .streamlinedScenePatterns > span,
+body.interface-streamlined .streamlinedSceneMedia span,
+body.interface-streamlined .streamlinedEndingNotice { color: var(--muted); }
+
+body.interface-streamlined .streamlinedAdventureBack,
+body.interface-streamlined .streamlinedSceneBack {
+    flex: 0 0 auto;
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+    color: var(--text);
+    font-weight: 750;
+}
+
+body.interface-streamlined .streamlinedAdventureStages {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--chat-bg) 92%, transparent);
+    backdrop-filter: blur(12px);
+}
+
+body.interface-streamlined .streamlinedAdventureStages button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 42px;
+    padding: 6px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--muted);
+    font-weight: 800;
+}
+
+body.interface-streamlined .streamlinedAdventureStages button span {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border: 1px solid currentColor;
+    border-radius: 50%;
+    font-size: 11px;
+}
+
+body.interface-streamlined .streamlinedAdventureStages button.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+body.interface-streamlined .streamlinedAdventurePanel {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-bg);
+}
+
+body.interface-streamlined .streamlinedAdventurePanel input,
+body.interface-streamlined .streamlinedAdventurePanel textarea,
+body.interface-streamlined .streamlinedAdventurePanel select {
+    width: 100%;
+    min-width: 0;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--chat-bg) 88%, #000);
+    color: var(--text);
+    font: inherit;
+}
+
+body.interface-streamlined .streamlinedAdventurePanel textarea {
+    min-height: 112px;
+    resize: vertical;
+    line-height: 1.4;
+}
+
+body.interface-streamlined .streamlinedAdventurePanel label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+body.interface-streamlined .streamlinedAdventurePanel button {
+    min-height: 42px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-hover);
+    color: var(--text);
+    font: inherit;
+    font-weight: 750;
+}
+
+body.interface-streamlined .streamlinedAdventurePanel button:active { transform: translateY(1px); }
+body.interface-streamlined .streamlinedAdventurePanel button:disabled { opacity: .42; }
+
+body.interface-streamlined .streamlinedAdventureToggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 42px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--chat-bg) 56%, transparent);
+}
+
+body.interface-streamlined .streamlinedAdventureToggle input {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    accent-color: var(--accent);
+}
+
+body.interface-streamlined .streamlinedAdventureDetails {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--chat-bg) 55%, transparent);
+}
+
+body.interface-streamlined .streamlinedAdventureDetails summary {
+    cursor: pointer;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 800;
+}
+
+body.interface-streamlined .streamlinedAdventureDetails p {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+body.interface-streamlined .streamlinedAdventureSave {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+body.interface-streamlined .streamlinedSceneListHeading { align-items: center; }
+body.interface-streamlined .streamlinedSceneListHeading h4 { margin-bottom: 3px; }
+
+body.interface-streamlined .streamlinedSceneCard {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--chat-bg) 54%, transparent);
+}
+
+body.interface-streamlined .streamlinedSceneMeta {
+    display: flex;
+    grid-column: 1 / -1;
+    gap: 6px;
+}
+
+body.interface-streamlined .streamlinedSceneMeta span {
+    padding: 3px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent-strong);
+    font-size: 10px;
+    font-weight: 850;
+    letter-spacing: .07em;
+}
+
+body.interface-streamlined .streamlinedSceneCard h5 { font-size: 16px; }
+body.interface-streamlined .streamlinedSceneCard p { color: var(--muted); font-size: 13px; }
+body.interface-streamlined .streamlinedSceneEdit { grid-row: 2 / span 2; grid-column: 2; }
+
+body.interface-streamlined .streamlinedSceneMore {
+    grid-row: 2 / span 2;
+    grid-column: 3;
+    position: relative;
+}
+
+body.interface-streamlined .streamlinedSceneMore summary {
+    min-height: 42px;
+    padding: 11px 8px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+body.interface-streamlined .streamlinedSceneMoreActions {
+    position: absolute;
+    right: 0;
+    z-index: 4;
+    display: grid;
+    gap: 6px;
+    width: min(190px, 72vw);
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--sidebar-bg);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, .32);
+}
+
+body.interface-streamlined .streamlinedSceneEditor { gap: 14px; }
+body.interface-streamlined .streamlinedSceneEditor > h4 { margin-top: -5px; font-size: 21px; }
+
+body.interface-streamlined .streamlinedScenePatterns,
+body.interface-streamlined .streamlinedSceneContent,
+body.interface-streamlined .streamlinedSceneMedia,
+body.interface-streamlined .streamlinedSceneChoices {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: color-mix(in srgb, var(--chat-bg) 48%, transparent);
+}
+
+body.interface-streamlined .streamlinedPatternButtons,
+body.interface-streamlined .streamlinedChallengeButtons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
+
+body.interface-streamlined .streamlinedPatternButtons button {
+    display: grid;
+    min-height: 66px;
+    align-content: center;
+    gap: 3px;
+    text-align: left;
+}
+
+body.interface-streamlined .streamlinedPatternButtons button span {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+body.interface-streamlined .streamlinedChallengeChoices { margin-top: 2px; }
+body.interface-streamlined .streamlinedChallengeButtons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+body.interface-streamlined .streamlinedChallengeButtons button:last-child { grid-column: 1 / -1; }
+
+body.interface-streamlined .streamlinedAdventureMediaList {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.interface-streamlined .streamlinedAdventureMediaList .adventureMediaRef {
+    padding: 7px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel-bg);
+}
+
+body.interface-streamlined .streamlinedAdventureMediaList .adventureMediaRef img { aspect-ratio: 4 / 3; }
+body.interface-streamlined .streamlinedAdventureMediaList .adventureMediaRef button { min-height: 34px; font-size: 12px; }
+body.interface-streamlined .streamlinedAdventureMediaList .adventureMediaRef input { padding: 8px; font-size: 12px; }
+
+body.interface-streamlined .streamlinedEventSettings .adventureRandomEditor {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+}
+
+body.interface-streamlined .streamlinedChoiceRows { display: grid; gap: 9px; }
+
+body.interface-streamlined .streamlinedChoiceRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, .7fr) auto;
+    gap: 7px;
+    align-items: end;
+}
+
+body.interface-streamlined .streamlinedChoiceRow button { min-height: 40px; font-size: 12px; }
+body.interface-streamlined .streamlinedEndingNotice { padding: 10px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+body.interface-streamlined .streamlinedSceneActions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+}
+
+@media (max-width: 700px) {
+    body.interface-streamlined .streamlinedAdventureEditor { gap: 9px; }
+    body.interface-streamlined .streamlinedAdventureHeader,
+    body.interface-streamlined .streamlinedAdventurePanel { padding: 12px; }
+    body.interface-streamlined .streamlinedAdventureHeader { border-radius: 14px; }
+    body.interface-streamlined .streamlinedAdventureHeader h3 { font-size: 20px; }
+    body.interface-streamlined .streamlinedAdventureBack { font-size: 12px; }
+    body.interface-streamlined .streamlinedSceneListHeading { align-items: flex-start; }
+    body.interface-streamlined .streamlinedSceneListHeading .adventurePrimary { min-width: 96px; }
+    body.interface-streamlined .streamlinedChoiceRow { grid-template-columns: 1fr auto; }
+    body.interface-streamlined .streamlinedChoiceRow select { grid-column: 1 / -1; }
+    body.interface-streamlined .streamlinedSceneActions { grid-template-columns: 1fr; }
+    body.interface-streamlined .streamlinedSceneActions button { min-height: 46px; }
+}
+
+@media (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    body.interface-streamlined .streamlinedAdventureEditor {
+        grid-template-columns: minmax(180px, .32fr) minmax(0, 1fr);
+        align-content: start;
+        gap: 8px;
+    }
+
+    body.interface-streamlined .streamlinedAdventureHeader { grid-column: 1; display: grid; gap: 8px; padding: 10px; }
+    body.interface-streamlined .streamlinedAdventureHeader h3 { font-size: 17px; }
+    body.interface-streamlined .streamlinedAdventureBack { width: 100%; min-height: 32px; }
+    body.interface-streamlined .streamlinedAdventureStages { grid-column: 1; grid-template-columns: 1fr; position: static; padding: 4px; }
+    body.interface-streamlined .streamlinedAdventureStages button { justify-content: flex-start; min-height: 33px; padding: 4px 7px; font-size: 12px; }
+    body.interface-streamlined .streamlinedAdventurePanel { grid-column: 2; grid-row: 1 / span 2; padding: 10px; gap: 8px; }
+    body.interface-streamlined .streamlinedAdventurePanel textarea { min-height: 72px; }
+    body.interface-streamlined .streamlinedSceneCard { grid-template-columns: minmax(0, 1fr) auto auto; padding: 9px; }
+    body.interface-streamlined .streamlinedPatternButtons { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    body.interface-streamlined .streamlinedPatternButtons button { min-height: 54px; padding: 6px; font-size: 11px; }
+    body.interface-streamlined .streamlinedPatternButtons button span { font-size: 10px; }
+    body.interface-streamlined .streamlinedAdventureMediaList { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    body.interface-streamlined .streamlinedChoiceRow { grid-template-columns: minmax(0, 1fr) minmax(120px, .75fr) auto; }
+    body.interface-streamlined .streamlinedChoiceRow select { grid-column: auto; }
+    body.interface-streamlined .streamlinedSceneActions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    body.interface-streamlined .streamlinedSceneActions button { min-height: 34px; font-size: 11px; }
 }
