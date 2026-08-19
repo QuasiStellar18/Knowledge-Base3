@@ -208,7 +208,15 @@ async function initApp() {
         hydrateSettingsControls();
         state.ready = true;
         if (createdInbox || createdAdventureServer) await saveStructure(state.structure);
-        if (state.isUnlocked) await loadActiveChannelMessages();
+        if (state.isUnlocked) {
+            // Never leave a saved, already-unlocked session trapped behind the
+            // lock screen while a large channel is still being read.
+            state.loadingChannelId = state.activeChannelId;
+            render();
+            renderLockScreen();
+            await loadActiveChannelMessages();
+            state.loadingChannelId = null;
+        }
         requestPersistentStorage();
         refreshStorageEstimate();
     } catch (error) {
@@ -314,9 +322,19 @@ async function unlockWorkspace(event) {
     sessionStorage.setItem(UNLOCK_SESSION_KEY, "1");
     els.channelPinInput.value = "";
     els.unlockError.textContent = "";
-    await loadActiveChannelMessages();
-    render();
     renderLockScreen();
+    state.loadingChannelId = state.activeChannelId;
+    render();
+    try {
+        await loadActiveChannelMessages();
+    } catch (error) {
+        console.error("unlockWorkspace: active channel could not load", error);
+        state.error = "Workspace unlocked, but the current channel could not load. Your local data was not deleted. Close and reopen the page, then try again.";
+    } finally {
+        state.loadingChannelId = null;
+        render();
+        renderLockScreen();
+    }
 }
 
 function lockWorkspace() {
@@ -469,9 +487,12 @@ async function loadActiveChannelMessages(channelId = state.activeChannelId) {
     state.messagesByChannel.set(channelId, messages);
     state.channelMessageCounts.set(channelId, messageCount);
     const linkedChannels = [...new Set(messages.flatMap((message) => (message.linkedPhotoRefs || []).map((ref) => ref.channelId)).filter((linkedChannelId) => linkedChannelId && linkedChannelId !== channelId && !state.messagesByChannel.has(linkedChannelId)))];
-    await Promise.all(linkedChannels.map(async (linkedChannelId) => {
+    const linkedResults = await Promise.allSettled(linkedChannels.map(async (linkedChannelId) => {
         state.messagesByChannel.set(linkedChannelId, normalizeMessages(await getChannelMessages(linkedChannelId)));
     }));
+    linkedResults.filter((result) => result.status === "rejected").forEach((result) => {
+        console.warn("Could not pre-load a linked media channel", result.reason);
+    });
     if (state.activeChannelId === channelId) state.visibleMessageLimit = Math.max(100, messages.length);
 }
 
