@@ -43,6 +43,8 @@ const DEFAULT_STRUCTURE = {
         randomTimerOnChannel: false,
         randomTimerOnArray: false,
         showHiddenPhotos: false,
+        interfaceMode: "classic",
+        colorPalette: "discord",
         channelQuizSettings: {},
         channelQuizHighScores: {},
         channelQuizPresets: {}
@@ -51,6 +53,8 @@ const DEFAULT_STRUCTURE = {
 
 const CHANNEL_PIN = "58008";
 const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
+const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_LOCAL_IMAGES_PER_SEND = 12;
 
 const state = {
     ready: false,
@@ -59,6 +63,8 @@ const state = {
     activeChannelId: "ideas",
     activeView: { type: "channel", id: "ideas" },
     messagesByChannel: new Map(),
+    channelMessageCounts: new Map(),
+    channelLoadLimits: new Map(),
     search: "",
     draftAttachments: [],
     draftLinkedPhotoRefs: [],
@@ -80,6 +86,10 @@ const state = {
     activeAdventureSessionId: null,
     focusAdventureSceneId: null,
     adventureEditorStage: "setup",
+    streamlinedAdventureSceneId: null,
+    pendingMessageSave: false,
+    lastSaveError: "",
+    renderObjectUrls: new Set(),
     channelQuiz: { channelIds: [], useAllChannels: false, answerMode: "choice", current: null, score: 0, rounds: 0, ended: false, screen: "setup", lastChannelId: null, answering: false }
 };
 
@@ -104,6 +114,7 @@ const els = {
     sidebar: document.getElementById("sidebar"),
     chat: document.getElementById("chat"),
     mobileStageNav: document.getElementById("mobileStageNav"),
+    streamlinedHubBtn: document.getElementById("streamlinedHubBtn"),
     mobileQuickActions: document.getElementById("mobileQuickActions"),
     mobileBackBtn: document.getElementById("mobileBackBtn"),
     mobileRandomBtn: document.getElementById("mobileRandomBtn"),
@@ -279,6 +290,7 @@ function bindEvents() {
     els.mobileRandomBtn.addEventListener("click", selectRandomMessageForCurrentView);
     els.mobileAddImageBtn.addEventListener("click", () => els.imageInput.click());
     els.mobileMoreBtn.addEventListener("click", openMobileQuickActions);
+    els.streamlinedHubBtn.addEventListener("click", openStreamlinedHub);
 
     els.app.addEventListener("scroll", debounce(() => updateMobileStageNav(), 80), { passive: true });
     window.addEventListener("resize", () => updateMobileStageNav());
@@ -445,17 +457,22 @@ function selectInitialChannel() {
         : { type: "settings", id: "settings" };
 }
 
-async function loadActiveChannelMessages() {
-    if (!state.activeChannelId) return;
+async function loadActiveChannelMessages(channelId = state.activeChannelId) {
+    if (!channelId) return;
 
-    const rawMessages = await getChannelMessages(state.activeChannelId);
+    const loadLimit = state.channelLoadLimits.get(channelId) || 100;
+    const [rawMessages, messageCount] = await Promise.all([
+        getRecentChannelMessages(channelId, loadLimit),
+        getChannelMessageCount(channelId)
+    ]);
     const messages = normalizeMessages(rawMessages);
-    state.messagesByChannel.set(state.activeChannelId, messages);
-    const linkedChannels = [...new Set(messages.flatMap((message) => (message.linkedPhotoRefs || []).map((ref) => ref.channelId)).filter((channelId) => channelId && channelId !== state.activeChannelId && !state.messagesByChannel.has(channelId)))];
-    await Promise.all(linkedChannels.map(async (channelId) => {
-        state.messagesByChannel.set(channelId, normalizeMessages(await getChannelMessages(channelId)));
+    state.messagesByChannel.set(channelId, messages);
+    state.channelMessageCounts.set(channelId, messageCount);
+    const linkedChannels = [...new Set(messages.flatMap((message) => (message.linkedPhotoRefs || []).map((ref) => ref.channelId)).filter((linkedChannelId) => linkedChannelId && linkedChannelId !== channelId && !state.messagesByChannel.has(linkedChannelId)))];
+    await Promise.all(linkedChannels.map(async (linkedChannelId) => {
+        state.messagesByChannel.set(linkedChannelId, normalizeMessages(await getChannelMessages(linkedChannelId)));
     }));
-    state.visibleMessageLimit = 100;
+    if (state.activeChannelId === channelId) state.visibleMessageLimit = Math.max(100, messages.length);
 }
 
 function normalizeMessages(messages) {
@@ -470,6 +487,9 @@ function normalizeMessages(messages) {
             createdAt: message.createdAt || new Date().toISOString(),
             pinned: Boolean(message.pinned),
             reactions: Array.isArray(message.reactions) ? [...new Set(message.reactions)] : [],
+            reactionEvents: Array.isArray(message.reactionEvents)
+                ? message.reactionEvents.filter((event) => event?.emoji && event?.at)
+                : [],
             tags: Array.isArray(message.tags) ? message.tags : extractTags(message.text || ""),
             attachments: Array.isArray(message.attachments) ? message.attachments : [],
             linkedPhotoRefs: Array.isArray(message.linkedPhotoRefs) ? message.linkedPhotoRefs.filter((ref) => ref?.channelId && ref?.messageId && ref?.attachmentId) : []
@@ -1092,12 +1112,18 @@ function renderHeader() {
     const pinnedCount = messages.filter((message) => message.pinned).length;
 
     els.activeTitle.textContent = channel ? `# ${channel.name}` : "No channel selected";
+    const saveState = state.pendingMessageSave
+        ? " · saving locally…"
+        : state.lastSaveError
+            ? " · last save failed"
+            : "";
     els.activeMeta.textContent = channel
-        ? `${category?.name || "General"} · ${messages.length} notes · ${pinnedCount} pinned · local only`
+        ? `${category?.name || "General"} · ${messages.length} notes · ${pinnedCount} pinned · local only${saveState}`
         : "Create a channel to start";
 }
 
 function renderMessages() {
+    releaseRenderedObjectUrls();
     els.messages.innerHTML = "";
 
     if (state.error) {
@@ -1211,12 +1237,35 @@ function renderMessages() {
         });
     }
 
-    if (allMessages.length > messages.length) {
+    const channelTotal = state.activeView.type === "channel"
+        ? state.channelMessageCounts.get(state.activeChannelId) || allMessages.length
+        : allMessages.length;
+    const unloadedCount = Math.max(0, channelTotal - allMessages.length);
+    const olderCount = Math.max(unloadedCount, allMessages.length - messages.length);
+    if (olderCount > 0) {
         const older = document.createElement("button");
         older.className = "loadOlder";
         older.type = "button";
-        older.textContent = `Show ${Math.min(100, allMessages.length - messages.length)} older notes`;
-        older.addEventListener("click", () => {
+        older.textContent = `Load ${Math.min(100, olderCount)} older notes`;
+        older.addEventListener("click", async () => {
+            if (state.activeView.type === "channel" && unloadedCount > 0) {
+                const channelId = state.activeChannelId;
+                state.channelLoadLimits.set(channelId, (state.channelLoadLimits.get(channelId) || allMessages.length) + 100);
+                state.loadingChannelId = channelId;
+                renderChannels();
+                renderHeader();
+                renderMessages();
+                try {
+                    await loadActiveChannelMessages(channelId);
+                } finally {
+                    if (state.activeChannelId === channelId) state.loadingChannelId = null;
+                }
+                renderChannels();
+                renderHeader();
+                renderMessages();
+                renderComposer();
+                return;
+            }
             state.visibleMessageLimit += 100;
             renderMessages();
         });
@@ -1308,14 +1357,9 @@ function renderPhotoTile(message, attachment, channelId, viewerItems = null, vie
     figure.classList.toggle("isSelected", state.selectedPhotoRefs.some((item) => photoRefKey(item) === key));
 
     const image = document.createElement("img");
-    const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
-    image.src = objectUrl || attachment.dataUrl || "";
+    setRenderedImageSource(image, attachment);
     image.alt = attachment.name || message.text || "Local photo";
     image.loading = "lazy";
-    if (objectUrl) {
-        image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
-        image.addEventListener("error", () => URL.revokeObjectURL(objectUrl), { once: true });
-    }
 
     const caption = document.createElement("figcaption");
     const meta = document.createElement("span");
@@ -1477,7 +1521,7 @@ async function toggleAttachmentFlag(ref, flag) {
         })
     });
     state.messagesByChannel.set(ref.channelId, updated);
-    await saveChannelMessages(ref.channelId, updated);
+    await saveChannelMessage(ref.channelId, updated.find((message) => message.id === ref.messageId));
     render();
 }
 
@@ -1559,6 +1603,7 @@ function getWorkspaceStats() {
     }]));
     const reactions = new Map();
     const tags = new Map();
+    const reactionEvents = [];
     let notes = 0;
     let photos = 0;
     let gifs = 0;
@@ -1586,6 +1631,16 @@ function getWorkspaceStats() {
             reaction.total += 1;
             reaction.channels.set(entry.channelId, (reaction.channels.get(entry.channelId) || 0) + 1);
         });
+        (message.reactionEvents || []).forEach((event) => {
+            const occurredAt = new Date(event.at);
+            if (!event.emoji || Number.isNaN(occurredAt.getTime())) return;
+            reactionEvents.push({
+                emoji: event.emoji,
+                channelId: entry.channelId,
+                messageId: event.messageId || entry.message.id,
+                at: occurredAt.toISOString()
+            });
+        });
         (message.tags || []).forEach((tag) => tags.set(tag, (tags.get(tag) || 0) + 1));
     });
     return {
@@ -1597,8 +1652,58 @@ function getWorkspaceStats() {
         gifs,
         pinned,
         favorites,
-        reactionTotal
+        reactionTotal,
+        reactionInsights: getReactionInsights(reactionEvents)
     };
+}
+
+function getReactionInsights(events) {
+    const dayCounts = new Map();
+    const hours = Array.from({ length: 24 }, () => 0);
+    const weekdays = Array.from({ length: 7 }, () => 0);
+    const emojis = new Map();
+
+    events.forEach((event) => {
+        const date = new Date(event.at);
+        const day = formatLocalDayKey(date);
+        dayCounts.set(day, (dayCounts.get(day) || 0) + 1);
+        hours[date.getHours()] += 1;
+        weekdays[date.getDay()] += 1;
+        if (!emojis.has(event.emoji)) emojis.set(event.emoji, { emoji: event.emoji, total: 0, days: new Map(), hours: Array.from({ length: 24 }, () => 0), channels: new Map(), latestAt: event.at });
+        const emoji = emojis.get(event.emoji);
+        emoji.total += 1;
+        emoji.days.set(day, (emoji.days.get(day) || 0) + 1);
+        emoji.hours[date.getHours()] += 1;
+        emoji.channels.set(event.channelId, (emoji.channels.get(event.channelId) || 0) + 1);
+        if (event.at > emoji.latestAt) emoji.latestAt = event.at;
+    });
+
+    return {
+        total: events.length,
+        firstAt: events.length ? [...events].sort((a, b) => a.at.localeCompare(b.at))[0].at : null,
+        days: [...dayCounts.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+        hours,
+        weekdays,
+        emojis: [...emojis.values()].sort((a, b) => b.total - a.total || a.emoji.localeCompare(b.emoji)),
+        recent: [...events].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 12)
+    };
+}
+
+function formatLocalDayKey(date) {
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function formatStatsDay(day) {
+    return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatStatsTime(value) {
+    return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function formatStatsHour(hour) {
+    return new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: "numeric" });
 }
 
 function renderFocusSession() {
@@ -2517,8 +2622,135 @@ function renderStatsPage() {
         });
         tagSection.appendChild(tags);
     }
-    page.append(intro, metricGrid, reactionSection, channelSection, tagSection);
+    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderReactionTimingStats(stats.reactionInsights));
     els.messages.appendChild(page);
+}
+
+function renderReactionTimingStats(insights) {
+    const section = document.createElement("section");
+    section.className = "statsSection statsReactionTiming";
+    const heading = document.createElement("h3");
+    heading.textContent = "Reaction timing";
+    const help = document.createElement("p");
+    help.textContent = "Timing is recorded locally whenever you add an emoji reaction. Existing reactions remain in the totals above, but do not have a historical reaction time.";
+    section.append(heading, help);
+
+    if (insights.total === 0) {
+        section.appendChild(emptyPanel("Timing starts with the next emoji reaction you add."));
+        return section;
+    }
+
+    const busiestHour = getMostActiveIndex(insights.hours);
+    const busiestWeekday = getMostActiveIndex(insights.weekdays);
+    const mostUsed = insights.emojis[0];
+    const overview = document.createElement("div");
+    overview.className = "statsInsightGrid";
+    [
+        ["Recorded adds", insights.total],
+        ["Most active hour", insights.hours[busiestHour] ? formatStatsHour(busiestHour) : "—"],
+        ["Most active day", insights.weekdays[busiestWeekday] ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][busiestWeekday] : "—"],
+        ["Most added emoji", mostUsed ? `${mostUsed.emoji} · ${mostUsed.total}` : "—"]
+    ].forEach(([label, value]) => {
+        const card = document.createElement("article");
+        card.className = "statsInsightMetric";
+        const number = document.createElement("strong");
+        number.textContent = String(value);
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        card.append(number, caption);
+        overview.appendChild(card);
+    });
+    section.appendChild(overview);
+
+    const dailyMap = new Map(insights.days);
+    const dailyValues = getRecentStatsDays(insights.days, 14).map((day) => ({ label: formatStatsDay(day), value: dailyMap.get(day) || 0, title: `${formatStatsDay(day)} · ${dailyMap.get(day) || 0} reactions` }));
+    section.append(
+        createStatsBarChart("Daily activity", "The last 14 calendar days", dailyValues),
+        createStatsBarChart("Time of day", "When reactions are added on this device", insights.hours.map((value, hour) => ({ label: hour % 3 === 0 ? formatStatsHour(hour) : "", value, title: `${formatStatsHour(hour)} · ${value} reactions` })), "hour"),
+        createStatsBarChart("Day of week", "Your local weekday pattern", insights.weekdays.map((value, day) => ({ label: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day], value, title: `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][day]} · ${value} reactions` })), "weekday")
+    );
+
+    const emojiSection = document.createElement("section");
+    emojiSection.className = "statsTimingList";
+    const emojiHeading = document.createElement("h4");
+    emojiHeading.textContent = "Emoji timing detail";
+    insights.emojis.slice(0, 12).forEach((emoji) => {
+        const peakHour = getMostActiveIndex(emoji.hours);
+        const topChannel = [...emoji.channels.entries()].sort((a, b) => b[1] - a[1])[0];
+        const row = document.createElement("button");
+        row.type = "button";
+        const icon = document.createElement("strong");
+        icon.textContent = emoji.emoji;
+        const detail = document.createElement("span");
+        const channel = topChannel ? getChannelById(topChannel[0]) : null;
+        detail.textContent = `${emoji.total} added · ${emoji.days.size} active days · most often ${formatStatsHour(peakHour)}${channel ? ` · # ${channel.name}` : ""}`;
+        const latest = document.createElement("small");
+        latest.textContent = `Last added ${formatStatsTime(emoji.latestAt)}`;
+        row.append(icon, detail, latest);
+        row.addEventListener("click", () => openView("emoji", emoji.emoji));
+        emojiSection.appendChild(row);
+    });
+    section.append(emojiHeading, emojiSection);
+
+    const recentSection = document.createElement("section");
+    recentSection.className = "statsTimingList";
+    const recentHeading = document.createElement("h4");
+    recentHeading.textContent = "Recent reaction activity";
+    insights.recent.forEach((event) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        const icon = document.createElement("strong");
+        icon.textContent = event.emoji;
+        const detail = document.createElement("span");
+        detail.textContent = `# ${getChannelById(event.channelId)?.name || "channel"} · ${formatStatsTime(event.at)}`;
+        row.append(icon, detail);
+        row.addEventListener("click", () => openView("channel", event.channelId));
+        recentSection.appendChild(row);
+    });
+    section.append(recentHeading, recentSection);
+    return section;
+}
+
+function createStatsBarChart(title, help, values, modifier = "") {
+    const chart = document.createElement("section");
+    chart.className = `statsBarChart ${modifier}`.trim();
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const description = document.createElement("p");
+    description.textContent = help;
+    const bars = document.createElement("div");
+    bars.className = "statsBars";
+    const highest = Math.max(1, ...values.map((item) => item.value));
+    values.forEach((item) => {
+        const bar = document.createElement("div");
+        bar.className = "statsBar";
+        bar.title = item.title;
+        const value = document.createElement("span");
+        value.className = "statsBarValue";
+        value.textContent = item.value ? String(item.value) : "";
+        const fill = document.createElement("span");
+        fill.className = "statsBarFill";
+        fill.style.height = `${Math.max(item.value ? 8 : 0, (item.value / highest) * 100)}%`;
+        const label = document.createElement("small");
+        label.textContent = item.label;
+        bar.append(value, fill, label);
+        bars.appendChild(bar);
+    });
+    chart.append(heading, description, bars);
+    return chart;
+}
+
+function getMostActiveIndex(values) {
+    return values.reduce((best, value, index) => value > values[best] ? index : best, 0);
+}
+
+function getRecentStatsDays(days, count) {
+    const latest = days.length ? new Date(`${days[days.length - 1][0]}T12:00:00`) : new Date();
+    return Array.from({ length: count }, (_, index) => {
+        const date = new Date(latest);
+        date.setDate(date.getDate() - (count - index - 1));
+        return formatLocalDayKey(date);
+    });
 }
 
 function renderSettingsPage() {
@@ -2530,6 +2762,7 @@ function renderSettingsPage() {
     intro.className = "settingsIntro";
     intro.innerHTML = `<h3>${escapeHTML(server?.name || "Workspace")}</h3><p>Organize channels under categories. Everything is saved in this browser on this device.</p>`;
     page.appendChild(intro);
+    page.appendChild(renderAppearanceSettings());
 
     const backup = document.createElement("section");
     backup.className = "settingsCategory";
@@ -2589,6 +2822,45 @@ function renderSettingsPage() {
     });
 
     els.messages.appendChild(page);
+}
+
+function renderAppearanceSettings() {
+    const section = document.createElement("section");
+    section.className = "settingsCategory appearanceSettings";
+    section.innerHTML = "<h4>Appearance</h4><p>Classic keeps the current layout. Streamlined is a mobile-first navigation layout with a dedicated Tools hub. Both use the same local data and features.</p>";
+
+    const mode = document.createElement("label");
+    mode.className = "appearanceField";
+    const modeLabel = document.createElement("span");
+    modeLabel.textContent = "Interface";
+    const modeSelect = document.createElement("select");
+    [["classic", "Classic (current layout)"], ["streamlined", "Streamlined mobile layout"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === getInterfaceMode();
+        modeSelect.appendChild(option);
+    });
+    modeSelect.addEventListener("change", () => saveInterfaceMode(modeSelect.value));
+    mode.append(modeLabel, modeSelect);
+
+    const palette = document.createElement("label");
+    palette.className = "appearanceField";
+    const paletteLabel = document.createElement("span");
+    paletteLabel.textContent = "Color palette";
+    const paletteSelect = document.createElement("select");
+    [["discord", "Discord dark"], ["midnight", "Midnight blue"], ["violet", "Lavender dusk"], ["forest", "Forest"], ["sunset", "Sunset"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === getColorPalette();
+        paletteSelect.appendChild(option);
+    });
+    paletteSelect.addEventListener("change", () => saveColorPalette(paletteSelect.value));
+    palette.append(paletteLabel, paletteSelect);
+
+    section.append(mode, palette);
+    return section;
 }
 
 async function attachmentToBackup(attachment) {
@@ -2705,6 +2977,7 @@ function renderAdventureMap(adventureId) {
         node.append(heading, paths);
         node.addEventListener("click", () => {
             state.focusAdventureSceneId = scene.id;
+            state.adventureEditorStage = "scenes";
             openView("adventureEditor", adventureId);
         });
         canvas.appendChild(node);
@@ -2741,7 +3014,12 @@ function renderAdventureStudio() {
         const edit = document.createElement("button");
         edit.type = "button";
         edit.textContent = "Edit";
-        edit.addEventListener("click", () => openView("adventureEditor", adventure.id));
+        edit.addEventListener("click", () => {
+            state.adventureEditorStage = "setup";
+            state.streamlinedAdventureSceneId = null;
+            state.focusAdventureSceneId = null;
+            openView("adventureEditor", adventure.id);
+        });
         const play = document.createElement("button");
         play.type = "button";
         play.className = "adventurePrimary";
@@ -2762,6 +3040,11 @@ function renderAdventureEditor(adventureId) {
     const adventure = getAdventure(adventureId);
     if (!adventure) {
         els.messages.appendChild(emptyPanel("Adventure not found."));
+        return;
+    }
+
+    if (getInterfaceMode() === "streamlined") {
+        renderStreamlinedAdventureEditor(adventureId);
         return;
     }
 
@@ -2981,6 +3264,574 @@ function renderAdventureEditor(adventureId) {
         page.append(testGuide, renderAdventureValidation(adventure), testActions);
     }
     els.messages.appendChild(page);
+}
+
+function renderStreamlinedAdventureEditor(adventureId) {
+    const adventure = getAdventure(adventureId);
+    if (!adventure) {
+        els.messages.appendChild(emptyPanel("Adventure not found."));
+        return;
+    }
+    if (!["setup", "scenes", "test"].includes(state.adventureEditorStage)) state.adventureEditorStage = "setup";
+
+    const page = document.createElement("section");
+    page.className = "streamlinedAdventureEditor";
+    const header = document.createElement("header");
+    header.className = "streamlinedAdventureHeader";
+    const headerText = document.createElement("div");
+    const eyebrow = document.createElement("p");
+    eyebrow.textContent = "ADVENTURE BUILDER";
+    const heading = document.createElement("h3");
+    heading.textContent = adventure.title || "Untitled adventure";
+    const description = document.createElement("span");
+    description.textContent = adventure.description || "A private story made from your local media.";
+    headerText.append(eyebrow, heading, description);
+    const leave = document.createElement("button");
+    leave.type = "button";
+    leave.className = "streamlinedAdventureBack";
+    leave.textContent = "All adventures";
+    leave.addEventListener("click", () => openView("adventureStudio", "studio"));
+    header.append(headerText, leave);
+
+    const stage = state.adventureEditorStage;
+    const stages = document.createElement("nav");
+    stages.className = "streamlinedAdventureStages";
+    [["setup", "1", "Basics"], ["scenes", "2", "Scenes"], ["test", "3", "Review"]].forEach(([id, number, label]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = id === stage ? "active" : "";
+        button.setAttribute("aria-current", id === stage ? "step" : "false");
+        button.innerHTML = `<span>${number}</span>${escapeHTML(label)}`;
+        button.addEventListener("click", () => {
+            state.adventureEditorStage = id;
+            if (id !== "scenes") state.streamlinedAdventureSceneId = null;
+            renderMessages();
+        });
+        stages.appendChild(button);
+    });
+    page.append(header, stages);
+
+    if (stage === "setup") page.appendChild(renderStreamlinedAdventureBasics(adventure));
+    if (stage === "scenes") {
+        const scene = adventure.scenes.find((item) => item.id === state.streamlinedAdventureSceneId)
+            || adventure.scenes.find((item) => item.id === state.focusAdventureSceneId);
+        if (scene) {
+            state.streamlinedAdventureSceneId = scene.id;
+            state.focusAdventureSceneId = null;
+            page.appendChild(renderStreamlinedAdventureSceneEditor(adventure, scene));
+        } else {
+            page.appendChild(renderStreamlinedAdventureSceneList(adventure));
+        }
+    }
+    if (stage === "test") page.appendChild(renderStreamlinedAdventureReview(adventure));
+    els.messages.appendChild(page);
+}
+
+function renderStreamlinedAdventureBasics(adventure) {
+    const panel = document.createElement("section");
+    panel.className = "streamlinedAdventurePanel streamlinedAdventureBasics";
+    const heading = document.createElement("h4");
+    heading.textContent = "Start with the essentials";
+    const help = document.createElement("p");
+    help.textContent = "Name the adventure, choose its opening scene, then build one scene at a time.";
+    const status = document.createElement("output");
+    status.className = "streamlinedAdventureSave";
+    status.textContent = "Saved locally";
+    const title = document.createElement("input");
+    title.type = "text";
+    title.value = adventure.title || "";
+    title.placeholder = "Adventure title";
+    const description = document.createElement("textarea");
+    description.rows = 3;
+    description.value = adventure.description || "";
+    description.placeholder = "What is this adventure about? (optional)";
+    const start = adventureTargetSelect(adventure, "__start__", adventure.startSceneId || adventure.scenes[0]?.id, "Opening scene");
+    start.select.querySelector('option[value=""]').remove();
+    const metronome = document.createElement("label");
+    metronome.className = "streamlinedAdventureToggle";
+    const metronomeInput = document.createElement("input");
+    metronomeInput.type = "checkbox";
+    metronomeInput.checked = adventure.metronomeEnabled !== false;
+    metronome.append(metronomeInput, " Include metronome controls while playing");
+    const bpm = numericField("Metronome BPM", adventure.metronomeBpm || state.structure.settings.metronomeBpm || 120);
+    bpm.input.min = "20";
+    bpm.input.max = "300";
+    const progress = document.createElement("label");
+    progress.className = "streamlinedAdventureToggle";
+    const progressInput = document.createElement("input");
+    progressInput.type = "checkbox";
+    progressInput.checked = adventure.showProgress !== false;
+    progress.append(progressInput, " Show progress while playing");
+    const update = () => {
+        adventure.title = normalizeDisplayName(title.value) || "Untitled adventure";
+        adventure.description = description.value;
+        adventure.startSceneId = start.select.value || adventure.scenes[0]?.id;
+        adventure.metronomeEnabled = metronomeInput.checked;
+        adventure.metronomeBpm = clampAdventureNumber(bpm.input.value, 20, 300, 120);
+        adventure.showProgress = progressInput.checked;
+        queueAdventureAutosave(status);
+    };
+    [title, description, bpm.input].forEach((input) => input.addEventListener("input", update));
+    [start.select, metronomeInput, progressInput].forEach((input) => input.addEventListener("change", update));
+    const next = document.createElement("button");
+    next.type = "button";
+    next.className = "adventurePrimary";
+    next.textContent = "Continue to scenes";
+    next.addEventListener("click", async () => {
+        update();
+        await saveAdventures();
+        state.adventureEditorStage = "scenes";
+        renderMessages();
+    });
+    const optional = document.createElement("details");
+    optional.className = "streamlinedAdventureDetails";
+    const optionalSummary = document.createElement("summary");
+    optionalSummary.textContent = "Optional gameplay settings";
+    const stats = document.createElement("label");
+    stats.className = "streamlinedAdventureToggle";
+    const statsInput = document.createElement("input");
+    statsInput.type = "checkbox";
+    statsInput.checked = Boolean(adventure.showStats);
+    stats.append(statsInput, " Show stats while playing (off by default)");
+    const variables = document.createElement("label");
+    variables.className = "streamlinedAdventureToggle";
+    const variablesInput = document.createElement("input");
+    variablesInput.type = "checkbox";
+    variablesInput.checked = Boolean(adventure.enableVariables);
+    variables.append(variablesInput, " Enable stats and variables for this adventure");
+    const inventory = document.createElement("label");
+    inventory.className = "streamlinedAdventureToggle";
+    const inventoryInput = document.createElement("input");
+    inventoryInput.type = "checkbox";
+    inventoryInput.checked = Boolean(adventure.enableInventory);
+    inventory.append(inventoryInput, " Enable a simple inventory");
+    [statsInput, variablesInput, inventoryInput].forEach((input) => input.addEventListener("change", () => {
+        adventure.showStats = statsInput.checked;
+        adventure.enableVariables = variablesInput.checked;
+        adventure.enableInventory = inventoryInput.checked;
+        queueAdventureAutosave(status);
+    }));
+    optional.append(optionalSummary, stats, variables, inventory);
+    panel.append(heading, help, title, description, start.label, metronome, bpm.label, progress, optional, status, next);
+    return panel;
+}
+
+function renderStreamlinedAdventureSceneList(adventure) {
+    const panel = document.createElement("section");
+    panel.className = "streamlinedAdventurePanel streamlinedSceneList";
+    const heading = document.createElement("div");
+    heading.className = "streamlinedSceneListHeading";
+    const headingText = document.createElement("div");
+    const title = document.createElement("h4");
+    title.textContent = "Your scenes";
+    const help = document.createElement("p");
+    help.textContent = "Tap one scene to edit it. You only work on one scene at a time.";
+    headingText.append(title, help);
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "adventurePrimary";
+    add.textContent = "Add scene";
+    add.addEventListener("click", async () => {
+        const scene = {
+            id: crypto.randomUUID(),
+            title: `Scene ${adventure.scenes.length + 1}`,
+            text: "",
+            isEnding: false,
+            mediaRefs: [],
+            choices: []
+        };
+        adventure.scenes.push(scene);
+        await saveAdventures();
+        state.streamlinedAdventureSceneId = scene.id;
+        renderMessages();
+    });
+    heading.append(headingText, add);
+    panel.appendChild(heading);
+
+    adventure.scenes.forEach((scene, index) => {
+        const card = document.createElement("article");
+        card.className = "streamlinedSceneCard";
+        const meta = document.createElement("div");
+        meta.className = "streamlinedSceneMeta";
+        const number = document.createElement("span");
+        number.textContent = `SCENE ${index + 1}`;
+        if (scene.id === (adventure.startSceneId || adventure.scenes[0]?.id)) {
+            const start = document.createElement("span");
+            start.textContent = "START";
+            meta.appendChild(start);
+        }
+        meta.prepend(number);
+        const name = document.createElement("h5");
+        name.textContent = scene.title || "Untitled scene";
+        const summary = document.createElement("p");
+        summary.textContent = streamlinedSceneSummary(scene);
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "streamlinedSceneEdit";
+        edit.textContent = "Edit scene";
+        edit.addEventListener("click", () => {
+            state.streamlinedAdventureSceneId = scene.id;
+            renderMessages();
+        });
+        const more = document.createElement("details");
+        more.className = "streamlinedSceneMore";
+        const moreSummary = document.createElement("summary");
+        moreSummary.textContent = "More";
+        const tools = document.createElement("div");
+        tools.className = "streamlinedSceneMoreActions";
+        const up = document.createElement("button");
+        up.type = "button";
+        up.textContent = "Move earlier";
+        up.disabled = index === 0;
+        up.addEventListener("click", () => moveAdventureScene(adventure.id, scene.id, -1));
+        const down = document.createElement("button");
+        down.type = "button";
+        down.textContent = "Move later";
+        down.disabled = index === adventure.scenes.length - 1;
+        down.addEventListener("click", () => moveAdventureScene(adventure.id, scene.id, 1));
+        const duplicate = document.createElement("button");
+        duplicate.type = "button";
+        duplicate.textContent = "Duplicate";
+        duplicate.addEventListener("click", () => duplicateAdventureScene(adventure.id, scene.id));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "dangerAction";
+        remove.textContent = "Delete";
+        remove.disabled = adventure.scenes.length <= 1;
+        remove.addEventListener("click", () => deleteAdventureScene(adventure.id, scene.id));
+        tools.append(up, down, duplicate, remove);
+        more.append(moreSummary, tools);
+        card.append(meta, name, summary, edit, more);
+        panel.appendChild(card);
+    });
+    return panel;
+}
+
+function streamlinedSceneSummary(scene) {
+    const items = [];
+    if (scene.isEnding) items.push("Ends the story");
+    else if (scene.randomEvent) items.push(streamlinedEventName(scene.randomEvent));
+    else items.push(`${(scene.choices || []).length} ${(scene.choices || []).length === 1 ? "path" : "paths"}`);
+    if ((scene.mediaRefs || []).length) items.push(`${scene.mediaRefs.length} ${(scene.mediaRefs || []).length === 1 ? "media item" : "media items"}`);
+    return items.join(" · ");
+}
+
+function streamlinedEventName(event) {
+    return {
+        dice: "Dice challenge",
+        weighted: "Random path",
+        wheel: "Spinning wheel",
+        timer: "Timer challenge",
+        image: "Random image",
+        quiz: String(event.mode || "").startsWith("random-source") ? "Channel quiz" : "Quiz"
+    }[event?.type] || "Game element";
+}
+
+function renderStreamlinedAdventureSceneEditor(adventure, scene) {
+    const panel = document.createElement("section");
+    panel.className = "streamlinedAdventurePanel streamlinedSceneEditor";
+    const index = adventure.scenes.findIndex((item) => item.id === scene.id);
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "streamlinedSceneBack";
+    back.textContent = "← All scenes";
+    back.addEventListener("click", () => {
+        state.streamlinedAdventureSceneId = null;
+        renderMessages();
+    });
+    const heading = document.createElement("h4");
+    heading.textContent = `Scene ${index + 1}`;
+    const help = document.createElement("p");
+    help.textContent = "Choose a simple starting pattern, then write the scene and set what happens next.";
+    const status = document.createElement("output");
+    status.className = "streamlinedAdventureSave";
+    status.textContent = "Saved locally";
+    panel.append(back, heading, help);
+
+    const patterns = document.createElement("section");
+    patterns.className = "streamlinedScenePatterns";
+    const patternTitle = document.createElement("strong");
+    patternTitle.textContent = "1. Choose a scene type";
+    const patternHelp = document.createElement("span");
+    patternHelp.textContent = "This only changes this scene. Your photos stay in their original channels.";
+    const buttons = document.createElement("div");
+    buttons.className = "streamlinedPatternButtons";
+    const applyStory = async () => {
+        scene.isEnding = false;
+        scene.randomEvent = null;
+        scene.choices = (scene.choices || []).length ? scene.choices : [{ id: crypto.randomUUID(), label: "Continue", targetSceneId: null }];
+        scene.text ||= "Write what happens here.";
+        await saveAdventures();
+        renderMessages();
+    };
+    [
+        ["Story", "Text and a path", applyStory],
+        ["Decision", "Two player choices", () => applyAdventureSceneTemplate(adventure.id, scene.id, "twoPath")],
+        ["Image / GIF", "Add local media", () => applyAdventureSceneTemplate(adventure.id, scene.id, "imageScene")],
+        ["Ending", "Finish the story", () => applyAdventureSceneTemplate(adventure.id, scene.id, "ending")]
+    ].forEach(([label, note, action]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        const strong = document.createElement("strong");
+        strong.textContent = label;
+        const span = document.createElement("span");
+        span.textContent = note;
+        button.append(strong, span);
+        button.addEventListener("click", action);
+        buttons.appendChild(button);
+    });
+    patterns.append(patternTitle, patternHelp, buttons);
+    const challenges = document.createElement("details");
+    challenges.className = "streamlinedAdventureDetails streamlinedChallengeChoices";
+    const challengeSummary = document.createElement("summary");
+    challengeSummary.textContent = scene.randomEvent ? `Challenge: ${streamlinedEventName(scene.randomEvent)}` : "Optional: add a game element";
+    const challengeHelp = document.createElement("p");
+    challengeHelp.textContent = "Use one only when the scene needs chance, a timer, a random image, or a quiz.";
+    const challengeButtons = document.createElement("div");
+    challengeButtons.className = "streamlinedChallengeButtons";
+    [["Dice", "dice"], ["Wheel", "wheel"], ["Timer", "timer"], ["Random image", "randomImage"], ["Channel quiz", "randomChannelQuiz"]].forEach(([label, template]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.addEventListener("click", () => applyAdventureSceneTemplate(adventure.id, scene.id, template));
+        challengeButtons.appendChild(button);
+    });
+    challenges.append(challengeSummary, challengeHelp, challengeButtons);
+    patterns.appendChild(challenges);
+    const savedComponents = state.structure.settings.adventureComponents || [];
+    if (savedComponents.length) {
+        const saved = document.createElement("details");
+        saved.className = "streamlinedAdventureDetails";
+        const savedSummary = document.createElement("summary");
+        savedSummary.textContent = "Use one of your saved scene templates";
+        const select = document.createElement("select");
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Choose a saved template…";
+        select.appendChild(placeholder);
+        savedComponents.forEach((component) => {
+            const option = document.createElement("option");
+            option.value = component.id;
+            option.textContent = component.name;
+            select.appendChild(option);
+        });
+        select.addEventListener("change", () => {
+            if (select.value) applyAdventureSceneTemplate(adventure.id, scene.id, `component:${select.value}`);
+        });
+        saved.append(savedSummary, select);
+        patterns.appendChild(saved);
+    }
+    panel.appendChild(patterns);
+
+    const content = document.createElement("section");
+    content.className = "streamlinedSceneContent";
+    const contentTitle = document.createElement("strong");
+    contentTitle.textContent = "2. Write this scene";
+    const title = document.createElement("input");
+    title.type = "text";
+    title.value = scene.title || "";
+    title.placeholder = "Scene title";
+    const text = document.createElement("textarea");
+    text.rows = 5;
+    text.value = scene.text || "";
+    text.placeholder = "Story text or instructions";
+    const updateDraft = () => {
+        scene.title = normalizeDisplayName(title.value) || "Untitled scene";
+        scene.text = text.value;
+        queueAdventureAutosave(status);
+    };
+    title.addEventListener("input", updateDraft);
+    text.addEventListener("input", updateDraft);
+    content.append(contentTitle, title, text);
+    panel.appendChild(content);
+
+    const media = document.createElement("section");
+    media.className = "streamlinedSceneMedia";
+    const mediaHeading = document.createElement("div");
+    const mediaTitle = document.createElement("strong");
+    mediaTitle.textContent = `3. Local media (${(scene.mediaRefs || []).length})`;
+    const mediaHelp = document.createElement("span");
+    mediaHelp.textContent = "Optional — select from a channel, gallery, or this device.";
+    mediaHeading.append(mediaTitle, mediaHelp);
+    const mediaList = document.createElement("div");
+    mediaList.className = "adventureMediaList streamlinedAdventureMediaList";
+    (scene.mediaRefs || []).forEach((ref) => {
+        const item = renderAdventureMedia(adventure.id, scene.id, ref);
+        const caption = document.createElement("input");
+        caption.type = "text";
+        caption.placeholder = "Caption (optional)";
+        caption.value = scene.mediaCaptions?.[photoRefKey(ref)] || "";
+        caption.addEventListener("input", () => {
+            scene.mediaCaptions ||= {};
+            scene.mediaCaptions[photoRefKey(ref)] = caption.value;
+            queueAdventureAutosave(status);
+        });
+        item.appendChild(caption);
+        mediaList.appendChild(item);
+    });
+    const addMedia = document.createElement("button");
+    addMedia.type = "button";
+    addMedia.textContent = "Add image or GIF";
+    addMedia.addEventListener("click", () => pickAdventureMedia(adventure.id, scene.id));
+    media.append(mediaHeading, mediaList, addMedia);
+    panel.appendChild(media);
+
+    let randomEditor = null;
+    if (scene.randomEvent) {
+        const eventPanel = document.createElement("details");
+        eventPanel.className = "streamlinedAdventureDetails streamlinedEventSettings";
+        const eventSummary = document.createElement("summary");
+        eventSummary.textContent = `Configure ${streamlinedEventName(scene.randomEvent).toLowerCase()}`;
+        const eventHelp = document.createElement("p");
+        eventHelp.textContent = "Set destinations and options for this one game element.";
+        randomEditor = renderAdventureRandomEditor(adventure, scene);
+        eventPanel.append(eventSummary, eventHelp, randomEditor.element);
+        panel.appendChild(eventPanel);
+    } else if (!scene.isEnding) {
+        panel.appendChild(renderStreamlinedAdventureChoices(adventure, scene, status));
+    } else {
+        const ending = document.createElement("p");
+        ending.className = "streamlinedEndingNotice";
+        ending.textContent = "This scene ends the adventure. Choose Story or Decision above if it should continue instead.";
+        panel.appendChild(ending);
+    }
+
+    const optional = document.createElement("details");
+    optional.className = "streamlinedAdventureDetails";
+    const optionalSummary = document.createElement("summary");
+    optionalSummary.textContent = "Optional scene controls";
+    const ready = document.createElement("label");
+    ready.className = "streamlinedAdventureToggle";
+    const readyInput = document.createElement("input");
+    readyInput.type = "checkbox";
+    readyInput.checked = Boolean(scene.requireReady);
+    ready.append(readyInput, " Require “Continue when ready”");
+    const sceneBpm = numericField("Scene metronome BPM (blank uses adventure BPM)", scene.ambience?.metronomeBpm || "");
+    sceneBpm.input.placeholder = "Optional";
+    const saveOptional = () => {
+        scene.requireReady = readyInput.checked;
+        const bpmValue = Number.parseInt(sceneBpm.input.value, 10);
+        scene.ambience = { ...(scene.ambience || {}), metronomeBpm: bpmValue ? clampAdventureNumber(bpmValue, 20, 300, 120) : null };
+        queueAdventureAutosave(status);
+    };
+    readyInput.addEventListener("change", saveOptional);
+    sceneBpm.input.addEventListener("input", saveOptional);
+    optional.append(optionalSummary, ready, sceneBpm.label);
+    panel.appendChild(optional);
+
+    const actions = document.createElement("div");
+    actions.className = "streamlinedSceneActions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "adventurePrimary";
+    save.textContent = "Save changes";
+    const saveScene = async () => {
+        updateDraft();
+        saveOptional();
+        if (randomEditor) randomEditor.save();
+        await saveAdventures();
+        status.textContent = "Saved locally";
+    };
+    save.addEventListener("click", saveScene);
+    const test = document.createElement("button");
+    test.type = "button";
+    test.textContent = "Test from here";
+    test.addEventListener("click", async () => {
+        await saveScene();
+        startAdventureTest(adventure.id, scene.id);
+    });
+    const finish = document.createElement("button");
+    finish.type = "button";
+    finish.textContent = "Done with scene";
+    finish.addEventListener("click", async () => {
+        await saveScene();
+        state.streamlinedAdventureSceneId = null;
+        renderMessages();
+    });
+    actions.append(save, test, finish);
+    panel.append(status, actions);
+    return panel;
+}
+
+function renderStreamlinedAdventureChoices(adventure, scene, status) {
+    const section = document.createElement("section");
+    section.className = "streamlinedSceneChoices";
+    const heading = document.createElement("strong");
+    heading.textContent = "4. What can the player do next?";
+    const help = document.createElement("p");
+    help.textContent = "Add a button for each path. It can lead to another scene or end the story.";
+    const rows = document.createElement("div");
+    rows.className = "streamlinedChoiceRows";
+    const addRow = (choice) => {
+        const row = document.createElement("div");
+        row.className = "streamlinedChoiceRow";
+        const label = document.createElement("input");
+        label.type = "text";
+        label.value = choice.label || "";
+        label.placeholder = "Button text, for example: Open the door";
+        const target = adventureTargetSelect(adventure, scene.id, choice.targetSceneId, "Next scene").select;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+            scene.choices = (scene.choices || []).filter((item) => item.id !== choice.id);
+            queueAdventureAutosave(status);
+            row.remove();
+        });
+        label.addEventListener("input", () => {
+            choice.label = label.value;
+            queueAdventureAutosave(status);
+        });
+        target.addEventListener("change", () => {
+            choice.targetSceneId = target.value || null;
+            queueAdventureAutosave(status);
+        });
+        row.append(label, target, remove);
+        rows.appendChild(row);
+    };
+    (scene.choices || []).forEach(addRow);
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "Add a path";
+    add.addEventListener("click", () => {
+        const choice = { id: crypto.randomUUID(), label: "", targetSceneId: null };
+        scene.choices = [...(scene.choices || []), choice];
+        queueAdventureAutosave(status);
+        addRow(choice);
+        rows.lastElementChild?.querySelector("input")?.focus();
+    });
+    section.append(heading, help, rows, add);
+    return section;
+}
+
+function renderStreamlinedAdventureReview(adventure) {
+    const panel = document.createElement("section");
+    panel.className = "streamlinedAdventurePanel streamlinedAdventureReview";
+    const heading = document.createElement("h4");
+    heading.textContent = "Ready to try it?";
+    const help = document.createElement("p");
+    help.textContent = "Review any incomplete paths, look at the scene map, or play a private test run.";
+    const actions = document.createElement("div");
+    actions.className = "streamlinedSceneActions";
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "adventurePrimary";
+    test.textContent = "Play adventure";
+    test.addEventListener("click", () => startAdventurePlay(adventure.id));
+    const map = document.createElement("button");
+    map.type = "button";
+    map.textContent = "View scene map";
+    map.addEventListener("click", () => openView("adventureMap", adventure.id));
+    const scenes = document.createElement("button");
+    scenes.type = "button";
+    scenes.textContent = "Back to scenes";
+    scenes.addEventListener("click", () => {
+        state.adventureEditorStage = "scenes";
+        renderMessages();
+    });
+    actions.append(test, map, scenes);
+    panel.append(heading, help, renderAdventureValidation(adventure), actions);
+    return panel;
 }
 
 function renderAdventureValidation(adventure) {
@@ -3520,6 +4371,7 @@ function renderAdventureRandomEditor(adventure, scene) {
     });
     type.addEventListener("change", () => {
         scene.randomEvent = defaultRandomEvent(type.value);
+        queueAdventureAutosave();
         renderMessages();
     });
     wrap.append(heading, type);
@@ -3606,6 +4458,7 @@ function renderAdventureRandomEditor(adventure, scene) {
         add.textContent = event.type === "wheel" ? "Add wheel segment" : "Add weighted path";
         add.addEventListener("click", () => {
             scene.randomEvent.paths = [...(scene.randomEvent.paths || []), { targetSceneId: null, weight: 1 }];
+            queueAdventureAutosave();
             renderMessages();
         });
         wrap.append(paths, add);
@@ -3643,6 +4496,7 @@ function renderAdventureRandomEditor(adventure, scene) {
         mode.appendChild(modeInput);
         modeInput.addEventListener("change", () => {
             scene.randomEvent = { ...event, mode: modeInput.value };
+            queueAdventureAutosave();
             renderMessages();
         });
         const question = document.createElement("textarea");
@@ -3763,6 +4617,7 @@ function renderAdventureRandomEditor(adventure, scene) {
         add.textContent = "Add answer";
         add.addEventListener("click", () => {
             scene.randomEvent.answers = [...(scene.randomEvent.answers || []), { label: "", targetSceneId: null }];
+            queueAdventureAutosave();
             renderMessages();
         });
         wrap.append(mode, question, answers, add);
@@ -5073,6 +5928,9 @@ async function createAdventure() {
     };
     state.structure.settings.adventures.push(adventure);
     await saveAdventures();
+    state.adventureEditorStage = "setup";
+    state.streamlinedAdventureSceneId = null;
+    state.focusAdventureSceneId = null;
     state.activeView = { type: "adventureEditor", id: adventure.id };
     render();
 }
@@ -5339,7 +6197,7 @@ async function importAdventureDeviceMedia(adventureId, sceneId, files, replaceRe
     if (replaceRef && refs[0]) scene.mediaRefs = (scene.mediaRefs || []).map((item) => photoRefKey(item) === photoRefKey(replaceRef) ? refs[0] : item);
     const existing = new Set((scene.mediaRefs || []).map(photoRefKey));
     scene.mediaRefs = [...(scene.mediaRefs || []), ...refs.slice(replaceRef ? 1 : 0).filter((ref) => !existing.has(photoRefKey(ref)))];
-    await saveChannelMessages(channel.id, messages);
+    await saveChannelMessage(channel.id, message);
     await saveAdventures();
     renderMessages();
     refreshStorageEstimate();
@@ -5704,12 +6562,7 @@ function renderAttachments(attachments, message, channelId) {
             figure.classList.toggle("isSelected", state.selectedPhotoRefs.some((item) => photoRefKey(item) === key));
 
             const image = document.createElement("img");
-            const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
-            image.src = objectUrl || attachment.dataUrl || "";
-            if (objectUrl) {
-                image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
-                image.addEventListener("error", () => URL.revokeObjectURL(objectUrl), { once: true });
-            }
+            setRenderedImageSource(image, attachment);
             image.alt = attachment.name || "Pasted image";
             image.loading = "lazy";
 
@@ -5766,10 +6619,12 @@ function renderAttachments(attachments, message, channelId) {
 function renderComposer() {
     const hasChannel = Boolean(state.activeChannelId);
     const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel";
-    els.noteInput.disabled = !enabled;
-    els.sendBtn.disabled = !enabled;
-    els.attachImageBtn.disabled = !enabled;
-    els.linkPhotosBtn.disabled = !enabled;
+    const canCompose = enabled && !state.pendingMessageSave;
+    els.noteInput.disabled = !canCompose;
+    els.sendBtn.disabled = !canCompose;
+    els.sendBtn.textContent = state.pendingMessageSave ? "Saving…" : "Send";
+    els.attachImageBtn.disabled = !canCompose;
+    els.linkPhotosBtn.disabled = !canCompose;
     els.newChannelBtn.disabled = !state.ready || !state.isUnlocked;
     els.newCategoryBtn.disabled = !state.ready || !state.isUnlocked;
     els.deleteChannelBtn.disabled = !enabled;
@@ -5851,6 +6706,93 @@ function openMobileQuickActions() {
     card.append(heading, help, actions, close);
     modal.appendChild(card);
     document.body.appendChild(modal);
+}
+
+function openStreamlinedHub() {
+    if (document.querySelector(".streamlinedHub")) return;
+
+    const modal = document.createElement("section");
+    modal.className = "streamlinedHub";
+    modal.setAttribute("aria-label", "Workspace tools");
+    const card = document.createElement("div");
+    card.className = "streamlinedHubCard";
+    const header = document.createElement("div");
+    header.className = "streamlinedHubHeader";
+    const heading = document.createElement("div");
+    heading.innerHTML = "<p>PRIVATE WORKSPACE</p><h3>Tools & shortcuts</h3>";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "streamlinedHubClose";
+    close.textContent = "Close";
+    const dismiss = () => modal.remove();
+    close.addEventListener("click", dismiss);
+    header.append(heading, close);
+
+    const addGroup = (title, actions) => {
+        const group = document.createElement("section");
+        group.className = "streamlinedHubGroup";
+        const label = document.createElement("h4");
+        label.textContent = title;
+        const grid = document.createElement("div");
+        grid.className = "streamlinedHubActions";
+        actions.forEach(([labelText, handler, disabled = false]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = labelText;
+            button.disabled = disabled;
+            button.addEventListener("click", () => { dismiss(); handler(); });
+            grid.appendChild(button);
+        });
+        group.append(label, grid);
+        return group;
+    };
+
+    const isChannel = state.activeView.type === "channel" && Boolean(state.activeChannelId);
+    const adventureServer = state.structure.servers.find((server) => server.isAdventureServer);
+    const openAdventureStudio = async () => {
+        if (!adventureServer) return;
+        state.activeServerId = adventureServer.id;
+        state.activeChannelId = allChannels(adventureServer)[0]?.id || null;
+        await openView("adventureStudio", "studio");
+    };
+
+    card.append(
+        header,
+        addGroup("Browse", [
+            ["Random channel", selectRandomChannel],
+            ["Random note", selectRandomMessageInAnyChannel],
+            ["Random array", createRandomPhotoArray],
+            ["Set array size", configureRandomPhotoCount],
+            ["Random zoom", () => openView("randomZoom", "random-zoom")],
+            ["Favorite photos", () => openView("favorites", "favorites")],
+            ["Pinned notes", () => openView("pinned", "pinned")]
+        ]),
+        addGroup("Create & organize", [
+            ["New channel", createChannel],
+            ["New folder", createCategory],
+            ["Add image", () => els.imageInput.click(), !isChannel],
+            ["Workspace settings", openSettings],
+            ["Statistics", () => openView("stats", "stats")],
+            ["Adventure studio", openAdventureStudio, !adventureServer]
+        ]),
+        addGroup("Play & focus", [
+            ["Channel quiz", () => openView("channelQuiz", "quiz")],
+            ["Zoom quiz", () => openView("zoomQuiz", "zoom-quiz")],
+            ["Focus session", () => openView("focusSession", "focus")],
+            [countdownTimer ? "Pause timer" : "Start timer", () => els.chatTimerQuick.click()],
+            [metronomeTimer ? "Stop metronome" : "Start metronome", toggleMetronome]
+        ])
+    );
+    modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+}
+
+function configureRandomPhotoCount() {
+    const current = Number.parseInt(els.randomPhotoCount.value, 10) || 9;
+    const next = Number.parseInt(prompt("How many photos should a random array contain?", current), 10);
+    if (!Number.isFinite(next)) return;
+    els.randomPhotoCount.value = Math.min(500, Math.max(1, next));
 }
 
 function renderUtilityPanel() {
@@ -6057,21 +6999,45 @@ async function sendMessage() {
         || !state.activeChannelId
         || !state.ready
         || state.activeView.type !== "channel"
+        || state.pendingMessageSave
     ) {
         return;
     }
 
-    const messages = [...getActiveMessages(), createMessage(text, state.draftAttachments, state.draftLinkedPhotoRefs)];
-    state.messagesByChannel.set(state.activeChannelId, messages);
+    const channelId = state.activeChannelId;
+    const previousMessages = [...getActiveMessages()];
+    const previousMessageCount = state.channelMessageCounts.get(channelId) ?? previousMessages.length;
+    const attachments = [...state.draftAttachments];
+    const linkedPhotoRefs = [...state.draftLinkedPhotoRefs];
+    const newMessage = createMessage(text, attachments, linkedPhotoRefs);
+    const messages = [...previousMessages, newMessage];
+    state.messagesByChannel.set(channelId, messages);
+    state.channelMessageCounts.set(channelId, previousMessageCount + 1);
     state.draftAttachments = [];
     state.draftLinkedPhotoRefs = [];
     state.visibleMessageLimit = 100;
+    state.pendingMessageSave = true;
+    state.lastSaveError = "";
     els.noteInput.value = "";
     render();
 
-    await saveChannelMessages(state.activeChannelId, messages);
-    els.messages.scrollTop = els.messages.scrollHeight;
-    refreshStorageEstimate();
+    try {
+        await saveChannelMessage(channelId, newMessage);
+        state.pendingMessageSave = false;
+        if (state.activeChannelId === channelId) els.messages.scrollTop = els.messages.scrollHeight;
+        refreshStorageEstimate();
+    } catch (error) {
+        console.error("Could not save local message:", error);
+        state.messagesByChannel.set(channelId, previousMessages);
+        state.channelMessageCounts.set(channelId, previousMessageCount);
+        state.draftAttachments = attachments;
+        state.draftLinkedPhotoRefs = linkedPhotoRefs;
+        if (state.activeChannelId === channelId) els.noteInput.value = text;
+        state.pendingMessageSave = false;
+        state.lastSaveError = "Could not save this note locally. Free browser space and try again.";
+        alert(state.lastSaveError);
+    }
+    render();
 }
 
 async function createServer() {
@@ -6309,7 +7275,7 @@ async function togglePin(messageId, channelId = state.activeChannelId) {
     state.messagesByChannel.set(channelId, messages);
     render();
 
-    await saveChannelMessages(channelId, messages);
+    await saveChannelMessage(channelId, messages.find((message) => message.id === messageId));
 }
 
 async function addReaction(messageId, channelId = state.activeChannelId) {
@@ -6328,12 +7294,17 @@ async function addReaction(messageId, channelId = state.activeChannelId) {
 
         return {
             ...message,
-            reactions: newReactions
+            reactions: newReactions,
+            // Old reactions have no reliable timestamp. From this point on,
+            // every time an emoji is added is recorded for local statistics.
+            reactionEvents: has
+                ? (message.reactionEvents || [])
+                : [...(message.reactionEvents || []), { emoji, at: new Date().toISOString(), messageId: message.id }]
         };
     });
 
     state.messagesByChannel.set(channelId, messages);
-    await saveChannelMessages(channelId, messages);
+    await saveChannelMessage(channelId, messages.find((message) => message.id === messageId));
     render();
 }
 
@@ -6344,9 +7315,10 @@ async function deleteMessage(messageId, channelId = state.activeChannelId) {
     const messages = (state.messagesByChannel.get(channelId) || []).filter((message) => message.id !== messageId);
 
     state.messagesByChannel.set(channelId, messages);
+    state.channelMessageCounts.set(channelId, Math.max(0, (state.channelMessageCounts.get(channelId) ?? messages.length + 1) - 1));
     render();
 
-    await saveChannelMessages(channelId, messages);
+    await deleteChannelMessage(channelId, messageId);
     refreshStorageEstimate();
 }
 
@@ -6368,7 +7340,7 @@ async function editAttachmentNote(messageId, attachmentId, channelId = state.act
         ))
     });
     state.messagesByChannel.set(channelId, updated);
-    await saveChannelMessages(channelId, updated);
+    await saveChannelMessage(channelId, updated.find((message) => message.id === messageId));
     render();
 }
 
@@ -6398,8 +7370,8 @@ async function moveInboxMessage(messageId, inboxChannelId) {
     const nextDestination = [...state.messagesByChannel.get(destination.id), message];
     state.messagesByChannel.set(inboxChannelId, nextInbox);
     state.messagesByChannel.set(destination.id, nextDestination);
-    await saveChannelMessages(inboxChannelId, nextInbox);
-    await saveChannelMessages(destination.id, nextDestination);
+    await deleteChannelMessage(inboxChannelId, messageId);
+    await saveChannelMessage(destination.id, message);
     render();
 }
 
@@ -6583,12 +7555,14 @@ async function saveRandomPhotoArray() {
         state.messagesByChannel.set(channel.id, normalizeMessages(existing));
     }
 
+    const newMessages = state.randomPhotoArray.map((item) => createMessage(item.message.text, [item.attachment]));
     const messages = [
         ...state.messagesByChannel.get(channel.id),
-        ...state.randomPhotoArray.map((item) => createMessage(item.message.text, [item.attachment]))
+        ...newMessages
     ];
     state.messagesByChannel.set(channel.id, messages);
-    await saveChannelMessages(channel.id, messages);
+    state.channelMessageCounts.set(channel.id, (state.channelMessageCounts.get(channel.id) ?? messages.length - newMessages.length) + newMessages.length);
+    await Promise.all(newMessages.map((message) => saveChannelMessage(channel.id, message)));
     await saveStructure(state.structure);
 
     state.randomPhotoArray = [];
@@ -6654,6 +7628,7 @@ function getRandomRange() {
 }
 
 function hydrateSettingsControls() {
+    applyAppearanceSettings();
     els.randomMin.value = state.structure.settings.randomMin;
     els.randomMax.value = state.structure.settings.randomMax;
     els.photoGridToggle.checked = Boolean(state.structure.settings.photoGridEnabled);
@@ -6677,6 +7652,37 @@ function hydrateSettingsControls() {
     renderMetronome();
     if (!countdownTimer) countdownRemaining = state.structure.settings.timerSeconds;
     renderCountdownTimer();
+}
+
+function getInterfaceMode() {
+    return state.structure.settings.interfaceMode === "streamlined" ? "streamlined" : "classic";
+}
+
+function getColorPalette() {
+    return ["discord", "midnight", "violet", "forest", "sunset"].includes(state.structure.settings.colorPalette)
+        ? state.structure.settings.colorPalette
+        : "discord";
+}
+
+function applyAppearanceSettings() {
+    document.body.classList.toggle("interface-streamlined", getInterfaceMode() === "streamlined");
+    document.body.dataset.palette = getColorPalette();
+}
+
+async function saveInterfaceMode(mode) {
+    state.structure.settings.interfaceMode = mode === "streamlined" ? "streamlined" : "classic";
+    applyAppearanceSettings();
+    await saveStructure(state.structure);
+    render();
+}
+
+async function saveColorPalette(palette) {
+    state.structure.settings.colorPalette = ["discord", "midnight", "violet", "forest", "sunset"].includes(palette)
+        ? palette
+        : "discord";
+    applyAppearanceSettings();
+    await saveStructure(state.structure);
+    render();
 }
 
 async function togglePhotoGrid() {
@@ -6911,6 +7917,7 @@ function createMessage(text, attachments, linkedPhotoRefs = []) {
         createdAt: new Date().toISOString(),
         pinned: false,
         reactions: [],
+        reactionEvents: [],
         tags: extractTags(text),
         attachments: structuredClone(attachments),
         linkedPhotoRefs: structuredClone(linkedPhotoRefs)
@@ -6926,8 +7933,17 @@ async function handlePaste(event) {
 }
 
 async function addImageFiles(files) {
-    const images = files.filter((file) => file.type.startsWith("image/"));
-    const attachments = images.map(fileToAttachment);
+    const selected = files.filter((file) => file.type.startsWith("image/")).slice(0, MAX_LOCAL_IMAGES_PER_SEND);
+    const accepted = selected.filter((file) => file.size <= MAX_LOCAL_IMAGE_BYTES);
+    if (accepted.length === 0) {
+        alert("Choose up to 12 images or GIFs under 25 MB each. Large files can crash a mobile browser before they can be saved.");
+        return;
+    }
+    if (accepted.length < files.length) {
+        alert("Some files were skipped. A single send supports up to 12 images or GIFs under 25 MB each.");
+    }
+    if (!(await hasSpaceForLocalFiles(accepted))) return;
+    const attachments = accepted.map(fileToAttachment);
 
     state.draftAttachments.push(...attachments);
     els.imageInput.value = "";
@@ -6942,6 +7958,40 @@ function fileToAttachment(file) {
         size: file.size,
         blob: file
     };
+}
+
+function releaseRenderedObjectUrls() {
+    state.renderObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+    state.renderObjectUrls.clear();
+}
+
+function setRenderedImageSource(image, attachment) {
+    const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+    image.src = objectUrl || attachment.dataUrl || "";
+    if (!objectUrl) return;
+
+    state.renderObjectUrls.add(objectUrl);
+    const release = () => {
+        if (!state.renderObjectUrls.delete(objectUrl)) return;
+        URL.revokeObjectURL(objectUrl);
+    };
+    image.addEventListener("load", release, { once: true });
+    image.addEventListener("error", release, { once: true });
+}
+
+async function hasSpaceForLocalFiles(files) {
+    if (!navigator.storage?.estimate) return true;
+    try {
+        const estimate = await navigator.storage.estimate();
+        const required = files.reduce((total, file) => total + file.size, 0);
+        if (estimate.quota && (estimate.usage || 0) + required > estimate.quota * 0.9) {
+            alert("This upload is close to your browser's local storage limit. Export a backup or free browser storage before adding it.");
+            return false;
+        }
+    } catch {
+        // Storage estimates are optional; IndexedDB will still report any real save failure.
+    }
+    return true;
 }
 
 function createEmbed(url) {
@@ -7070,11 +8120,14 @@ async function refreshStorageEstimate() {
         renderUtilityPanel();
         return;
     }
-
-    const estimate = await navigator.storage.estimate();
-    const used = formatBytes(estimate.usage || 0);
-    const quota = formatBytes(estimate.quota || 0);
-    state.storageText = `Storage: ${used} used of ${quota} available on this device`;
+    try {
+        const estimate = await navigator.storage.estimate();
+        const used = formatBytes(estimate.usage || 0);
+        const quota = formatBytes(estimate.quota || 0);
+        state.storageText = `Storage: ${used} used of ${quota} available on this device`;
+    } catch {
+        state.storageText = "Storage: estimate unavailable; saves still stay on this device";
+    }
     renderUtilityPanel();
 }
 
