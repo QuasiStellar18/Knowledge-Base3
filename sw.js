@@ -1,12 +1,15 @@
 const CACHE_NAME = "knowledge-discord-v72";
+const CACHE_NAME = "knowledge-discord-v73";
 const APP_SHELL = [
     "./",
     "./index.html",
     "./style.css?v=72",
     "./db.js?v=72",
     "./app.js?v=72"
+    "./style.css?v=73",
+    "./db.js?v=73",
+    "./app.js?v=73"
 ];
-
 self.addEventListener("install", (event) => {
     event.waitUntil(
         caches.open(CACHE_NAME)
@@ -14,7 +17,6 @@ self.addEventListener("install", (event) => {
             .then(() => self.skipWaiting())
     );
 });
-
 self.addEventListener("activate", (event) => {
     event.waitUntil(
         caches.keys()
@@ -24,12 +26,10 @@ self.addEventListener("activate", (event) => {
             .then(() => self.clients.claim())
     );
 });
-
 self.addEventListener("fetch", (event) => {
     if (event.request.method !== "GET") return;
     const requestUrl = new URL(event.request.url);
     if (requestUrl.origin !== self.location.origin) return;
-
     event.respondWith(
         caches.match(event.request).then((cached) => {
             if (cached) return cached;
