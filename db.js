@@ -113,34 +113,47 @@ async function saveStructure(data) {
     await transactionDone(tx);
 }
 
+// The original channel-bundle store is deliberately retained during the
+// per-message migration. It is a read-only recovery source: using it here
+// never deletes, migrates, or changes a saved photo or note.
+async function getLegacyChannelMessages(channelId) {
+    if (!db.objectStoreNames.contains("messages")) return [];
+    const tx = db.transaction("messages", "readonly");
+    const record = await requestToPromise(tx.objectStore("messages").get(channelId));
+    return record?.messages || [];
+}
+
 async function getChannelMessages(channelId) {
     ensureDB();
 
     if (db.objectStoreNames.contains("messageItems")) {
-        const tx = db.transaction("messageItems", "readonly");
-        const store = tx.objectStore("messageItems");
-        let records;
-        if (store.indexNames.contains("channel")) {
-            try {
-                records = await requestToPromise(store.index("channel").getAll(channelId));
-            } catch (error) {
-                // Some interrupted mobile upgrades can leave an index present
-                // but temporarily unreadable. The records themselves remain
-                // safe, so fall back to reading and filtering the store.
-                console.warn("Channel index read failed; using safe fallback.", error);
+        try {
+            const tx = db.transaction("messageItems", "readonly");
+            const store = tx.objectStore("messageItems");
+            let records;
+            if (store.indexNames.contains("channel")) {
+                try {
+                    records = await requestToPromise(store.index("channel").getAll(channelId));
+                } catch (error) {
+                    // Some interrupted mobile upgrades can leave an index present
+                    // but temporarily unreadable. The records themselves remain
+                    // safe, so fall back to reading and filtering the store.
+                    console.warn("Channel index read failed; using item-store fallback.", error);
+                }
             }
+            if (!records) {
+                records = (await requestToPromise(store.getAll()))
+                    .filter((record) => record.channel === channelId);
+            }
+            return records.map((record) => record.message);
+        } catch (error) {
+            // A failed messageItems read must not hide the preserved original
+            // channel record. It remains untouched as a recovery copy.
+            console.warn("Message-item store could not be read; using preserved channel copy.", error);
         }
-        if (!records) {
-            records = (await requestToPromise(store.getAll()))
-                .filter((record) => record.channel === channelId);
-        }
-        return records.map((record) => record.message);
     }
 
-    const tx = db.transaction("messages", "readonly");
-    const store = tx.objectStore("messages");
-    const record = await requestToPromise(store.get(channelId));
-    return record?.messages || [];
+    return getLegacyChannelMessages(channelId);
 }
 
 async function getRecentChannelMessages(channelId, limit = 100) {
@@ -148,14 +161,10 @@ async function getRecentChannelMessages(channelId, limit = 100) {
     const safeLimit = Math.max(1, Number(limit) || 100);
 
     if (db.objectStoreNames.contains("messageItems")) {
-        const tx = db.transaction("messageItems", "readonly");
-        const store = tx.objectStore("messageItems");
-        if (!store.indexNames.contains("channelMessageCreatedAt")) {
-            return (await getChannelMessages(channelId))
-                .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-                .slice(-safeLimit);
-        }
         try {
+            const tx = db.transaction("messageItems", "readonly");
+            const store = tx.objectStore("messageItems");
+            if (!store.indexNames.contains("channelMessageCreatedAt")) throw new Error("Recent-message index is unavailable.");
             const index = store.index("channelMessageCreatedAt");
             const range = IDBKeyRange.bound([channelId, ""], [channelId, "\uffff"]);
             const newestFirst = await new Promise((resolve, reject) => {
@@ -174,13 +183,9 @@ async function getRecentChannelMessages(channelId, limit = 100) {
             });
             return newestFirst.reverse();
         } catch (error) {
-            // Keep the optimized index optional. This safe path is slower,
-            // but it keeps existing local photos available on browsers that
-            // cannot read the compound index after an interrupted update.
-            console.warn("Recent-message index read failed; using safe fallback.", error);
-            return (await getChannelMessages(channelId))
-                .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0))
-                .slice(-safeLimit);
+            // Keep the optimized index optional. A direct channel read below
+            // can also fall back to the preserved channel bundle if needed.
+            console.warn("Recent-message index read failed; using recovery path.", error);
         }
     }
 
@@ -200,9 +205,8 @@ async function getChannelMessageCount(channelId) {
                 return await requestToPromise(store.index("channel").count(channelId));
             }
         } catch (error) {
-            console.warn("Channel count index read failed; using safe fallback.", error);
+            console.warn("Channel count index read failed; using recovery path.", error);
         }
-        return (await getChannelMessages(channelId)).length;
     }
     return (await getChannelMessages(channelId)).length;
 }
@@ -357,11 +361,15 @@ async function deleteChannelMessage(channelId, messageId) {
 async function getAllChannelMessages() {
     ensureDB();
     if (db.objectStoreNames.contains("messageItems")) {
-        const tx = db.transaction("messageItems", "readonly");
-        const records = await requestToPromise(tx.objectStore("messageItems").getAll());
-        const grouped = new Map();
-        records.forEach((record) => grouped.set(record.channel, [...(grouped.get(record.channel) || []), record.message]));
-        return [...grouped.entries()].map(([channelId, messages]) => ({ channelId, messages }));
+        try {
+            const tx = db.transaction("messageItems", "readonly");
+            const records = await requestToPromise(tx.objectStore("messageItems").getAll());
+            const grouped = new Map();
+            records.forEach((record) => grouped.set(record.channel, [...(grouped.get(record.channel) || []), record.message]));
+            return [...grouped.entries()].map(([channelId, messages]) => ({ channelId, messages }));
+        } catch (error) {
+            console.warn("Message-item backup read failed; using preserved channel copies.", error);
+        }
     }
     const tx = db.transaction("messages", "readonly");
     const records = await requestToPromise(tx.objectStore("messages").getAll());
