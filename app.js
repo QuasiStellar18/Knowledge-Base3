@@ -56,6 +56,24 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 
+function hasUnlockSession() {
+    try {
+        return sessionStorage.getItem(UNLOCK_SESSION_KEY) === "1";
+    } catch (error) {
+        console.warn("Session storage is unavailable; the workspace will relock when this page closes.", error);
+        return false;
+    }
+}
+
+function saveUnlockSession(unlocked) {
+    try {
+        if (unlocked) sessionStorage.setItem(UNLOCK_SESSION_KEY, "1");
+        else sessionStorage.removeItem(UNLOCK_SESSION_KEY);
+    } catch (error) {
+        console.warn("Could not save the temporary unlock session.", error);
+    }
+}
+
 const state = {
     ready: false,
     structure: structuredClone(DEFAULT_STRUCTURE),
@@ -78,7 +96,7 @@ const state = {
     randomZoomSize: 60,
     randomZoomPreset: "normal",
     randomZoomSlideshowMs: 5000,
-    isUnlocked: sessionStorage.getItem(UNLOCK_SESSION_KEY) === "1",
+    isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
     selectedPhotoRefs: [],
     focusMode: false,
@@ -319,7 +337,7 @@ async function unlockWorkspace(event) {
     }
 
     state.isUnlocked = true;
-    sessionStorage.setItem(UNLOCK_SESSION_KEY, "1");
+    saveUnlockSession(true);
     els.channelPinInput.value = "";
     els.unlockError.textContent = "";
     renderLockScreen();
@@ -341,7 +359,7 @@ function lockWorkspace() {
     stopMetronome();
     stopRandomZoomSlideshow();
     state.isUnlocked = false;
-    sessionStorage.removeItem(UNLOCK_SESSION_KEY);
+    saveUnlockSession(false);
     state.messagesByChannel.clear();
     state.randomPhotoArray = [];
     state.search = "";
