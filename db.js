@@ -145,7 +145,12 @@ async function getChannelMessages(channelId) {
                 records = (await requestToPromise(store.getAll()))
                     .filter((record) => record.channel === channelId);
             }
-            return records.map((record) => record.message);
+            // `getAll` is ordered by its internal primary key, not by when a
+            // note was added. Keeping reads chronological makes old channels,
+            // galleries, and any reloaded photo list stable after a restart.
+            return records
+                .map((record) => record.message)
+                .sort((first, second) => new Date(first?.createdAt || 0) - new Date(second?.createdAt || 0));
         } catch (error) {
             // A failed messageItems read must not hide the preserved original
             // channel record. It remains untouched as a recovery copy.
