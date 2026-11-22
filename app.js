@@ -49,6 +49,8 @@ const DEFAULT_STRUCTURE = {
         draftHistory: [],
         hallOfFame: [],
         museumExhibits: [],
+        thisOrThatHistory: [],
+        museumQuietMode: false,
         channelQuizSettings: {},
         channelQuizHighScores: {},
         channelQuizPresets: {}
@@ -102,6 +104,7 @@ const state = {
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
     imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    thisOrThat: { current: null },
     isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -111,10 +114,13 @@ const state = {
     focusAdventureSceneId: null,
     adventureEditorStage: "setup",
     streamlinedAdventureSceneId: null,
+    hallOfFameIndex: 0,
     activeMuseumExhibitId: null,
     museumCollectionFilter: "",
     museumTagFilter: "",
     museumTour: null,
+    museumWalk: { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true },
+    museum3d: { x: 0, z: 0, yaw: 0, movement: { x: 0, y: 0 } },
     pendingMessageSave: false,
     lastSaveError: "",
     renderObjectUrls: new Set(),
@@ -134,6 +140,7 @@ let adventureAutoAdvanceKey;
 let adventureAutoAdvanceStartedMetronome = false;
 let channelQuizPunishmentTimer;
 let channelQuizAdvanceTimer;
+let museum3dMovementFrame;
 let randomZoomSlideshowTimer;
 let rouletteSlideshowTimer;
 let imageDraftSlideshowTimer;
@@ -424,7 +431,8 @@ function normalizeStructure(savedStructure) {
             photoCollections: Array.isArray(base.settings?.photoCollections) ? base.settings.photoCollections : [],
             draftHistory: Array.isArray(base.settings?.draftHistory) ? base.settings.draftHistory.slice(-200) : [],
             hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame.slice(-300) : [],
-            museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : []
+            museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : [],
+            thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : []
         }
     };
 
@@ -470,6 +478,8 @@ function normalizeServer(server, serverIndex) {
                     isInboxChannel: Boolean(channel.isInboxChannel),
                     isSavedArrayChannel: Boolean(channel.isSavedArrayChannel),
                     isDraftRankingsChannel: Boolean(channel.isDraftRankingsChannel),
+                    isThisOrThatChannel: Boolean(channel.isThisOrThatChannel),
+                    isHolisticRankingsChannel: Boolean(channel.isHolisticRankingsChannel),
                     isHallOfFameChannel: Boolean(channel.isHallOfFameChannel),
                     isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel)
                 };
@@ -526,6 +536,8 @@ function ensureDraftGalleryFolder() {
             return channel;
         };
         ensureChannel("draft-rankings", "isDraftRankingsChannel");
+        ensureChannel("this-or-that", "isThisOrThatChannel");
+        ensureChannel("holistic-rankings", "isHolisticRankingsChannel");
     });
     return changed;
 }
@@ -602,12 +614,13 @@ async function loadActiveChannelMessages(channelId = state.activeChannelId) {
     state.messagesByChannel.set(channelId, messages);
     state.channelMessageCounts.set(channelId, messageCount);
     const linkedChannels = [...new Set(messages.flatMap((message) => (message.linkedPhotoRefs || []).map((ref) => ref.channelId)).filter((linkedChannelId) => linkedChannelId && linkedChannelId !== channelId && !state.messagesByChannel.has(linkedChannelId)))];
-    const linkedResults = await Promise.allSettled(linkedChannels.map(async (linkedChannelId) => {
-        state.messagesByChannel.set(linkedChannelId, normalizeMessages(await getChannelMessages(linkedChannelId)));
-    }));
-    linkedResults.filter((result) => result.status === "rejected").forEach((result) => {
-        console.warn("Could not pre-load a linked media channel", result.reason);
-    });
+    for (const linkedChannelId of linkedChannels) {
+        try {
+            state.messagesByChannel.set(linkedChannelId, normalizeMessages(await getChannelMessages(linkedChannelId)));
+        } catch (error) {
+            console.warn("Could not pre-load a linked media channel", error);
+        }
+    }
     if (state.activeChannelId === channelId) state.visibleMessageLimit = Math.max(100, messages.length);
 }
 
@@ -677,14 +690,33 @@ function getActiveMessages() {
     return state.messagesByChannel.get(state.activeChannelId) || [];
 }
 
-async function ensureServerMessagesLoaded() {
-    const channels = getAllChannels();
-    await Promise.all(channels.map(async (channel) => {
-        if (!state.messagesByChannel.has(channel.id)) {
-            const rawMessages = await getChannelMessages(channel.id);
-            state.messagesByChannel.set(channel.id, normalizeMessages(rawMessages));
-        }
-    }));
+async function ensureServerMessagesLoaded(server = getActiveServer()) {
+    // Loading every Blob in every server concurrently can make a mobile PWA
+    // reload. Keep ordinary views scoped to their current server and load one
+    // channel at a time, preserving the existing in-memory cache.
+    for (const channel of allChannels(server)) {
+        if (state.messagesByChannel.has(channel.id)) continue;
+        const rawMessages = await getChannelMessages(channel.id);
+        const messages = normalizeMessages(rawMessages);
+        state.messagesByChannel.set(channel.id, messages);
+        state.channelMessageCounts.set(channel.id, messages.length);
+    }
+}
+
+async function ensureWorkspaceMessagesLoaded() {
+    for (const server of state.structure.servers) {
+        if (server.isAdventureServer) continue;
+        await ensureServerMessagesLoaded(server);
+    }
+}
+
+async function ensurePhotoReferencesLoaded(refs) {
+    const channelIds = [...new Set((refs || []).map((ref) => ref?.channelId).filter(Boolean))];
+    for (const channelId of channelIds) {
+        const messages = normalizeMessages(await getChannelMessages(channelId));
+        state.messagesByChannel.set(channelId, messages);
+        state.channelMessageCounts.set(channelId, messages.length);
+    }
 }
 
 function allChannels(server = getActiveServer()) {
@@ -892,10 +924,7 @@ async function loadServerReactionChannels(serverId, button) {
         button.textContent = "Finding reactions…";
     }
     try {
-        await Promise.all(allChannels(server).map(async (channel) => {
-            if (state.messagesByChannel.has(channel.id)) return;
-            state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
-        }));
+        await ensureServerMessagesLoaded(server);
     } finally {
         if (state.activeServerId === serverId) renderChannels();
     }
@@ -1113,6 +1142,7 @@ async function openView(type, id) {
     if (type !== "imageDraft") stopImageDraftSlideshow({ render: false });
     if (type !== "imageDraft") clearImageDraftWheelTimer();
     if (type !== "imageDraft") stopImageDraftWinnerStay({ render: false });
+    if (type !== "museum3d") stopMuseum3dMovement();
     if (["channelQuiz", "zoomQuiz"].includes(type) && state.activeView.type !== type) {
         window.clearTimeout(channelQuizPunishmentTimer);
         window.clearTimeout(channelQuizAdvanceTimer);
@@ -1133,13 +1163,28 @@ async function openView(type, id) {
         state.activeChannelId = id;
         state.activeServerId = getChannelServer(id)?.id || state.activeServerId;
         await loadActiveChannelMessages();
-        if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
+        if (getActiveChannel()?.isThisOrThatChannel || getActiveChannel()?.isHolisticRankingsChannel) {
+            await ensureWorkspaceMessagesLoaded();
+        } else if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
             await ensureServerMessagesLoaded();
         }
+        if (getActiveChannel()?.isHallOfFameChannel) {
+            await ensurePhotoReferencesLoaded(getHallOfFameEntries().map((entry) => entry.ref));
+        }
+        if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isHolisticRankingsChannel) {
+            await ensurePhotoReferencesLoaded((state.structure.settings.draftHistory || [])
+                .filter((draft) => draft.serverId === getActiveServer()?.id)
+                .flatMap((draft) => draft.items || []).map((item) => item.ref));
+        }
     } else if (["adventureEditor", "adventurePlay"].includes(type)) {
-        await ensureServerMessagesLoaded();
+        await ensureWorkspaceMessagesLoaded();
     } else if (type !== "adventureStudio") {
         await ensureServerMessagesLoaded();
+        if (type === "stats") {
+            await ensurePhotoReferencesLoaded((state.structure.settings.draftHistory || [])
+                .filter((draft) => draft.serverId === getActiveServer()?.id)
+                .flatMap((draft) => draft.items || []).map((item) => item.ref));
+        }
     }
 
     render();
@@ -1258,6 +1303,24 @@ function renderHeader() {
         return;
     }
 
+    if (state.activeView.type === "museumWalk") {
+        els.activeTitle.textContent = "Walkable Museum";
+        els.activeMeta.textContent = "Explore local exhibits in a lightweight two-dimensional gallery";
+        return;
+    }
+
+    if (state.activeView.type === "museum3d") {
+        els.activeTitle.textContent = "3D Museum";
+        els.activeMeta.textContent = "A lightweight local gallery walk with touch joystick controls";
+        return;
+    }
+
+    if (state.activeView.type === "exhibitMap") {
+        els.activeTitle.textContent = "Exhibit Map";
+        els.activeMeta.textContent = "An overview of local exhibits, collections, tags, and shared photos";
+        return;
+    }
+
     if (state.activeView.type === "emoji") {
         const messages = getEmojiEntries(state.activeView.id);
         els.activeTitle.textContent = `${state.activeView.id} reactions`;
@@ -1284,6 +1347,16 @@ function renderHeader() {
         els.activeMeta.textContent = "Live average draft positions for photos that have appeared in an Image Draft";
         return;
     }
+    if (channel?.isThisOrThatChannel) {
+        els.activeTitle.textContent = "This or That";
+        els.activeMeta.textContent = "Choose between two random local photos to build a workspace ranking";
+        return;
+    }
+    if (channel?.isHolisticRankingsChannel) {
+        els.activeTitle.textContent = "Holistic Rankings";
+        els.activeMeta.textContent = "A combined local view of draft placements and This or That choices";
+        return;
+    }
     if (channel?.isHallOfFameChannel) {
         els.activeTitle.textContent = "Hall of Fame";
         els.activeMeta.textContent = "Nominated local photos with their draft and reaction history";
@@ -1291,7 +1364,7 @@ function renderHeader() {
     }
     if (channel?.isMuseumExhibitsChannel) {
         els.activeTitle.textContent = "Museum Exhibits";
-        els.activeMeta.textContent = "Permanent curated exhibitions built from Hall of Fame nominations";
+        els.activeMeta.textContent = "Permanent curated exhibitions built from any local photo or GIF in this workspace";
         return;
     }
     const category = getActiveCategory();
@@ -1370,6 +1443,21 @@ function renderMessages() {
         return;
     }
 
+    if (state.activeView.type === "museumWalk") {
+        renderMuseumWalk();
+        return;
+    }
+
+    if (state.activeView.type === "museum3d") {
+        renderMuseum3d();
+        return;
+    }
+
+    if (state.activeView.type === "exhibitMap") {
+        renderExhibitMap();
+        return;
+    }
+
     if (["channelQuiz", "zoomQuiz"].includes(state.activeView.type)) {
         renderChannelQuiz();
         return;
@@ -1410,6 +1498,14 @@ function renderMessages() {
     const activeChannel = getActiveChannel();
     if (state.activeView.type === "channel" && activeChannel?.isDraftRankingsChannel) {
         renderDraftRankingsChannel();
+        return;
+    }
+    if (state.activeView.type === "channel" && activeChannel?.isThisOrThatChannel) {
+        renderThisOrThatChannel();
+        return;
+    }
+    if (state.activeView.type === "channel" && activeChannel?.isHolisticRankingsChannel) {
+        renderHolisticRankingsChannel();
         return;
     }
     if (state.activeView.type === "channel" && activeChannel?.isHallOfFameChannel) {
@@ -1831,13 +1927,23 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
         context.clearRect(0, 0, canvas.width, canvas.height);
         context.drawImage(sourceCanvas, 0, 0);
         regions.forEach((region) => {
-            const blur = Math.max(12, Math.round(Math.min(region.width, region.height) / 5));
+            // Canvas filter support has been inconsistent in iOS standalone apps.
+            // A small source canvas scaled without smoothing creates a durable mosaic blur
+            // in both the preview and the saved PNG.
+            const blockSize = Math.max(8, Math.round(Math.min(region.width, region.height) / 12));
+            const preview = document.createElement("canvas");
+            preview.width = Math.max(1, Math.round(region.width / blockSize));
+            preview.height = Math.max(1, Math.round(region.height / blockSize));
+            const previewContext = preview.getContext("2d");
+            previewContext?.drawImage(sourceCanvas, region.x, region.y, region.width, region.height, 0, 0, preview.width, preview.height);
             context.save();
             context.beginPath();
             context.rect(region.x, region.y, region.width, region.height);
             context.clip();
-            context.filter = `blur(${blur}px)`;
-            context.drawImage(sourceCanvas, 0, 0);
+            context.imageSmoothingEnabled = false;
+            context.drawImage(preview, 0, 0, preview.width, preview.height, region.x, region.y, region.width, region.height);
+            context.fillStyle = "rgba(0, 0, 0, .13)";
+            context.fillRect(region.x, region.y, region.width, region.height);
             context.restore();
         });
         if (draft && draft.width > 1 && draft.height > 1) {
@@ -1917,7 +2023,9 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
         updateControls();
         save.textContent = "Saving…";
         try {
-            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+            const blob = canvas.toBlob
+                ? await new Promise((resolve) => canvas.toBlob(resolve, "image/png"))
+                : await fetch(canvas.toDataURL("image/png")).then((response) => response.blob());
             if (!blob) throw new Error("The edited image could not be created.");
             const file = new File([blob], censorCopyName(attachment.name), { type: "image/png" });
             if (!(await hasSpaceForLocalFiles([file]))) {
@@ -2145,36 +2253,84 @@ function getWorkspaceStats() {
         favorites,
         reactionTotal,
         reactionInsights: getReactionInsights(reactionEvents),
-        draftInsights: getImageDraftInsights()
+        draftInsights: getImageDraftInsights(),
+        exhibitInsights: getExhibitInsights()
+    };
+}
+
+function getExhibitInsights() {
+    const exhibits = getMuseumExhibits();
+    const images = new Map();
+    const collections = new Set();
+    const tags = new Set();
+    let placements = 0;
+    exhibits.forEach((exhibit) => {
+        const collection = normalizeDisplayName(exhibit.collection || "");
+        if (collection) collections.add(collection);
+        getMuseumExhibitTags(exhibit).forEach((tag) => tags.add(tag));
+        getExhibitPhotoRefs(exhibit).forEach((ref, index) => {
+            if (!ref?.channelId || !ref?.messageId || !ref?.attachmentId) return;
+            placements += 1;
+            const key = photoRefKey(ref);
+            const attachment = findAttachment(ref);
+            if (!images.has(key)) images.set(key, {
+                ref,
+                label: attachment?.note || attachment?.name || "Local photo",
+                channelName: getChannelById(ref.channelId)?.name || "missing",
+                appearances: []
+            });
+            images.get(key).appearances.push({
+                exhibitId: exhibit.id,
+                exhibitTitle: exhibit.title || "Untitled exhibit",
+                stop: index + 1
+            });
+        });
+    });
+    const rankedImages = [...images.values()]
+        .map((image) => ({ ...image, exhibitCount: image.appearances.length }))
+        .sort((a, b) => b.exhibitCount - a.exhibitCount || a.label.localeCompare(b.label));
+    return {
+        exhibits: exhibits.length,
+        placements,
+        uniqueImages: rankedImages.length,
+        collections: collections.size,
+        tags: tags.size,
+        images: rankedImages
     };
 }
 
 function getImageDraftInsights() {
     const serverId = getActiveServer()?.id;
     const drafts = (state.structure.settings.draftHistory || []).filter((draft) => draft.serverId === serverId && Array.isArray(draft.items));
-    const placements = drafts.flatMap((draft) => draft.items.filter((item) => item?.ref && Number.isFinite(item.rank)).map((item) => ({ ...item, draftId: draft.id })));
+    const placements = drafts.flatMap((draft) => draft.items
+        .filter((item) => item?.ref && Number.isFinite(Number(item.rank)))
+        .map((item) => ({ ...item, rank: Number(item.rank), draftId: draft.id, draftSize: draft.items.length })));
     const perImage = new Map();
     placements.forEach((item) => {
         const key = photoRefKey(item.ref);
-        if (!perImage.has(key)) perImage.set(key, { ref: item.ref, label: item.label || "Local image", channelName: item.channelName || getChannelById(item.ref.channelId)?.name || "channel", spots: [] });
+        if (!perImage.has(key)) perImage.set(key, { ref: item.ref, label: item.label || "Local image", channelName: item.channelName || getChannelById(item.ref.channelId)?.name || "channel", spots: [], weights: [] });
         perImage.get(key).spots.push(item.rank);
+        perImage.get(key).weights.push(Math.max(1, item.draftSize || 1));
     });
-    const images = [...perImage.values()].map((item) => ({
-        ...item,
-        count: item.spots.length,
-        average: item.spots.reduce((sum, spot) => sum + spot, 0) / item.spots.length,
-        best: Math.min(...item.spots),
-        worst: Math.max(...item.spots)
-    })).sort((a, b) => b.count - a.count || a.average - b.average || a.label.localeCompare(b.label));
-    const maxSpot = Math.max(0, ...placements.map((item) => item.rank));
-    const spots = Array.from({ length: maxSpot }, (_, index) => placements.filter((item) => item.rank === index + 1).length);
+    const images = [...perImage.values()].map((item) => {
+        const totalWeight = item.weights.reduce((sum, weight) => sum + weight, 0);
+        return {
+            ...item,
+            count: item.spots.length,
+            average: item.spots.reduce((sum, spot) => sum + spot, 0) / item.spots.length,
+            weightedAverage: item.spots.reduce((sum, spot, index) => sum + spot * item.weights[index], 0) / totalWeight,
+            best: Math.min(...item.spots),
+            worst: Math.max(...item.spots),
+            spread: Math.max(...item.spots) - Math.min(...item.spots),
+            totalDraftWeight: totalWeight
+        };
+    }).sort((a, b) => b.count - a.count || a.average - b.average || a.label.localeCompare(b.label));
     const censorResults = drafts.flatMap((draft) => Array.isArray(draft.censorResults) ? draft.censorResults : []);
     return {
         drafts: drafts.length,
         placements,
         averageSpot: placements.length ? placements.reduce((sum, item) => sum + item.rank, 0) / placements.length : 0,
         images,
-        spots,
         censorDrafts: drafts.filter((draft) => draft.censorMode).length,
         censorCopies: censorResults.length,
         censorRegions: censorResults.reduce((sum, item) => sum + (item.regionCount || 0), 0)
@@ -2185,6 +2341,19 @@ function getHallOfFameEntries(server = getActiveServer()) {
     return (state.structure.settings.hallOfFame || [])
         .filter((entry) => entry.serverId === server?.id && entry?.ref?.channelId && entry?.ref?.messageId && entry?.ref?.attachmentId)
         .sort((a, b) => (b.nominatedAt || "").localeCompare(a.nominatedAt || ""));
+}
+
+function getHallOfFameEntryForRef(ref) {
+    if (!ref?.channelId || !ref?.messageId || !ref?.attachmentId) return null;
+    return (state.structure.settings.hallOfFame || []).find((entry) => photoRefKey(entry.ref) === photoRefKey(ref)) || null;
+}
+
+function getHallOfFamePlaque(ref) {
+    return String(getHallOfFameEntryForRef(ref)?.blurb || "").trim();
+}
+
+function getExhibitPlaque(exhibit, ref) {
+    return String(exhibit?.plaques?.[photoRefKey(ref)] || "").trim() || getHallOfFamePlaque(ref);
 }
 
 function isHallOfFameRef(ref) {
@@ -2217,6 +2386,14 @@ async function saveHallOfFameBlurb(entryId, value) {
     if (!entry) return;
     entry.blurb = value.trim().slice(0, 2000);
     entry.updatedAt = new Date().toISOString();
+    (state.structure.settings.museumExhibits || []).forEach((exhibit) => {
+        const key = photoRefKey(entry.ref);
+        if (getExhibitPhotoRefs(exhibit).some((ref) => photoRefKey(ref) === key) && !String(exhibit.plaques?.[key] || "").trim() && entry.blurb) {
+            exhibit.plaques ||= {};
+            exhibit.plaques[key] = entry.blurb;
+            exhibit.updatedAt = new Date().toISOString();
+        }
+    });
     await saveStructure(state.structure);
 }
 
@@ -2243,16 +2420,18 @@ function renderDraftRankingsChannel() {
     page.className = "draftRankingsChannel";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
-    intro.innerHTML = "<h3>Draft Rankings</h3><p>Only photos that have appeared in a completed Image Draft are shown. Lower average spot means a stronger average draft position.</p>";
+    intro.innerHTML = "<h3>Draft Rankings</h3><p>Only photos drafted at least twice appear here. Lower average spot ranks higher; the average is weighted by draft size as the tiebreaker.</p>";
     page.appendChild(intro);
-    if (insights.images.length === 0) {
-        page.appendChild(emptyPanel("Complete an Image Draft to add its local photos to these rankings."));
+    const rankedImages = insights.images.filter((item) => item.count >= 2)
+        .sort((a, b) => a.average - b.average || a.weightedAverage - b.weightedAverage || b.count - a.count || a.label.localeCompare(b.label));
+    if (rankedImages.length === 0) {
+        page.appendChild(emptyPanel("Draft the same local photo in at least two completed Image Drafts to add it here."));
         els.messages.appendChild(page);
         return;
     }
     const list = document.createElement("section");
     list.className = "draftRankingsList";
-    [...insights.images].sort((a, b) => a.average - b.average || b.count - a.count || a.label.localeCompare(b.label)).forEach((item, index) => {
+    rankedImages.forEach((item, index) => {
         const row = document.createElement("article");
         row.className = "draftRankingItem";
         const position = document.createElement("strong");
@@ -2272,7 +2451,7 @@ function renderDraftRankingsChannel() {
         const title = document.createElement("strong");
         title.textContent = item.label;
         const stat = document.createElement("span");
-        stat.textContent = `Average draft spot #${item.average.toFixed(1)} · ${item.count} draft${item.count === 1 ? "" : "s"} · best #${item.best} · worst #${item.worst}`;
+        stat.textContent = `Average #${item.average.toFixed(1)} · weighted #${item.weightedAverage.toFixed(1)} · ${item.count} drafts · best #${item.best}`;
         const source = document.createElement("small");
         source.textContent = `First local channel: # ${item.channelName}`;
         detail.append(title, stat, source);
@@ -2296,6 +2475,170 @@ function renderDraftRankingsChannel() {
     els.messages.appendChild(page);
 }
 
+function getThisOrThatCandidates() {
+    return state.structure.servers
+        .filter((server) => !server.isAdventureServer)
+        .flatMap((server) => getExhibitPhotoCandidates(server))
+        .filter((candidate) => findAttachment(candidate.ref));
+}
+
+function chooseThisOrThatPair() {
+    const candidates = getThisOrThatCandidates();
+    if (candidates.length < 2) return null;
+    const firstIndex = Math.floor(Math.random() * candidates.length);
+    let secondIndex = Math.floor(Math.random() * (candidates.length - 1));
+    if (secondIndex >= firstIndex) secondIndex += 1;
+    return [candidates[firstIndex], candidates[secondIndex]];
+}
+
+function getThisOrThatInsights() {
+    const history = (state.structure.settings.thisOrThatHistory || [])
+        .filter((round) => round.winner && round.loser);
+    const records = new Map();
+    const ensure = (ref) => {
+        const key = photoRefKey(ref);
+        if (!records.has(key)) records.set(key, { ref, wins: 0, losses: 0 });
+        return records.get(key);
+    };
+    history.forEach((round) => {
+        ensure(round.winner).wins += 1;
+        ensure(round.loser).losses += 1;
+    });
+    const images = [...records.values()].map((item) => ({
+        ...item,
+        games: item.wins + item.losses,
+        winRate: item.wins + item.losses ? item.wins / (item.wins + item.losses) : 0,
+        score: item.wins - item.losses,
+        attachment: findAttachment(item.ref)
+    })).sort((a, b) => b.score - a.score || b.winRate - a.winRate || b.games - a.games);
+    return { rounds: history.length, images };
+}
+
+async function chooseThisOrThatWinner(winner, loser) {
+    state.structure.settings.thisOrThatHistory = [
+        ...(state.structure.settings.thisOrThatHistory || []),
+        { id: crypto.randomUUID(), winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }
+    ].slice(-2000);
+    state.thisOrThat.current = chooseThisOrThatPair();
+    await saveStructure(state.structure);
+    renderMessages();
+}
+
+function renderThisOrThatChannel() {
+    if (!state.thisOrThat.current || !state.thisOrThat.current.every((item) => findAttachment(item.ref))) {
+        state.thisOrThat.current = chooseThisOrThatPair();
+    }
+    const pair = state.thisOrThat.current;
+    const page = document.createElement("section");
+    page.className = "thisOrThatChannel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    const insights = getThisOrThatInsights();
+    intro.innerHTML = `<h3>This or That</h3><p>Pick the photo you prefer. Each local choice updates the separate comparison ranking. ${insights.rounds} choice${insights.rounds === 1 ? "" : "s"} saved in this workspace.</p>`;
+    page.appendChild(intro);
+    if (!pair) {
+        page.appendChild(emptyPanel("Add at least two local images or GIFs to this server to start comparing."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const matchup = document.createElement("section");
+    matchup.className = "thisOrThatMatchup";
+    pair.forEach((candidate, index) => {
+        const other = pair[index === 0 ? 1 : 0];
+        const card = document.createElement("article");
+        card.className = "thisOrThatCard";
+        const image = document.createElement("img");
+        setRenderedImageSource(image, candidate.attachment);
+        image.alt = candidate.attachment.note || candidate.attachment.name || "Local photo";
+        image.addEventListener("click", () => openImageViewer(candidate.attachment, image.alt));
+        const source = document.createElement("small");
+        source.textContent = `# ${getChannelById(candidate.ref.channelId)?.name || "missing"}`;
+        const choose = document.createElement("button");
+        choose.type = "button";
+        choose.className = "adventurePrimary";
+        choose.textContent = "Choose this";
+        choose.addEventListener("click", () => chooseThisOrThatWinner(candidate, other));
+        const actions = document.createElement("div");
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = "Open image";
+        open.addEventListener("click", () => openImageViewer(candidate.attachment, image.alt));
+        const sourceButton = document.createElement("button");
+        sourceButton.type = "button";
+        sourceButton.textContent = "Open source";
+        sourceButton.addEventListener("click", () => openView("channel", candidate.ref.channelId));
+        actions.append(open, sourceButton);
+        card.append(image, source, choose, actions);
+        matchup.appendChild(card);
+    });
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "thisOrThatSkip";
+    skip.textContent = "Skip this pairing";
+    skip.addEventListener("click", () => { state.thisOrThat.current = chooseThisOrThatPair(); renderMessages(); });
+    page.append(matchup, skip);
+    els.messages.appendChild(page);
+}
+
+function renderHolisticRankingsChannel() {
+    const draft = getImageDraftInsights().images.filter((item) => item.count >= 2)
+        .sort((a, b) => a.average - b.average || a.weightedAverage - b.weightedAverage);
+    const choices = getThisOrThatInsights().images;
+    const records = new Map();
+    draft.forEach((item, index) => records.set(photoRefKey(item.ref), { ref: item.ref, draftRank: index + 1, draft: item, choice: null }));
+    choices.forEach((item) => {
+        const key = photoRefKey(item.ref);
+        records.set(key, { ...(records.get(key) || { ref: item.ref, draftRank: null, draft: null }), choice: item });
+    });
+    const ranked = [...records.values()].map((item) => ({
+        ...item,
+        holisticScore: (item.draftRank ? 1 / item.draftRank : 0) + (item.choice ? item.choice.winRate * 1.5 + Math.min(item.choice.games, 10) / 50 : 0)
+    })).sort((a, b) => b.holisticScore - a.holisticScore);
+    const page = document.createElement("section");
+    page.className = "draftRankingsChannel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Holistic Rankings</h3><p>A transparent combined list: completed draft rank carries the base score, while This or That win rate adds a smaller comparison signal. Only locally stored outcomes are used.</p>";
+    page.appendChild(intro);
+    if (!ranked.length) {
+        page.appendChild(emptyPanel("Complete an Image Draft at least twice for a photo, or make a This or That choice, to build this ranking."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const list = document.createElement("section");
+    list.className = "draftRankingsList";
+    ranked.forEach((item, index) => {
+        const row = document.createElement("article");
+        row.className = "draftRankingItem";
+        const position = document.createElement("strong");
+        position.className = "draftRankingPosition";
+        position.textContent = `#${index + 1}`;
+        const attachment = findAttachment(item.ref);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Ranked photo";
+            image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+            row.appendChild(image);
+        }
+        const detail = document.createElement("div");
+        detail.className = "draftRankingDetail";
+        const title = document.createElement("strong");
+        title.textContent = attachment?.note || attachment?.name || "Local photo";
+        const stat = document.createElement("span");
+        stat.textContent = `${item.draft ? `Draft #${item.draftRank} · avg #${item.draft.average.toFixed(1)}` : "No repeat draft rank"}${item.choice ? ` · ${item.choice.wins}–${item.choice.losses} choices` : ""}`;
+        detail.append(title, stat);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = "Open source";
+        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        row.append(position, detail, open);
+        list.appendChild(row);
+    });
+    page.appendChild(list);
+    els.messages.appendChild(page);
+}
+
 function renderHallOfFameChannel() {
     const insights = getImageDraftInsights();
     const entries = getHallOfFameEntries();
@@ -2303,124 +2646,149 @@ function renderHallOfFameChannel() {
     page.className = "hallOfFame";
     const intro = document.createElement("section");
     intro.className = "hallOfFameIntro";
-    intro.innerHTML = "<p class=\"hallOfFameKicker\">LOCAL GALLERY</p><h3>Hall of Fame</h3><p>Nominate any local photo from its photo-actions menu. Every nomination stays linked to its original image and can be placed into a permanent Museum exhibit.</p>";
+    intro.innerHTML = "<p class=\"hallOfFameKicker\">LOCAL GALLERY</p><h3>Hall of Fame</h3><p>A focused local gallery for nominated photos. Every curator’s note can also become the default plaque when that image appears in a Museum exhibit.</p>";
     page.appendChild(intro);
-    const exhibitChannel = allChannels(getActiveServer()).find((channel) => channel.isMuseumExhibitsChannel);
-    if (exhibitChannel) {
-        const curate = document.createElement("button");
-        curate.type = "button";
-        curate.className = "hallOfFameCurate";
-        curate.textContent = "Curate permanent exhibits";
-        curate.addEventListener("click", () => openView("channel", exhibitChannel.id));
-        page.appendChild(curate);
-    }
     if (entries.length === 0) {
         page.appendChild(emptyPanel("No nominations yet. Open a photo’s actions and choose Nominate for Hall of Fame."));
         els.messages.appendChild(page);
         return;
     }
-    const gallery = document.createElement("section");
-    gallery.className = "hallOfFameGallery";
-    entries.forEach((entry) => {
-        const card = document.createElement("article");
-        card.className = "hallOfFameExhibit";
-        const attachment = findAttachment(entry.ref);
-        const message = (state.messagesByChannel.get(entry.ref.channelId) || []).find((item) => item.id === entry.ref.messageId);
-        if (attachment) {
-            const image = document.createElement("img");
-            setRenderedImageSource(image, attachment);
-            image.alt = attachment.note || attachment.name || "Hall of Fame image";
-            image.addEventListener("click", () => openImageViewer(attachment, image.alt));
-            card.appendChild(image);
-        } else {
-            card.appendChild(emptyPanel("The original local photo is no longer available."));
-        }
-        const detail = document.createElement("div");
-        detail.className = "hallOfFameDetail";
-        const title = document.createElement("h4");
-        title.textContent = attachment?.note || attachment?.name || "Untitled exhibit";
-        const draftStat = getDraftImageStat(entry.ref, insights);
-        const reactions = message?.reactions || [];
-        const stats = document.createElement("p");
-        stats.className = "hallOfFameStats";
-        stats.textContent = [
-            `First local channel: # ${getChannelById(entry.ref.channelId)?.name || "missing"}`,
-            `Reactions: ${reactions.length ? reactions.join(" ") : "none"}`,
-            draftStat ? `Average draft spot: #${draftStat.average.toFixed(1)} across ${draftStat.count} draft${draftStat.count === 1 ? "" : "s"}` : "Draft position: not drafted yet",
-            `Nominated ${formatDate(entry.nominatedAt)}`
-        ].join(" · ");
-        const blurbLabel = document.createElement("label");
-        blurbLabel.className = "hallOfFameBlurb";
-        const blurbHeading = document.createElement("span");
-        blurbHeading.textContent = "Curator’s blurb";
-        const blurb = document.createElement("textarea");
-        blurb.maxLength = 2000;
-        blurb.rows = 4;
-        blurb.placeholder = "Write a short note or essay about this exhibit…";
-        blurb.value = entry.blurb || "";
-        blurbLabel.append(blurbHeading, blurb);
-        const variants = getCensoredVariants(entry.ref);
-        const variantSection = document.createElement("section");
-        variantSection.className = "hallOfFameVariants";
-        const variantHeading = document.createElement("strong");
-        variantHeading.textContent = `Censored variants (${variants.length})`;
-        variantSection.appendChild(variantHeading);
-        if (variants.length === 0) {
-            const empty = document.createElement("p");
-            empty.textContent = "No linked censored variants yet. Create one from this photo’s actions to preserve it here.";
-            variantSection.appendChild(empty);
-        } else {
-            const variantGrid = document.createElement("div");
-            variantGrid.className = "hallOfFameVariantGrid";
-            variants.forEach((variant) => {
-                const button = document.createElement("button");
-                button.type = "button";
-                const image = document.createElement("img");
-                setRenderedImageSource(image, variant.attachment);
-                image.alt = `Censored variant of ${title.textContent}`;
-                const label = document.createElement("small");
-                label.textContent = formatDate(variant.message.createdAt);
-                button.append(image, label);
-                button.addEventListener("click", () => openImageViewer(variant.attachment, image.alt));
-                variantGrid.appendChild(button);
-            });
-            variantSection.appendChild(variantGrid);
-        }
-        const actions = document.createElement("div");
-        actions.className = "hallOfFameActions";
-        const save = document.createElement("button");
-        save.type = "button";
-        save.textContent = "Save blurb";
-        save.addEventListener("click", async () => {
-            save.disabled = true;
-            save.textContent = "Saved";
-            try {
-                await saveHallOfFameBlurb(entry.id, blurb.value);
-            } catch (error) {
-                console.error("Could not save Hall of Fame blurb:", error);
-                save.textContent = "Could not save";
-            } finally {
-                window.setTimeout(() => {
-                    save.disabled = false;
-                    save.textContent = "Save blurb";
-                }, 900);
-            }
-        });
-        const source = document.createElement("button");
-        source.type = "button";
-        source.textContent = "Open source";
-        source.addEventListener("click", () => openView("channel", entry.ref.channelId));
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "dangerAction";
-        remove.textContent = "Remove nomination";
-        remove.addEventListener("click", () => toggleHallOfFameNomination(entry.ref));
-        actions.append(save, source, remove);
-        detail.append(title, stats, blurbLabel, variantSection, actions);
-        card.appendChild(detail);
-        gallery.appendChild(card);
+    state.hallOfFameIndex = Math.min(Math.max(0, state.hallOfFameIndex), entries.length - 1);
+    const entry = entries[state.hallOfFameIndex];
+    const attachment = findAttachment(entry.ref);
+    const message = (state.messagesByChannel.get(entry.ref.channelId) || []).find((item) => item.id === entry.ref.messageId);
+    const navigator = document.createElement("section");
+    navigator.className = "hallOfFameNavigator";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "Previous";
+    previous.disabled = state.hallOfFameIndex === 0;
+    previous.addEventListener("click", () => { state.hallOfFameIndex -= 1; renderMessages(); });
+    const position = document.createElement("span");
+    position.textContent = `${state.hallOfFameIndex + 1} of ${entries.length}`;
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next";
+    next.disabled = state.hallOfFameIndex === entries.length - 1;
+    next.addEventListener("click", () => { state.hallOfFameIndex += 1; renderMessages(); });
+    navigator.append(previous, position, next);
+    const exhibit = document.createElement("article");
+    exhibit.className = "hallOfFameFeature";
+    const media = document.createElement("section");
+    media.className = "hallOfFameFeatureMedia";
+    if (attachment) {
+        const image = document.createElement("img");
+        image.alt = attachment.note || attachment.name || "Hall of Fame image";
+        setRenderedImageSource(image, attachment);
+        image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        media.appendChild(image);
+    } else media.appendChild(emptyPanel("The original photo could not be found in the local cache. Reopen its source channel once, then return here."));
+    const detail = document.createElement("section");
+    detail.className = "hallOfFameFeatureDetail";
+    const title = document.createElement("h4");
+    title.textContent = attachment?.note || attachment?.name || "Untitled exhibit";
+    const draftStat = getDraftImageStat(entry.ref, insights);
+    const facts = document.createElement("div");
+    facts.className = "hallOfFameFacts";
+    [
+        [`Source`, `# ${getChannelById(entry.ref.channelId)?.name || "missing"}`],
+        [`Reactions`, (message?.reactions || []).join(" ") || "none"],
+        [`Draft`, draftStat ? `average #${draftStat.average.toFixed(1)} across ${draftStat.count}` : "not drafted yet"],
+        [`Nominated`, formatDate(entry.nominatedAt)]
+    ].forEach(([label, value]) => {
+        const fact = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = label;
+        const valueNode = document.createElement("span");
+        valueNode.textContent = value;
+        fact.append(name, valueNode);
+        facts.appendChild(fact);
     });
-    page.appendChild(gallery);
+    const curator = document.createElement("section");
+    curator.className = "hallOfFameCuratorNote";
+    const curatorTitle = document.createElement("h5");
+    curatorTitle.textContent = "Curator’s note";
+    const curatorHelp = document.createElement("p");
+    curatorHelp.textContent = "A local standalone note. Saving it also supplies the default Museum plaque unless that exhibit has its own plaque text.";
+    const blurb = document.createElement("textarea");
+    blurb.maxLength = 2000;
+    blurb.rows = 7;
+    blurb.placeholder = "Write a short note or essay about this image…";
+    blurb.value = entry.blurb || "";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = "Save curator’s note";
+    save.addEventListener("click", async () => {
+        save.disabled = true;
+        try {
+            await saveHallOfFameBlurb(entry.id, blurb.value);
+            save.textContent = "Saved locally";
+        } catch (error) {
+            console.error("Could not save Hall of Fame blurb:", error);
+            save.textContent = "Could not save";
+        } finally {
+            window.setTimeout(() => { save.disabled = false; save.textContent = "Save curator’s note"; }, 1000);
+        }
+    });
+    curator.append(curatorTitle, curatorHelp, blurb, save);
+    const variants = getCensoredVariants(entry.ref);
+    const variantSection = document.createElement("section");
+    variantSection.className = "hallOfFameVariants";
+    const variantHeading = document.createElement("strong");
+    variantHeading.textContent = `Censored variants (${variants.length})`;
+    variantSection.appendChild(variantHeading);
+    if (variants.length) {
+        const variantGrid = document.createElement("div");
+        variantGrid.className = "hallOfFameVariantGrid";
+        variants.forEach((variant) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            const image = document.createElement("img");
+            setRenderedImageSource(image, variant.attachment);
+            image.alt = `Censored variant of ${title.textContent}`;
+            button.appendChild(image);
+            button.addEventListener("click", () => openImageViewer(variant.attachment, image.alt));
+            variantGrid.appendChild(button);
+        });
+        variantSection.appendChild(variantGrid);
+    }
+    const actions = document.createElement("div");
+    actions.className = "hallOfFameActions";
+    const openImage = document.createElement("button");
+    openImage.type = "button";
+    openImage.textContent = "Open image";
+    openImage.disabled = !attachment;
+    openImage.addEventListener("click", () => attachment && openImageViewer(attachment, title.textContent));
+    const source = document.createElement("button");
+    source.type = "button";
+    source.textContent = "Open source";
+    source.addEventListener("click", () => openView("channel", entry.ref.channelId));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "dangerAction";
+    remove.textContent = "Remove nomination";
+    remove.addEventListener("click", () => toggleHallOfFameNomination(entry.ref));
+    actions.append(openImage, source, remove);
+    detail.append(title, facts, curator, variantSection, actions);
+    exhibit.append(media, detail);
+    const rail = document.createElement("div");
+    rail.className = "hallOfFameRail";
+    entries.slice(Math.max(0, state.hallOfFameIndex - 8), state.hallOfFameIndex + 9).forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        const currentIndex = entries.indexOf(item);
+        button.className = currentIndex === state.hallOfFameIndex ? "active" : "";
+        const thumbnail = findAttachment(item.ref);
+        if (thumbnail) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, thumbnail);
+            image.alt = thumbnail.note || thumbnail.name || "Hall of Fame item";
+            button.appendChild(image);
+        }
+        button.addEventListener("click", () => { state.hallOfFameIndex = currentIndex; renderMessages(); });
+        rail.appendChild(button);
+    });
+    page.append(navigator, exhibit, rail);
     els.messages.appendChild(page);
 }
 
@@ -2462,19 +2830,66 @@ function appendMuseumExhibitLabels(target, exhibit) {
         chip.textContent = `#${tag}`;
         labels.appendChild(chip);
     });
+    if (exhibit?.smartRule?.enabled) {
+        const chip = document.createElement("span");
+        chip.className = "museumCollectionChip";
+        chip.textContent = "Smart";
+        labels.appendChild(chip);
+    }
     if (labels.childElementCount) target.appendChild(labels);
 }
 
+function getMuseumRoomLayout(exhibit) {
+    const saved = exhibit?.museumLayout || {};
+    const styles = ["gallery", "hallway", "intimate", "grand"];
+    const ambiences = ["warm", "twilight", "nocturne", "neon"];
+    return {
+        roomStyle: styles.includes(saved.roomStyle) ? saved.roomStyle : "gallery",
+        ambience: ambiences.includes(saved.ambience) ? saved.ambience : "warm",
+        mode: saved.mode === "manual" ? "manual" : "auto",
+        column: clampMuseumWalkNumber(Number.parseInt(saved.column, 10) || 1, 1, 3),
+        row: clampMuseumWalkNumber(Number.parseInt(saved.row, 10) || 1, 1, 12)
+    };
+}
+
 function getExhibitCoverRef(exhibit) {
-    const refs = exhibit?.photoRefs || [];
+    const refs = getExhibitPhotoRefs(exhibit);
     if (exhibit?.coverRef && findAttachment(exhibit.coverRef)) return exhibit.coverRef;
     return refs.find((ref) => findAttachment(ref)) || refs[0] || null;
 }
 
+function getExhibitPhotoCandidates(server = getActiveServer()) {
+    return getServerEntries(server)
+        .flatMap(({ channelId, message }) => (message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/"))
+            .map((attachment) => ({
+                ref: { channelId, messageId: message.id, attachmentId: attachment.id },
+                attachment,
+                message,
+                createdAt: message.createdAt || ""
+            })))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function getExhibitPhotoRefs(exhibit, server = getActiveServer()) {
+    const rule = exhibit?.smartRule;
+    if (!rule?.enabled) return exhibit?.photoRefs || [];
+    const targetYear = Number.parseInt(rule.year, 10);
+    const wantedTag = normalizeMuseumTags(rule.tag || "")[0] || "";
+    return getExhibitPhotoCandidates(server)
+        .filter((candidate) => {
+            if (rule.favorites && !candidate.attachment?.favorite) return false;
+            if (targetYear && new Date(candidate.createdAt).getFullYear() !== targetYear) return false;
+            if (wantedTag && !(candidate.message?.tags || []).map((tag) => String(tag).toLowerCase()).includes(wantedTag)) return false;
+            return true;
+        })
+        .map((candidate) => candidate.ref);
+}
+
 function openMuseumCurationEditor(exhibit = null) {
-    const nominations = getHallOfFameEntries().filter((entry) => findAttachment(entry.ref));
-    if (nominations.length === 0) {
-        alert("Nominate at least one local photo in Hall of Fame before creating an exhibit.");
+    const candidates = getExhibitPhotoCandidates();
+    if (candidates.length === 0) {
+        alert("Add a local photo or GIF to this workspace before creating an exhibit.");
         return;
     }
     const modal = document.createElement("section");
@@ -2487,7 +2902,7 @@ function openMuseumCurationEditor(exhibit = null) {
     const heading = document.createElement("h3");
     heading.textContent = exhibit ? "Curate exhibit" : "Create permanent exhibit";
     const help = document.createElement("p");
-    help.textContent = "Choose Hall of Fame nominations, set a title and cover, then write the permanent wall text. These exhibits stay in your local Museum until you edit or remove them.";
+    help.textContent = "Choose any local photo or GIF from this workspace, set a title and cover, then write the permanent wall text. Museum exhibits are independent from Hall of Fame nominations.";
     const title = document.createElement("input");
     title.type = "text";
     title.maxLength = 90;
@@ -2503,6 +2918,116 @@ function openMuseumCurationEditor(exhibit = null) {
     tags.maxLength = 300;
     tags.placeholder = "Tags, separated by commas, e.g. surreal, blue, dream";
     tags.value = getMuseumExhibitTags(exhibit).join(", ");
+    const smartDetails = document.createElement("details");
+    smartDetails.className = "museumCurationSmart";
+    const smartSummary = document.createElement("summary");
+    smartSummary.textContent = "Smart exhibit rule (optional)";
+    const smartHelp = document.createElement("p");
+    smartHelp.textContent = "A smart exhibit stays separate from manual curation: it refreshes itself from your local workspace using this rule whenever you open it.";
+    const smartEnabledLabel = document.createElement("label");
+    const smartEnabled = document.createElement("input");
+    smartEnabled.type = "checkbox";
+    smartEnabled.checked = Boolean(exhibit?.smartRule?.enabled);
+    smartEnabledLabel.append(smartEnabled, document.createTextNode(" Use a live smart rule instead of the manual selection"));
+    const smartFavoriteLabel = document.createElement("label");
+    const smartFavorites = document.createElement("input");
+    smartFavorites.type = "checkbox";
+    smartFavorites.checked = Boolean(exhibit?.smartRule?.favorites);
+    smartFavoriteLabel.append(smartFavorites, document.createTextNode(" Favorites only"));
+    const smartYearLabel = document.createElement("label");
+    smartYearLabel.textContent = "Year (optional)";
+    const smartYear = document.createElement("input");
+    smartYear.type = "number";
+    smartYear.min = "2000";
+    smartYear.max = "2100";
+    smartYear.inputMode = "numeric";
+    smartYear.placeholder = "e.g. 2026";
+    smartYear.value = exhibit?.smartRule?.year || "";
+    smartYearLabel.appendChild(smartYear);
+    const smartTagLabel = document.createElement("label");
+    smartTagLabel.textContent = "Photo tag (optional)";
+    const smartTag = document.createElement("input");
+    smartTag.type = "text";
+    smartTag.maxLength = 40;
+    smartTag.placeholder = "e.g. surreal";
+    smartTag.value = exhibit?.smartRule?.tag || "";
+    smartTagLabel.appendChild(smartTag);
+    smartDetails.append(smartSummary, smartHelp, smartEnabledLabel, smartFavoriteLabel, smartYearLabel, smartTagLabel);
+    const roomLayout = getMuseumRoomLayout(exhibit);
+    const placement = document.createElement("details");
+    placement.className = "museumCurationPlacement";
+    const placementSummary = document.createElement("summary");
+    placementSummary.textContent = "Museum room layout (optional)";
+    const placementHelp = document.createElement("p");
+    placementHelp.textContent = "The collection name above becomes this exhibit’s wing. Leave placement on Auto for a tidy floor plan, or set a manual grid location for the Walk Museum view.";
+    const roomStyleLabel = document.createElement("label");
+    roomStyleLabel.textContent = "Room style";
+    const roomStyle = document.createElement("select");
+    [
+        ["gallery", "Standard gallery"],
+        ["hallway", "Long hallway"],
+        ["intimate", "Intimate room"],
+        ["grand", "Grand hall"]
+    ].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === roomLayout.roomStyle;
+        roomStyle.appendChild(option);
+    });
+    roomStyleLabel.appendChild(roomStyle);
+    const ambienceLabel = document.createElement("label");
+    ambienceLabel.textContent = "Room ambience";
+    const ambience = document.createElement("select");
+    [
+        ["warm", "Warm gallery"],
+        ["twilight", "Twilight"],
+        ["nocturne", "Nocturne"],
+        ["neon", "Neon night"]
+    ].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === roomLayout.ambience;
+        ambience.appendChild(option);
+    });
+    ambienceLabel.appendChild(ambience);
+    const positionLabel = document.createElement("label");
+    positionLabel.textContent = "Floor placement";
+    const positionMode = document.createElement("select");
+    [["auto", "Auto arrange"], ["manual", "Choose a grid position"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === roomLayout.mode;
+        positionMode.appendChild(option);
+    });
+    positionLabel.appendChild(positionMode);
+    const manualPosition = document.createElement("div");
+    manualPosition.className = "museumCurationManualPosition";
+    const columnLabel = document.createElement("label");
+    columnLabel.textContent = "Column (1–3)";
+    const column = document.createElement("input");
+    column.type = "number";
+    column.min = "1";
+    column.max = "3";
+    column.inputMode = "numeric";
+    column.value = String(roomLayout.column);
+    columnLabel.appendChild(column);
+    const rowLabel = document.createElement("label");
+    rowLabel.textContent = "Row (1–12)";
+    const row = document.createElement("input");
+    row.type = "number";
+    row.min = "1";
+    row.max = "12";
+    row.inputMode = "numeric";
+    row.value = String(roomLayout.row);
+    rowLabel.appendChild(row);
+    manualPosition.append(columnLabel, rowLabel);
+    const syncManualPlacement = () => { manualPosition.hidden = positionMode.value !== "manual"; };
+    positionMode.addEventListener("change", syncManualPlacement);
+    syncManualPlacement();
+    placement.append(placementSummary, placementHelp, roomStyleLabel, ambienceLabel, positionLabel, manualPosition);
     const subtitle = document.createElement("input");
     subtitle.type = "text";
     subtitle.maxLength = 180;
@@ -2542,7 +3067,7 @@ function openMuseumCurationEditor(exhibit = null) {
         if (!selected.has(coverKey)) coverKey = selected.keys().next().value;
         selectedLabel.textContent = selected.size
             ? `${selected.size} permanent exhibit photo${selected.size === 1 ? "" : "s"} selected.`
-            : "Select at least one Hall of Fame nomination.";
+            : "Select at least one local photo or GIF.";
         cover.replaceChildren();
         selected.forEach((ref, key) => {
             const option = document.createElement("option");
@@ -2613,7 +3138,7 @@ function openMuseumCurationEditor(exhibit = null) {
             plaque.rows = 2;
             plaque.maxLength = 600;
             plaque.placeholder = "What should visitors read beside this image?";
-            plaque.value = plaques.get(key) || "";
+            plaque.value = plaques.get(key) || getHallOfFamePlaque(ref) || "";
             plaque.addEventListener("input", () => {
                 const value = plaque.value.slice(0, 600);
                 if (value.trim()) plaques.set(key, value);
@@ -2627,20 +3152,21 @@ function openMuseumCurationEditor(exhibit = null) {
     cover.addEventListener("change", () => { coverKey = cover.value; renderChoices(); });
     const renderChoices = () => {
         grid.replaceChildren();
-        nominations.slice(0, visibleLimit).forEach((entry) => {
-            const ref = entry.ref;
+        candidates.slice(0, visibleLimit).forEach((candidate) => {
+            const ref = candidate.ref;
             const key = photoRefKey(ref);
-            const attachment = findAttachment(ref);
+            const attachment = candidate.attachment;
             const choice = document.createElement("button");
             choice.type = "button";
             choice.className = `museumCurationChoice${selected.has(key) ? " isSelected" : ""}`;
             const image = document.createElement("img");
             setRenderedImageSource(image, attachment);
-            image.alt = attachment.note || attachment.name || "Hall of Fame nomination";
+            image.alt = attachment.note || attachment.name || "Local photo";
             const label = document.createElement("span");
-            label.textContent = attachment.note || attachment.name || "Untitled nomination";
+            label.textContent = attachment.note || attachment.name || "Untitled local photo";
             const marker = document.createElement("small");
-            marker.textContent = selected.has(key) ? (coverKey === key ? "Cover" : "Selected") : "Select";
+            const status = selected.has(key) ? (coverKey === key ? "Cover" : "Selected") : "Select";
+            marker.textContent = `${status} · # ${getChannelById(ref.channelId)?.name || "missing"}`;
             choice.append(image, label, marker);
             choice.addEventListener("click", () => {
                 if (selected.has(key)) selected.delete(key);
@@ -2650,12 +3176,12 @@ function openMuseumCurationEditor(exhibit = null) {
             });
             grid.appendChild(choice);
         });
-        loadMore.hidden = visibleLimit >= nominations.length;
-        loadMore.textContent = `Show 10 more (${Math.max(0, nominations.length - visibleLimit)} remaining)`;
+        loadMore.hidden = visibleLimit >= candidates.length;
+        loadMore.textContent = `Show 10 more (${Math.max(0, candidates.length - visibleLimit)} remaining)`;
         renderTourPlan();
     };
     loadMore.addEventListener("click", () => {
-        visibleLimit = Math.min(nominations.length, visibleLimit + 10);
+        visibleLimit = Math.min(candidates.length, visibleLimit + 10);
         renderChoices();
     });
     const actions = document.createElement("div");
@@ -2666,9 +3192,17 @@ function openMuseumCurationEditor(exhibit = null) {
     save.textContent = exhibit ? "Save exhibit" : "Create exhibit";
     save.addEventListener("click", async () => {
         const cleanedTitle = normalizeDisplayName(title.value);
-        const refs = [...selected.values()];
+        const smartRule = {
+            enabled: smartEnabled.checked,
+            favorites: smartFavorites.checked,
+            year: Number.parseInt(smartYear.value, 10) || "",
+            tag: normalizeMuseumTags(smartTag.value)[0] || ""
+        };
+        const refs = smartRule.enabled
+            ? getExhibitPhotoRefs({ smartRule })
+            : [...selected.values()];
         if (!cleanedTitle) { alert("Give the exhibit a title."); title.focus(); return; }
-        if (refs.length === 0) { alert("Select at least one Hall of Fame photo."); return; }
+        if (refs.length === 0) { alert("Select at least one local photo or GIF."); return; }
         save.disabled = true;
         try {
             const next = {
@@ -2677,10 +3211,18 @@ function openMuseumCurationEditor(exhibit = null) {
                 title: cleanedTitle,
                 collection: normalizeDisplayName(collection.value).slice(0, 60),
                 tags: normalizeMuseumTags(tags.value),
+                museumLayout: {
+                    roomStyle: roomStyle.value,
+                    ambience: ambience.value,
+                    mode: positionMode.value === "manual" ? "manual" : "auto",
+                    column: clampMuseumWalkNumber(Number.parseInt(column.value, 10) || 1, 1, 3),
+                    row: clampMuseumWalkNumber(Number.parseInt(row.value, 10) || 1, 1, 12)
+                },
                 subtitle: normalizeDisplayName(subtitle.value).slice(0, 180),
                 curatorNote: note.value.trim().slice(0, 3000),
                 photoRefs: refs,
-                coverRef: selected.get(coverKey) || refs[0],
+                smartRule,
+                coverRef: smartRule.enabled ? refs[0] : (selected.get(coverKey) || refs[0]),
                 plaques: Object.fromEntries([...selected.keys()]
                     .map((key) => [key, String(plaques.get(key) || "").trim().slice(0, 600)])
                     .filter(([, plaque]) => plaque)),
@@ -2707,7 +3249,7 @@ function openMuseumCurationEditor(exhibit = null) {
     cancel.textContent = "Cancel";
     cancel.addEventListener("click", () => modal.remove());
     actions.append(save, cancel);
-    card.append(heading, help, title, collection, tags, subtitle, note, selectedLabel, coverField, grid, loadMore, tourHeading, tourHelp, tourPlan, actions);
+    card.append(heading, help, title, collection, tags, smartDetails, placement, subtitle, note, selectedLabel, coverField, grid, loadMore, tourHeading, tourHelp, tourPlan, actions);
     modal.appendChild(card);
     modal.addEventListener("click", (event) => { if (event.target === modal) modal.remove(); });
     document.body.appendChild(modal);
@@ -2749,15 +3291,33 @@ function renderMuseumExhibitsChannel() {
     page.className = "museumExhibits";
     const intro = document.createElement("section");
     intro.className = "museumExhibitsIntro";
-    intro.innerHTML = "<p>PERMANENT COLLECTION</p><h3>Museum Exhibits</h3><span>Build lasting themed galleries from Hall of Fame nominations. Every exhibit can be reopened and recut later.</span>";
+    intro.innerHTML = "<p>PERMANENT COLLECTION</p><h3>Museum Exhibits</h3><span>Build lasting themed galleries from any local photo or GIF in this workspace. Every exhibit can be reopened and recut later.</span>";
     const create = document.createElement("button");
     create.type = "button";
     create.className = "adventurePrimary";
     create.textContent = "Create permanent exhibit";
     create.addEventListener("click", () => openMuseumCurationEditor());
-    page.append(intro, create);
+    const walk = document.createElement("button");
+    walk.type = "button";
+    walk.className = "museumWalkLaunch";
+    walk.textContent = "Walk museum";
+    walk.disabled = allExhibits.length === 0;
+    walk.addEventListener("click", () => openMuseumWalk());
+    const map = document.createElement("button");
+    map.type = "button";
+    map.className = "museumWalkLaunch";
+    map.textContent = "Exhibit map";
+    map.disabled = allExhibits.length === 0;
+    map.addEventListener("click", () => openView("exhibitMap", getActiveServer()?.id || "museum"));
+    const walk3d = document.createElement("button");
+    walk3d.type = "button";
+    walk3d.className = "museumWalkLaunch";
+    walk3d.textContent = "3D museum";
+    walk3d.disabled = allExhibits.length === 0;
+    walk3d.addEventListener("click", () => openMuseum3d());
+    page.append(intro, create, walk, walk3d, map);
     if (!allExhibits.length) {
-        page.appendChild(emptyPanel("No permanent exhibits yet. Nominate Hall of Fame photos, then create your first curated gallery."));
+        page.appendChild(emptyPanel("No permanent exhibits yet. Create your first gallery from any local photo or GIF in this workspace."));
         els.messages.appendChild(page);
         return;
     }
@@ -2820,7 +3380,7 @@ function renderMuseumExhibitsChannel() {
         const subtitle = document.createElement("p");
         subtitle.textContent = item.subtitle || item.curatorNote || "A permanent local exhibition";
         const meta = document.createElement("small");
-        meta.textContent = `${item.photoRefs?.length || 0} exhibit photos · updated ${formatDate(item.updatedAt || item.createdAt)}`;
+        meta.textContent = `${getExhibitPhotoRefs(item).length} exhibit photos${item.smartRule?.enabled ? " · smart" : ""} · updated ${formatDate(item.updatedAt || item.createdAt)}`;
         appendMuseumExhibitLabels(detail, item);
         const actions = document.createElement("div");
         const view = document.createElement("button");
@@ -2837,6 +3397,85 @@ function renderMuseumExhibitsChannel() {
         gallery.appendChild(card);
     });
     page.appendChild(gallery);
+    els.messages.appendChild(page);
+}
+
+function renderExhibitMap() {
+    const exhibits = getMuseumExhibits();
+    const page = document.createElement("section");
+    page.className = "exhibitMap";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Exhibit map</h3><p>Collections are wings, tags are threads, and shared photos connect exhibits. This is a local overview—nothing is duplicated or uploaded.</p>";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "Back to exhibits";
+    back.addEventListener("click", () => {
+        const channel = allChannels(getActiveServer()).find((item) => item.isMuseumExhibitsChannel);
+        if (channel) openView("channel", channel.id);
+    });
+    page.append(intro, back);
+    if (!exhibits.length) {
+        page.appendChild(emptyPanel("Create an exhibit to add it to the map."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const byCollection = new Map();
+    exhibits.forEach((exhibit) => {
+        const name = normalizeDisplayName(exhibit.collection || "") || "Unsorted wing";
+        if (!byCollection.has(name)) byCollection.set(name, []);
+        byCollection.get(name).push(exhibit);
+    });
+    const photoUse = new Map();
+    exhibits.forEach((exhibit) => getExhibitPhotoRefs(exhibit).forEach((ref) => {
+        const key = photoRefKey(ref);
+        photoUse.set(key, (photoUse.get(key) || 0) + 1);
+    }));
+    const summary = document.createElement("div");
+    summary.className = "exhibitMapSummary";
+    const allTags = new Set(exhibits.flatMap(getMuseumExhibitTags));
+    summary.innerHTML = `<span>${exhibits.length} exhibits</span><span>${byCollection.size} wings</span><span>${allTags.size} tags</span><span>${[...photoUse.values()].filter((count) => count > 1).length} shared photos</span>`;
+    page.appendChild(summary);
+    const wings = document.createElement("section");
+    wings.className = "exhibitMapWings";
+    [...byCollection.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([collection, items]) => {
+        const wing = document.createElement("section");
+        wing.className = "exhibitMapWing";
+        const title = document.createElement("h4");
+        title.textContent = collection;
+        const rooms = document.createElement("div");
+        rooms.className = "exhibitMapRooms";
+        items.forEach((exhibit) => {
+            const room = document.createElement("button");
+            room.type = "button";
+            room.className = "exhibitMapRoom";
+            const cover = findAttachment(getExhibitCoverRef(exhibit) || {});
+            if (cover) {
+                const image = document.createElement("img");
+                setRenderedImageSource(image, cover);
+                image.alt = exhibit.title;
+                room.appendChild(image);
+            }
+            const label = document.createElement("strong");
+            label.textContent = exhibit.title;
+            const refs = getExhibitPhotoRefs(exhibit);
+            const shared = refs.filter((ref) => photoUse.get(photoRefKey(ref)) > 1).length;
+            const meta = document.createElement("small");
+            meta.textContent = `${refs.length} photos${shared ? ` · ${shared} shared` : ""}${exhibit.smartRule?.enabled ? " · smart" : ""}`;
+            const tags = document.createElement("span");
+            tags.textContent = getMuseumExhibitTags(exhibit).map((tag) => `#${tag}`).join(" ") || "No tags";
+            room.append(label, meta, tags);
+            room.addEventListener("click", () => {
+                state.activeMuseumExhibitId = exhibit.id;
+                const channel = allChannels(getActiveServer()).find((item) => item.isMuseumExhibitsChannel);
+                if (channel) openView("channel", channel.id);
+            });
+            rooms.appendChild(room);
+        });
+        wing.append(title, rooms);
+        wings.appendChild(wing);
+    });
+    page.appendChild(wings);
     els.messages.appendChild(page);
 }
 
@@ -2861,11 +3500,19 @@ function renderMuseumExhibitDetail(exhibit) {
     const tour = document.createElement("button");
     tour.type = "button";
     tour.textContent = "Start guided tour";
-    tour.disabled = !(exhibit.photoRefs || []).length;
+    tour.disabled = !getExhibitPhotoRefs(exhibit).length;
     tour.addEventListener("click", () => {
         state.museumTour = { exhibitId: exhibit.id, index: 0 };
         renderMessages();
     });
+    const walk = document.createElement("button");
+    walk.type = "button";
+    walk.textContent = "Walk museum";
+    walk.addEventListener("click", () => openMuseumWalk());
+    const walk3d = document.createElement("button");
+    walk3d.type = "button";
+    walk3d.textContent = "Open 3D museum";
+    walk3d.addEventListener("click", () => openMuseum3d(exhibit.id));
     const curate = document.createElement("button");
     curate.type = "button";
     curate.textContent = "Curate exhibit";
@@ -2875,13 +3522,13 @@ function renderMuseumExhibitDetail(exhibit) {
     remove.className = "dangerAction";
     remove.textContent = "Remove exhibit";
     remove.addEventListener("click", () => deleteMuseumExhibit(exhibit));
-    tools.append(tour, curate, remove);
+    tools.append(tour, walk, walk3d, curate, remove);
     header.append(title, subtitle, note);
     appendMuseumExhibitLabels(header, exhibit);
     header.appendChild(tools);
     const gallery = document.createElement("section");
     gallery.className = "museumExhibitPhotoGrid";
-    (exhibit.photoRefs || []).forEach((ref, index) => {
+    getExhibitPhotoRefs(exhibit).forEach((ref, index) => {
         const attachment = findAttachment(ref);
         const item = document.createElement("article");
         item.className = "museumExhibitPhoto";
@@ -2898,7 +3545,7 @@ function renderMuseumExhibitDetail(exhibit) {
         const info = document.createElement("small");
         info.textContent = `# ${getChannelById(ref.channelId)?.name || "missing"}`;
         item.appendChild(info);
-        const plaqueText = String(exhibit.plaques?.[photoRefKey(ref)] || "").trim();
+        const plaqueText = getExhibitPlaque(exhibit, ref);
         if (plaqueText) {
             const plaque = document.createElement("p");
             plaque.className = "museumExhibitPlaque";
@@ -2912,7 +3559,7 @@ function renderMuseumExhibitDetail(exhibit) {
 }
 
 function renderMuseumGuidedTour(exhibit) {
-    const refs = exhibit.photoRefs || [];
+    const refs = getExhibitPhotoRefs(exhibit);
     if (!refs.length) {
         state.museumTour = null;
         renderMuseumExhibitDetail(exhibit);
@@ -2952,7 +3599,7 @@ function renderMuseumGuidedTour(exhibit) {
     const plaqueHeading = document.createElement("strong");
     plaqueHeading.textContent = `Plaque ${index + 1}`;
     const plaqueText = document.createElement("p");
-    plaqueText.textContent = String(exhibit.plaques?.[photoRefKey(ref)] || "").trim() || "No plaque text for this stop.";
+    plaqueText.textContent = getExhibitPlaque(exhibit, ref) || "No plaque text for this stop.";
     const source = document.createElement("small");
     source.textContent = `From # ${getChannelById(ref.channelId)?.name || "missing"}`;
     plaque.append(plaqueHeading, plaqueText, source);
@@ -2976,6 +3623,779 @@ function renderMuseumGuidedTour(exhibit) {
     controls.append(previous, next);
     page.append(header, frame, plaque, controls);
     els.messages.appendChild(page);
+}
+
+function createMuseumWalkState() {
+    return { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true };
+}
+
+function openMuseumWalk() {
+    if (!getMuseumExhibits().length) {
+        alert("Create a permanent exhibit before opening the museum walk.");
+        return;
+    }
+    state.activeMuseumExhibitId = null;
+    state.museumTour = null;
+    state.museumWalk = createMuseumWalkState();
+    void openView("museumWalk", getActiveServer()?.id || "museum");
+}
+
+function exitMuseumWalk(exhibitId = null) {
+    const museumChannel = allChannels(getActiveServer()).find((channel) => channel.isMuseumExhibitsChannel);
+    state.museumWalk.inspected = null;
+    state.museumWalk.tour = null;
+    state.activeMuseumExhibitId = exhibitId;
+    if (museumChannel) void openView("channel", museumChannel.id);
+    else render();
+}
+
+function openMuseum1dTour(exhibitId = null) {
+    const exhibit = getMuseumExhibit(exhibitId) || getMuseumExhibits().find((item) => getExhibitPhotoRefs(item).length);
+    const museumChannel = allChannels(getActiveServer()).find((channel) => channel.isMuseumExhibitsChannel);
+    if (!exhibit || !museumChannel) return;
+    state.activeMuseumExhibitId = exhibit.id;
+    state.museumTour = { exhibitId: exhibit.id, index: 0 };
+    void openView("channel", museumChannel.id);
+}
+
+function createMuseum3dState(exhibitId = null) {
+    const exhibits = getMuseumExhibits();
+    const index = Math.max(0, exhibits.findIndex((item) => item.id === exhibitId));
+    return { x: 0, z: index * -860, yaw: 0, movement: { x: 0, y: 0 } };
+}
+
+function stopMuseum3dMovement() {
+    if (museum3dMovementFrame) window.cancelAnimationFrame(museum3dMovementFrame);
+    museum3dMovementFrame = undefined;
+    if (state.museum3d?.movement) state.museum3d.movement = { x: 0, y: 0 };
+}
+
+function openMuseum3d(exhibitId = null) {
+    if (!getMuseumExhibits().length) {
+        alert("Create a permanent exhibit before opening the 3D museum.");
+        return;
+    }
+    state.activeMuseumExhibitId = null;
+    state.museumTour = null;
+    state.museum3d = createMuseum3dState(exhibitId);
+    void openView("museum3d", getActiveServer()?.id || "museum");
+}
+
+function applyMuseum3dCamera(viewport = els.messages.querySelector(".museum3dViewport")) {
+    const camera = viewport?.querySelector(".museum3dCamera");
+    if (!camera) return;
+    const view = state.museum3d;
+    camera.style.transform = `translate3d(${-view.x}px, 0px, ${-view.z}px) rotateY(${-view.yaw}deg)`;
+    const position = viewport.closest(".museum3d")?.querySelector(".museum3dPosition");
+    if (position) position.textContent = `Position ${Math.round(view.x)}, ${Math.round(view.z)} · facing ${Math.round((view.yaw % 360 + 360) % 360)}°`;
+}
+
+function bindMuseum3dJoystick(joystick, viewport, roomCount) {
+    const stick = joystick.querySelector(".museum3dStick");
+    const limit = 38;
+    let pointerId = null;
+    const setMovement = (event) => {
+        const rect = joystick.getBoundingClientRect();
+        const rawX = event.clientX - (rect.left + rect.width / 2);
+        const rawY = event.clientY - (rect.top + rect.height / 2);
+        const distance = Math.hypot(rawX, rawY) || 1;
+        const factor = Math.min(1, limit / distance);
+        const x = rawX * factor;
+        const y = rawY * factor;
+        stick.style.transform = `translate(${x}px, ${y}px)`;
+        state.museum3d.movement = { x: x / limit, y: y / limit };
+    };
+    const release = () => {
+        pointerId = null;
+        stick.style.transform = "translate(0, 0)";
+        state.museum3d.movement = { x: 0, y: 0 };
+    };
+    joystick.addEventListener("pointerdown", (event) => {
+        pointerId = event.pointerId;
+        joystick.setPointerCapture?.(pointerId);
+        setMovement(event);
+    });
+    joystick.addEventListener("pointermove", (event) => { if (event.pointerId === pointerId) setMovement(event); });
+    joystick.addEventListener("pointerup", release);
+    joystick.addEventListener("pointercancel", release);
+    let lookPointer = null;
+    let lookX = 0;
+    viewport.addEventListener("pointerdown", (event) => {
+        if (event.target.closest("button, .museum3dFrame")) return;
+        lookPointer = event.pointerId;
+        lookX = event.clientX;
+        viewport.setPointerCapture?.(lookPointer);
+    });
+    viewport.addEventListener("pointermove", (event) => {
+        if (event.pointerId !== lookPointer) return;
+        state.museum3d.yaw += (event.clientX - lookX) * 0.35;
+        lookX = event.clientX;
+        applyMuseum3dCamera(viewport);
+    });
+    viewport.addEventListener("pointerup", () => { lookPointer = null; });
+    viewport.addEventListener("pointercancel", () => { lookPointer = null; });
+    const tick = () => {
+        if (state.activeView.type !== "museum3d") return;
+        const movement = state.museum3d.movement;
+        if (Math.abs(movement.x) > .02 || Math.abs(movement.y) > .02) {
+            state.museum3d.yaw += movement.x * 1.8;
+            const radians = state.museum3d.yaw * Math.PI / 180;
+            const distance = movement.y * 4.2;
+            state.museum3d.x = Math.max(-560, Math.min(560, state.museum3d.x + Math.sin(radians) * distance));
+            state.museum3d.z = Math.max(-(Math.max(1, roomCount) - 1) * 860 - 380, Math.min(380, state.museum3d.z + Math.cos(radians) * distance));
+            applyMuseum3dCamera(viewport);
+        }
+        museum3dMovementFrame = window.requestAnimationFrame(tick);
+    };
+    stopMuseum3dMovement();
+    museum3dMovementFrame = window.requestAnimationFrame(tick);
+}
+
+function renderMuseum3d() {
+    const exhibits = getMuseumExhibits();
+    if (!exhibits.length) return exitMuseumWalk();
+    const page = document.createElement("section");
+    page.className = "museum3d";
+    const header = document.createElement("section");
+    header.className = "museum3dHeader";
+    header.innerHTML = "<div><p>LOCAL VECTOR GALLERY</p><h3>3D Museum</h3><span>Use the joystick to walk and turn, or drag the gallery to look around. Tap a frame to open its full local image.</span></div>";
+    const modes = document.createElement("div");
+    modes.className = "museum3dModes";
+    const one = document.createElement("button");
+    one.type = "button";
+    one.textContent = "1D tour";
+    one.addEventListener("click", () => openMuseum1dTour());
+    const two = document.createElement("button");
+    two.type = "button";
+    two.textContent = "2D walk";
+    two.addEventListener("click", () => openMuseumWalk());
+    const three = document.createElement("button");
+    three.type = "button";
+    three.textContent = "3D walk";
+    three.disabled = true;
+    const exit = document.createElement("button");
+    exit.type = "button";
+    exit.textContent = "Exhibits";
+    exit.addEventListener("click", () => exitMuseumWalk());
+    modes.append(one, two, three, exit);
+    header.appendChild(modes);
+    const viewport = document.createElement("div");
+    viewport.className = "museum3dViewport";
+    const world = document.createElement("div");
+    world.className = "museum3dWorld";
+    const camera = document.createElement("div");
+    camera.className = "museum3dCamera";
+    const floor = document.createElement("div");
+    floor.className = "museum3dFloor";
+    camera.appendChild(floor);
+    exhibits.forEach((exhibit, index) => {
+        const room = document.createElement("article");
+        room.className = `museum3dRoom roomAmbience-${getMuseumRoomLayout(exhibit).ambience}`;
+        room.style.transform = `translate3d(${index % 2 ? 270 : -270}px, 0px, ${-index * 860}px) rotateY(${index % 2 ? -16 : 16}deg)`;
+        const sign = document.createElement("h4");
+        sign.textContent = exhibit.title;
+        const wall = document.createElement("div");
+        wall.className = "museum3dWall";
+        getExhibitPhotoRefs(exhibit).slice(0, 4).forEach((ref) => {
+            const attachment = findAttachment(ref);
+            if (!attachment) return;
+            const frame = document.createElement("button");
+            frame.type = "button";
+            frame.className = "museum3dFrame";
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Exhibit image";
+            frame.appendChild(image);
+            frame.title = getExhibitPlaque(exhibit, ref) || image.alt;
+            frame.addEventListener("click", () => openImageViewer(attachment, image.alt));
+            wall.appendChild(frame);
+        });
+        const plaque = document.createElement("p");
+        plaque.textContent = exhibit.curatorNote || exhibit.subtitle || `${getExhibitPhotoRefs(exhibit).length} local photos`;
+        room.append(sign, wall, plaque);
+        camera.appendChild(room);
+    });
+    world.appendChild(camera);
+    viewport.appendChild(world);
+    const hud = document.createElement("div");
+    hud.className = "museum3dHud";
+    const position = document.createElement("span");
+    position.className = "museum3dPosition";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Reset view";
+    reset.addEventListener("click", () => { state.museum3d = createMuseum3dState(); applyMuseum3dCamera(viewport); });
+    hud.append(position, reset);
+    const joystick = document.createElement("div");
+    joystick.className = "museum3dJoystick";
+    joystick.setAttribute("aria-label", "Walk and turn joystick");
+    joystick.innerHTML = "<span class=\"museum3dStick\"></span>";
+    page.append(header, viewport, hud, joystick);
+    els.messages.appendChild(page);
+    applyMuseum3dCamera(viewport);
+    bindMuseum3dJoystick(joystick, viewport, exhibits.length);
+}
+
+function startMuseumWalkTour(exhibitId) {
+    const exhibit = getMuseumExhibit(exhibitId);
+    const firstRef = getExhibitPhotoRefs(exhibit)[0];
+    if (!exhibit || !firstRef) {
+        alert("This exhibit needs at least one photo before it can have a guided route.");
+        return;
+    }
+    state.museumWalk.tour = { exhibitId, index: 0 };
+    state.museumWalk.inspected = { exhibitId, photoKey: photoRefKey(firstRef) };
+    renderMessages();
+}
+
+function moveMuseumWalkTour(offset) {
+    const tour = state.museumWalk.tour;
+    const exhibit = tour && getMuseumExhibit(tour.exhibitId);
+    const refs = getExhibitPhotoRefs(exhibit);
+    if (!tour || !refs.length) return;
+    const index = Math.min(Math.max(0, tour.index + offset), refs.length - 1);
+    const ref = refs[index];
+    state.museumWalk.tour = { exhibitId: exhibit.id, index };
+    state.museumWalk.inspected = { exhibitId: exhibit.id, photoKey: photoRefKey(ref) };
+    renderMessages();
+}
+
+function endMuseumWalkTour() {
+    state.museumWalk.tour = null;
+    state.museumWalk.inspected = null;
+    renderMessages();
+}
+
+function getMuseumWalkCollisions(rooms) {
+    const collisions = [];
+    const manualRooms = rooms.filter((room) => room.manual);
+    for (let firstIndex = 0; firstIndex < manualRooms.length; firstIndex += 1) {
+        for (let secondIndex = firstIndex + 1; secondIndex < manualRooms.length; secondIndex += 1) {
+            const first = manualRooms[firstIndex];
+            const second = manualRooms[secondIndex];
+            if (first.wing !== second.wing) continue;
+            const overlaps = first.x < second.x + second.width
+                && first.x + first.width > second.x
+                && first.y < second.y + second.height
+                && first.y + first.height > second.y;
+            if (overlaps) collisions.push({ first, second });
+        }
+    }
+    return collisions;
+}
+
+async function fixMuseumWalkCollisions(layout = getMuseumWalkLayout(getMuseumExhibits())) {
+    if (!layout.collisions.length) return;
+    const groups = new Map();
+    getMuseumExhibits().forEach((exhibit) => {
+        const wing = normalizeDisplayName(exhibit.collection || "") || "Main Gallery";
+        if (!groups.has(wing)) groups.set(wing, []);
+        groups.get(wing).push(exhibit);
+    });
+    let changed = false;
+    groups.forEach((exhibits) => {
+        const occupied = new Set();
+        exhibits
+            .filter((exhibit) => getMuseumRoomLayout(exhibit).mode === "manual")
+            .sort((a, b) => {
+                const first = getMuseumRoomLayout(a);
+                const second = getMuseumRoomLayout(b);
+                return first.row - second.row || first.column - second.column || a.title.localeCompare(b.title);
+            })
+            .forEach((exhibit) => {
+                const layoutSetting = getMuseumRoomLayout(exhibit);
+                let column = layoutSetting.column;
+                let row = layoutSetting.row;
+                let key = `${column}:${row}`;
+                if (occupied.has(key)) {
+                    let slot = 0;
+                    do {
+                        column = (slot % 3) + 1;
+                        row = Math.floor(slot / 3) + 1;
+                        key = `${column}:${row}`;
+                        slot += 1;
+                    } while (occupied.has(key));
+                    exhibit.museumLayout = { ...exhibit.museumLayout, mode: "manual", column, row };
+                    changed = true;
+                }
+                occupied.add(key);
+            });
+    });
+    if (!changed) return;
+    await saveStructure(state.structure);
+    renderMessages();
+}
+
+async function toggleMuseumQuietMode() {
+    const enabled = !state.structure.settings.museumQuietMode;
+    state.structure.settings.museumQuietMode = enabled;
+    if (enabled && metronomeTimer) stopMetronome();
+    await saveStructure(state.structure);
+    renderMessages();
+}
+
+function getMuseumWalkLayout(exhibits) {
+    const roomWidth = 360;
+    const roomHeight = 300;
+    const columnGap = 58;
+    const rowGap = 54;
+    const columns = 3;
+    const floorWidth = 1320;
+    const groups = new Map();
+    exhibits.forEach((exhibit) => {
+        const collection = normalizeDisplayName(exhibit.collection || "") || "Main Gallery";
+        if (!groups.has(collection)) groups.set(collection, []);
+        groups.get(collection).push(exhibit);
+    });
+    let y = 175;
+    const rooms = [];
+    const wings = [];
+    [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([name, group]) => {
+        const manual = group.filter((exhibit) => getMuseumRoomLayout(exhibit).mode === "manual");
+        const reservedSlots = new Set(manual.map((exhibit) => {
+            const layout = getMuseumRoomLayout(exhibit);
+            return `${layout.column - 1}:${layout.row - 1}`;
+        }));
+        let automaticIndex = 0;
+        const placements = group.map((exhibit) => {
+            const roomLayout = getMuseumRoomLayout(exhibit);
+            if (roomLayout.mode !== "manual") {
+                while (reservedSlots.has(`${automaticIndex % columns}:${Math.floor(automaticIndex / columns)}`)) automaticIndex += 1;
+            }
+            const column = roomLayout.mode === "manual" ? roomLayout.column - 1 : automaticIndex % columns;
+            const row = roomLayout.mode === "manual" ? roomLayout.row - 1 : Math.floor(automaticIndex / columns);
+            if (roomLayout.mode !== "manual") automaticIndex += 1;
+            return { exhibit, roomLayout, column, row };
+        });
+        const rows = Math.max(1, ...placements.map((placement) => placement.row + 1));
+        const height = 68 + rows * roomHeight + Math.max(0, rows - 1) * rowGap + 84;
+        wings.push({ name, x: 44, y, width: floorWidth - 88, height });
+        placements.forEach(({ exhibit, roomLayout, column, row }) => {
+            rooms.push({
+                exhibit,
+                x: 84 + column * (roomWidth + columnGap),
+                y: y + 62 + row * (roomHeight + rowGap),
+                width: roomWidth,
+                height: roomHeight,
+                wing: name,
+                roomStyle: roomLayout.roomStyle,
+                ambience: roomLayout.ambience,
+                manual: roomLayout.mode === "manual"
+            });
+        });
+        y += height + 84;
+    });
+    return { width: floorWidth, height: Math.max(740, y + 36), rooms, wings, collisions: getMuseumWalkCollisions(rooms) };
+}
+
+function clampMuseumWalkNumber(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(maximum, value));
+}
+
+function applyMuseumWalkTransform(viewport = els.messages.querySelector(".museumWalkViewport")) {
+    const floor = viewport?.querySelector(".museumWalkFloor");
+    if (floor) {
+        floor.style.transform = `translate3d(${state.museumWalk.panX}px, ${state.museumWalk.panY}px, 0) scale(${state.museumWalk.scale})`;
+    }
+    const avatar = viewport?.querySelector(".museumWalkAvatar");
+    if (avatar) {
+        avatar.style.left = `${state.museumWalk.x}px`;
+        avatar.style.top = `${state.museumWalk.y}px`;
+    }
+    const miniAvatar = els.messages.querySelector(".museumWalkMiniAvatar");
+    const miniMap = els.messages.querySelector(".museumWalkMiniMap");
+    if (miniAvatar && miniMap) {
+        const width = Number(miniMap.dataset.floorWidth) || 1;
+        const height = Number(miniMap.dataset.floorHeight) || 1;
+        miniAvatar.style.left = `${(state.museumWalk.x / width) * 100}%`;
+        miniAvatar.style.top = `${(state.museumWalk.y / height) * 100}%`;
+    }
+}
+
+function centerMuseumWalkOnPoint(x, y, viewport = els.messages.querySelector(".museumWalkViewport")) {
+    if (!viewport) return;
+    state.museumWalk.panX = (viewport.clientWidth / 2) - (x * state.museumWalk.scale);
+    state.museumWalk.panY = (viewport.clientHeight / 2) - (y * state.museumWalk.scale);
+    applyMuseumWalkTransform(viewport);
+}
+
+function focusMuseumWalkRoom(room) {
+    centerMuseumWalkOnPoint(room.x + room.width / 2, room.y + room.height / 2);
+}
+
+function moveMuseumWalker(dx, dy, layout) {
+    state.museumWalk.x = clampMuseumWalkNumber(state.museumWalk.x + dx, 34, layout.width - 34);
+    state.museumWalk.y = clampMuseumWalkNumber(state.museumWalk.y + dy, 34, layout.height - 34);
+    applyMuseumWalkTransform();
+}
+
+function adjustMuseumWalkZoom(amount) {
+    state.museumWalk.scale = clampMuseumWalkNumber(Math.round((state.museumWalk.scale + amount) * 100) / 100, 0.45, 1.35);
+    applyMuseumWalkTransform();
+}
+
+function bindMuseumWalkGestures(viewport) {
+    const pointers = new Map();
+    let pinchDistance = 0;
+    let pinchScale = state.museumWalk.scale;
+    const getDistance = () => {
+        const [first, second] = [...pointers.values()];
+        return first && second ? Math.hypot(first.x - second.x, first.y - second.y) : 0;
+    };
+    viewport.addEventListener("pointerdown", (event) => {
+        if (event.target.closest("button, input, select, textarea")) return;
+        viewport.setPointerCapture?.(event.pointerId);
+        pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (pointers.size === 2) {
+            pinchDistance = getDistance();
+            pinchScale = state.museumWalk.scale;
+        }
+    });
+    viewport.addEventListener("pointermove", (event) => {
+        const previous = pointers.get(event.pointerId);
+        if (!previous) return;
+        const next = { x: event.clientX, y: event.clientY };
+        pointers.set(event.pointerId, next);
+        if (pointers.size === 2 && pinchDistance > 0) {
+            state.museumWalk.scale = clampMuseumWalkNumber(pinchScale * (getDistance() / pinchDistance), 0.45, 1.35);
+            applyMuseumWalkTransform(viewport);
+            return;
+        }
+        state.museumWalk.panX += next.x - previous.x;
+        state.museumWalk.panY += next.y - previous.y;
+        applyMuseumWalkTransform(viewport);
+    });
+    const releasePointer = (event) => {
+        pointers.delete(event.pointerId);
+        if (pointers.size < 2) pinchDistance = 0;
+    };
+    viewport.addEventListener("pointerup", releasePointer);
+    viewport.addEventListener("pointercancel", releasePointer);
+}
+
+function renderMuseumWalkRoutes(layout) {
+    const namespace = "http://www.w3.org/2000/svg";
+    const routes = document.createElementNS(namespace, "svg");
+    routes.classList.add("museumWalkRoutes");
+    routes.setAttribute("width", String(layout.width));
+    routes.setAttribute("height", String(layout.height));
+    routes.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+    routes.setAttribute("aria-hidden", "true");
+    const lobbyX = layout.width / 2;
+    const lobbyY = 124;
+    const tourRoom = state.museumWalk.tour && layout.rooms.find((room) => room.exhibit.id === state.museumWalk.tour.exhibitId);
+    layout.wings.forEach((wing) => {
+        const doorX = wing.x + wing.width / 2;
+        const doorY = wing.y + 10;
+        const path = document.createElementNS(namespace, "path");
+        path.classList.add("museumWalkRouteLine");
+        if (tourRoom?.wing === wing.name) path.classList.add("isActive");
+        path.setAttribute("d", `M ${lobbyX} ${lobbyY} L ${lobbyX} ${doorY - 30} L ${doorX} ${doorY}`);
+        routes.appendChild(path);
+    });
+    if (tourRoom) {
+        const path = document.createElementNS(namespace, "path");
+        path.classList.add("museumWalkRouteLine", "isTourPath");
+        path.setAttribute("d", `M ${lobbyX} ${lobbyY} L ${tourRoom.x + tourRoom.width / 2} ${tourRoom.y + tourRoom.height / 2}`);
+        routes.appendChild(path);
+    }
+    return routes;
+}
+
+function renderMuseumWalkInspector(layout) {
+    const inspected = state.museumWalk.inspected;
+    if (!inspected) return null;
+    const room = layout.rooms.find((item) => item.exhibit.id === inspected.exhibitId);
+    const roomRefs = getExhibitPhotoRefs(room?.exhibit);
+    const ref = roomRefs.find((item) => photoRefKey(item) === inspected.photoKey);
+    const attachment = ref && findAttachment(ref);
+    if (!room || !ref) {
+        state.museumWalk.inspected = null;
+        return null;
+    }
+    const panel = document.createElement("aside");
+    panel.className = "museumWalkInspector";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "museumWalkInspectorClose";
+    close.textContent = "Close";
+    close.addEventListener("click", () => { state.museumWalk.inspected = null; state.museumWalk.tour = null; renderMessages(); });
+    const exhibit = document.createElement("span");
+    exhibit.textContent = room.exhibit.title;
+    const title = document.createElement("h3");
+    title.textContent = attachment?.note || attachment?.name || "Exhibit photo";
+    panel.append(close, exhibit, title);
+    if (attachment) {
+        const image = document.createElement("img");
+        setRenderedImageSource(image, attachment);
+        image.alt = title.textContent;
+        image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        panel.appendChild(image);
+    } else panel.appendChild(emptyPanel("The original local photo is unavailable."));
+    const plaque = document.createElement("p");
+    plaque.textContent = getExhibitPlaque(room.exhibit, ref) || "No exhibit plaque text for this frame.";
+    const source = document.createElement("small");
+    source.textContent = `From # ${getChannelById(ref.channelId)?.name || "missing"}`;
+    const tour = state.museumWalk.tour?.exhibitId === room.exhibit.id ? state.museumWalk.tour : null;
+    const tourControls = document.createElement("div");
+    if (tour) {
+        tourControls.className = "museumWalkTourControls";
+        const progress = document.createElement("span");
+        progress.textContent = `Guided stop ${tour.index + 1} of ${roomRefs.length}`;
+        const previous = document.createElement("button");
+        previous.type = "button";
+        previous.textContent = "Previous stop";
+        previous.disabled = tour.index === 0;
+        previous.addEventListener("click", () => moveMuseumWalkTour(-1));
+        const next = document.createElement("button");
+        next.type = "button";
+        next.textContent = tour.index === roomRefs.length - 1 ? "End route" : "Next stop";
+        next.addEventListener("click", () => {
+            if (tour.index === roomRefs.length - 1) endMuseumWalkTour();
+            else moveMuseumWalkTour(1);
+        });
+        tourControls.append(progress, previous, next);
+    }
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "Open exhibit";
+    open.addEventListener("click", () => exitMuseumWalk(room.exhibit.id));
+    panel.append(plaque, source);
+    if (tour) panel.appendChild(tourControls);
+    panel.append(open);
+    return panel;
+}
+
+function renderMuseumWalk() {
+    const exhibits = getMuseumExhibits();
+    if (!exhibits.length) {
+        els.messages.appendChild(emptyPanel("No exhibits to walk through yet. Create a permanent exhibit first."));
+        return;
+    }
+    const layout = getMuseumWalkLayout(exhibits);
+    const page = document.createElement("section");
+    const quietMode = Boolean(state.structure.settings.museumQuietMode);
+    page.className = `museumWalk${quietMode ? " isQuiet" : ""}`;
+    const toolbar = document.createElement("header");
+    toolbar.className = "museumWalkToolbar";
+    const exit = document.createElement("button");
+    exit.type = "button";
+    exit.textContent = "Exhibit shelf";
+    exit.addEventListener("click", () => exitMuseumWalk());
+    const title = document.createElement("div");
+    const heading = document.createElement("h3");
+    heading.textContent = "Walk Museum";
+    const help = document.createElement("p");
+    help.textContent = "Drag to look around, pinch or use zoom controls, then tap a frame to inspect it.";
+    title.append(heading, help);
+    const controls = document.createElement("div");
+    controls.className = "museumWalkToolbarControls";
+    const zoomOut = document.createElement("button");
+    zoomOut.type = "button";
+    zoomOut.textContent = "Zoom out";
+    zoomOut.addEventListener("click", () => adjustMuseumWalkZoom(-0.1));
+    const zoomIn = document.createElement("button");
+    zoomIn.type = "button";
+    zoomIn.textContent = "Zoom in";
+    zoomIn.addEventListener("click", () => adjustMuseumWalkZoom(0.1));
+    const mapToggle = document.createElement("button");
+    mapToggle.type = "button";
+    mapToggle.textContent = state.museumWalk.showMap ? "Hide map" : "Show map";
+    mapToggle.addEventListener("click", () => { state.museumWalk.showMap = !state.museumWalk.showMap; renderMessages(); });
+    const metronome = document.createElement("button");
+    metronome.type = "button";
+    metronome.textContent = metronomeTimer ? "Stop metronome" : "Start metronome";
+    metronome.addEventListener("click", async () => {
+        await toggleMetronome();
+        renderMessages();
+    });
+    metronome.disabled = quietMode;
+    const quiet = document.createElement("button");
+    quiet.type = "button";
+    quiet.textContent = quietMode ? "Standard mode" : "Quiet mode";
+    quiet.addEventListener("click", toggleMuseumQuietMode);
+    controls.append(zoomOut, zoomIn, mapToggle, metronome, quiet);
+    if (state.museumWalk.tour) {
+        const endRoute = document.createElement("button");
+        endRoute.type = "button";
+        endRoute.textContent = "End guided route";
+        endRoute.addEventListener("click", endMuseumWalkTour);
+        controls.appendChild(endRoute);
+    }
+    toolbar.append(exit, title, controls);
+    if (layout.collisions.length) {
+        const warning = document.createElement("section");
+        warning.className = "museumWalkLayoutWarning";
+        const message = document.createElement("p");
+        const examples = layout.collisions.slice(0, 2).map(({ first, second }) => `“${first.exhibit.title}” and “${second.exhibit.title}”`).join("; ");
+        message.textContent = `${layout.collisions.length} manual room overlap${layout.collisions.length === 1 ? "" : "s"}: ${examples}.`;
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.textContent = "Fix layout automatically";
+        fix.addEventListener("click", async () => { await fixMuseumWalkCollisions(layout); });
+        warning.append(message, fix);
+        page.append(toolbar, warning);
+    } else page.appendChild(toolbar);
+    const viewport = document.createElement("section");
+    viewport.className = "museumWalkViewport";
+    viewport.setAttribute("aria-label", "Walkable museum floor");
+    const floor = document.createElement("div");
+    floor.className = "museumWalkFloor";
+    floor.style.width = `${layout.width}px`;
+    floor.style.height = `${layout.height}px`;
+    const lobby = document.createElement("section");
+    lobby.className = "museumWalkLobby";
+    const lobbyName = document.createElement("strong");
+    lobbyName.textContent = getActiveServer()?.name || "Museum";
+    const lobbyDetail = document.createElement("span");
+    lobbyDetail.textContent = `${exhibits.length} exhibit${exhibits.length === 1 ? "" : "s"} · entrance lobby`;
+    lobby.append(lobbyName, lobbyDetail);
+    floor.appendChild(lobby);
+    floor.appendChild(renderMuseumWalkRoutes(layout));
+    layout.wings.forEach((wing) => {
+        const wingElement = document.createElement("section");
+        wingElement.className = "museumWalkWing";
+        wingElement.style.left = `${wing.x}px`;
+        wingElement.style.top = `${wing.y}px`;
+        wingElement.style.width = `${wing.width}px`;
+        wingElement.style.height = `${wing.height}px`;
+        const wingTitle = document.createElement("h4");
+        wingTitle.textContent = wing.name;
+        wingElement.appendChild(wingTitle);
+        floor.appendChild(wingElement);
+        const firstRoom = layout.rooms.find((room) => room.wing === wing.name);
+        if (firstRoom) {
+            const door = document.createElement("button");
+            door.type = "button";
+            door.className = "museumWalkDoor";
+            door.style.left = `${wing.x + wing.width / 2 - 62}px`;
+            door.style.top = `${wing.y - 14}px`;
+            door.textContent = `${wing.name} entrance`;
+            door.title = `Focus ${wing.name}`;
+            door.addEventListener("click", () => focusMuseumWalkRoom(firstRoom));
+            floor.appendChild(door);
+        }
+    });
+    let thumbnailBudget = 48;
+    layout.rooms.forEach((room) => {
+        const roomElement = document.createElement("article");
+        const isTourRoom = state.museumWalk.tour?.exhibitId === room.exhibit.id;
+        roomElement.className = `museumWalkRoom roomStyle-${room.roomStyle} roomAmbience-${room.ambience}${room.manual ? " isManual" : ""}${isTourRoom ? " isTouring" : ""}`;
+        roomElement.style.left = `${room.x}px`;
+        roomElement.style.top = `${room.y}px`;
+        roomElement.style.width = `${room.width}px`;
+        roomElement.style.height = `${room.height}px`;
+        const sign = document.createElement("div");
+        sign.className = "museumWalkRoomSign";
+        const roomTitle = document.createElement("h4");
+        roomTitle.textContent = room.exhibit.title;
+        const roomMeta = document.createElement("span");
+        const roomRefs = getExhibitPhotoRefs(room.exhibit);
+        roomMeta.textContent = `${roomRefs.length} framed photo${roomRefs.length === 1 ? "" : "s"}`;
+        sign.append(roomTitle, roomMeta);
+        const frames = document.createElement("div");
+        frames.className = "museumWalkFrames";
+        const visibleRefs = roomRefs.slice(0, Math.min(6, thumbnailBudget));
+        thumbnailBudget -= visibleRefs.length;
+        visibleRefs.forEach((ref) => {
+            const attachment = findAttachment(ref);
+            const frame = document.createElement("button");
+            frame.type = "button";
+            const isTourStop = isTourRoom && state.museumWalk.tour?.index === roomRefs.findIndex((item) => photoRefKey(item) === photoRefKey(ref));
+            frame.className = `museumWalkFrame${isTourStop ? " isTourStop" : ""}`;
+            frame.title = attachment?.note || attachment?.name || "Inspect exhibit frame";
+            if (attachment) {
+                const image = document.createElement("img");
+                setRenderedImageSource(image, attachment);
+                image.alt = attachment.note || attachment.name || "Exhibit frame";
+                frame.appendChild(image);
+            } else frame.appendChild(document.createElement("span"));
+            frame.addEventListener("click", () => {
+                state.museumWalk.inspected = { exhibitId: room.exhibit.id, photoKey: photoRefKey(ref) };
+                renderMessages();
+            });
+            frames.appendChild(frame);
+        });
+        if (roomRefs.length > visibleRefs.length) {
+            const more = document.createElement("span");
+            more.className = "museumWalkMoreFrames";
+            more.textContent = `+${roomRefs.length - visibleRefs.length} more`;
+            frames.appendChild(more);
+        }
+        const roomActions = document.createElement("div");
+        roomActions.className = "museumWalkRoomActions";
+        const follow = document.createElement("button");
+        follow.type = "button";
+        follow.className = "museumWalkFollow";
+        follow.textContent = isTourRoom ? "Resume route" : "Follow tour";
+        follow.disabled = !roomRefs.length;
+        follow.addEventListener("click", () => startMuseumWalkTour(room.exhibit.id));
+        const enter = document.createElement("button");
+        enter.type = "button";
+        enter.className = "museumWalkEnter";
+        enter.textContent = "Enter exhibit";
+        enter.addEventListener("click", () => exitMuseumWalk(room.exhibit.id));
+        roomActions.append(follow, enter);
+        roomElement.append(sign, frames, roomActions);
+        floor.appendChild(roomElement);
+    });
+    const avatar = document.createElement("div");
+    avatar.className = "museumWalkAvatar";
+    avatar.setAttribute("aria-label", "Your position");
+    floor.appendChild(avatar);
+    viewport.appendChild(floor);
+    if (state.museumWalk.showMap) {
+        const map = document.createElement("aside");
+        map.className = "museumWalkMiniMap";
+        map.dataset.floorWidth = String(layout.width);
+        map.dataset.floorHeight = String(layout.height);
+        layout.rooms.forEach((room) => {
+            const roomButton = document.createElement("button");
+            roomButton.type = "button";
+            roomButton.title = `Focus ${room.exhibit.title}`;
+            roomButton.style.left = `${(room.x / layout.width) * 100}%`;
+            roomButton.style.top = `${(room.y / layout.height) * 100}%`;
+            roomButton.style.width = `${(room.width / layout.width) * 100}%`;
+            roomButton.style.height = `${(room.height / layout.height) * 100}%`;
+            roomButton.addEventListener("click", () => focusMuseumWalkRoom(room));
+            map.appendChild(roomButton);
+        });
+        const miniAvatar = document.createElement("span");
+        miniAvatar.className = "museumWalkMiniAvatar";
+        map.appendChild(miniAvatar);
+        viewport.appendChild(map);
+    }
+    const inspector = renderMuseumWalkInspector(layout);
+    if (inspector) viewport.appendChild(inspector);
+    const walkPad = document.createElement("section");
+    walkPad.className = "museumWalkPad";
+    walkPad.setAttribute("aria-label", "Walk controls");
+    [
+        ["North", 0, -88],
+        ["West", -88, 0],
+        ["East", 88, 0],
+        ["South", 0, 88]
+    ].forEach(([label, dx, dy]) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `museumWalkMove museumWalkMove${label}`;
+        button.textContent = label;
+        button.addEventListener("click", () => moveMuseumWalker(dx, dy, layout));
+        walkPad.appendChild(button);
+    });
+    page.append(viewport, walkPad);
+    els.messages.appendChild(page);
+    bindMuseumWalkGestures(viewport);
+    requestAnimationFrame(() => {
+        if (state.museumWalk.needsCenter) {
+            state.museumWalk.needsCenter = false;
+            centerMuseumWalkOnPoint(state.museumWalk.x, state.museumWalk.y, viewport);
+        } else {
+            const tourRoom = state.museumWalk.tour && layout.rooms.find((room) => room.exhibit.id === state.museumWalk.tour.exhibitId);
+            if (tourRoom) focusMuseumWalkRoom(tourRoom);
+            else applyMuseumWalkTransform(viewport);
+        }
+    });
 }
 
 function getReactionInsights(events) {
@@ -3346,8 +4766,12 @@ function getImageDraftBpmPresets() {
 }
 
 function getImageDraftScaleValue(preset, position, total) {
-    const progress = total <= 1 ? 0 : (position - 1) / (total - 1);
-    return Math.round(preset.start + (preset.end - preset.start) * progress);
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const safePosition = Math.min(safeTotal, Math.max(1, Number(position) || 1));
+    const progress = safeTotal <= 1 ? 0 : (safePosition - 1) / (safeTotal - 1);
+    const start = Number(preset?.start) || 1;
+    const end = Number(preset?.end) || start;
+    return Math.max(1, Math.round(start + (end - start) * progress));
 }
 
 function shuffledCopy(items) {
@@ -3374,11 +4798,11 @@ function getImageDraftSourceChannels() {
 
 async function getImageDraftCandidates() {
     const channels = getImageDraftSourceChannels();
-    await Promise.all(channels.map(async (channel) => {
+    for (const channel of channels) {
         if (!state.messagesByChannel.has(channel.id)) {
             state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
         }
-    }));
+    }
     return channels.flatMap((channel) => (
         (state.messagesByChannel.get(channel.id) || []).flatMap((message) => (
             (message.attachments || [])
@@ -3401,8 +4825,8 @@ function getImageDraftSlideValues(item) {
     const durationPreset = getImageDraftDurationPresets()[state.imageDraft.durationPreset] || getImageDraftDurationPresets()["gentle-rise"];
     const bpmPreset = getImageDraftBpmPresets()[state.imageDraft.bpmPreset] || getImageDraftBpmPresets()["calm-rise"];
     return {
-        durationSeconds: getImageDraftScaleValue(durationPreset, item.rank, total),
-        bpm: getImageDraftScaleValue(bpmPreset, item.rank, total)
+        durationSeconds: getImageDraftScaleValue(durationPreset, Number.isFinite(Number(item?.rank)) ? Number(item.rank) : 1, total),
+        bpm: getImageDraftScaleValue(bpmPreset, Number.isFinite(Number(item?.rank)) ? Number(item.rank) : 1, total)
     };
 }
 
@@ -3529,11 +4953,15 @@ function renderImageDraftSetup() {
     const winnerTimerField = imageDraftField("Winner-stays timer (seconds, 0 = until exit)", winnerTimer);
     const preview = document.createElement("p");
     preview.className = "imageDraftPreview";
-    const refreshPreview = () => {
-        draft.count = Math.min(20, Math.max(2, Number.parseInt(count.value, 10) || 6));
-        count.value = String(draft.count);
+    const getPreviewCount = () => Math.min(20, Math.max(2, Number.parseInt(count.value, 10) || draft.count || 6));
+    const refreshPreview = (commit = false) => {
+        const previewCount = getPreviewCount();
+        if (commit) {
+            draft.count = previewCount;
+            count.value = String(previewCount);
+        }
         if (draft.censorMode) {
-            preview.textContent = `Censor mode: draft spot #1 needs 1 blur region; #${draft.count} needs ${draft.count}. The challenge order follows your selected location order.`;
+            preview.textContent = `Censor mode: draft spot #1 needs 1 blur region; #${previewCount} needs ${previewCount}. The challenge order follows your selected location order.`;
             durationField.hidden = true;
             bpmField.hidden = true;
             winnerField.hidden = true;
@@ -3541,16 +4969,17 @@ function renderImageDraftSetup() {
         } else {
             const durationPreset = getImageDraftDurationPresets()[draft.durationPreset] || getImageDraftDurationPresets()["gentle-rise"];
             const bpmPreset = getImageDraftBpmPresets()[draft.bpmPreset] || getImageDraftBpmPresets()["calm-rise"];
-            const firstValues = { durationSeconds: getImageDraftScaleValue(durationPreset, 1, draft.count), bpm: getImageDraftScaleValue(bpmPreset, 1, draft.count) };
-            const lastValues = { durationSeconds: getImageDraftScaleValue(durationPreset, draft.count, draft.count), bpm: getImageDraftScaleValue(bpmPreset, draft.count, draft.count) };
-            preview.textContent = `Scale preview: #1 is ${firstValues.durationSeconds}s at ${firstValues.bpm} BPM; #${draft.count} is ${lastValues.durationSeconds}s at ${lastValues.bpm} BPM.`;
+            const firstValues = { durationSeconds: getImageDraftScaleValue(durationPreset, 1, previewCount), bpm: getImageDraftScaleValue(bpmPreset, 1, previewCount) };
+            const lastValues = { durationSeconds: getImageDraftScaleValue(durationPreset, previewCount, previewCount), bpm: getImageDraftScaleValue(bpmPreset, previewCount, previewCount) };
+            preview.textContent = `Scale preview: #1 is ${firstValues.durationSeconds}s at ${firstValues.bpm} BPM; #${previewCount} is ${lastValues.durationSeconds}s at ${lastValues.bpm} BPM.`;
             durationField.hidden = false;
             bpmField.hidden = false;
             winnerField.hidden = false;
             winnerTimerField.hidden = !draft.wheelWinnerStays;
         }
     };
-    count.addEventListener("input", refreshPreview);
+    count.addEventListener("input", () => refreshPreview(false));
+    count.addEventListener("change", () => refreshPreview(true));
     duration.addEventListener("change", refreshPreview);
     bpm.addEventListener("change", refreshPreview);
     censor.addEventListener("change", () => { draft.censorMode = censor.checked; refreshPreview(); });
@@ -3575,13 +5004,16 @@ function renderImageDraftSetup() {
     start.type = "button";
     start.className = "adventurePrimary";
     start.textContent = "Draw images and begin draft";
-    start.addEventListener("click", () => beginImageDraft().catch((error) => {
+    start.addEventListener("click", () => {
+        refreshPreview(true);
+        beginImageDraft().catch((error) => {
         console.error("Could not start image draft:", error);
         alert("Could not load the selected local images for this draft.");
-    }));
+        });
+    });
     page.append(intro, setup, start);
     els.messages.appendChild(page);
-    refreshPreview();
+    refreshPreview(false);
 }
 
 async function beginImageDraft() {
@@ -3760,6 +5192,8 @@ async function finalizeImageDraft() {
     if (imageDraftRankedItems().length !== draft.candidates.length) return;
     const server = getActiveServer();
     if (!server) return;
+    const rankedItems = draft.ranked.map((item, index) => ({ ...item, rank: index + 1 }));
+    draft.ranked = rankedItems;
     const record = {
         id: crypto.randomUUID(),
         serverId: server.id,
@@ -3771,7 +5205,7 @@ async function finalizeImageDraft() {
         durationPreset: draft.durationPreset,
         bpmPreset: draft.bpmPreset,
         censorMode: Boolean(draft.censorMode),
-        items: draft.ranked.map((item, index) => ({
+        items: rankedItems.map((item, index) => ({
             ref: structuredClone(item.ref),
             rank: index + 1,
             label: item.label,
@@ -3997,7 +5431,8 @@ function startImageDraftWheel() {
 }
 
 function getImageDraftWheelWeight(item, items) {
-    return Math.max(1, items.length - item.rank + 1);
+    const rank = Number.isFinite(Number(item?.rank)) ? Number(item.rank) : items.indexOf(item) + 1;
+    return Math.max(1, items.length - rank + 1);
 }
 
 function drawImageDraftWheel(canvas, items) {
@@ -4698,12 +6133,10 @@ function renderRandomZoom() {
         const frame = document.createElement("figure");
         frame.className = "randomZoomFrame";
         const image = document.createElement("img");
-        const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
-        image.src = objectUrl || attachment.dataUrl || "";
+        setRenderedImageSource(image, attachment);
         image.alt = attachment.note || attachment.name || "Random local photo";
         image.style.transform = `scale(${zoom.scale})`;
         image.style.transformOrigin = `${zoom.x}% ${zoom.y}%`;
-        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         image.addEventListener("click", () => openImageViewer(attachment, image.alt));
         const caption = document.createElement("figcaption");
         caption.textContent = `# ${getChannelById(zoom.ref.channelId)?.name || "channel"} · ${attachment.note || attachment.name || "Local image"} · tap to view full image`;
@@ -4966,7 +6399,9 @@ function renderStatsPage() {
         ["Reaction uses", stats.reactionTotal],
         ["Pinned notes", stats.pinned],
         ["Favorite photos", stats.favorites],
-        ["Completed drafts", stats.draftInsights.drafts]
+        ["Completed drafts", stats.draftInsights.drafts],
+        ["Permanent exhibits", stats.exhibitInsights.exhibits],
+        ["Exhibit placements", stats.exhibitInsights.placements]
     ].forEach(([label, value]) => {
         const card = document.createElement("div");
         card.className = "statsMetric";
@@ -5057,7 +6492,7 @@ function renderStatsPage() {
         });
         tagSection.appendChild(tags);
     }
-    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderImageDraftStats(stats.draftInsights), renderReactionTimingStats(stats.reactionInsights));
+    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderImageDraftStats(stats.draftInsights), renderExhibitStats(stats.exhibitInsights), renderReactionTimingStats(stats.reactionInsights));
     els.messages.appendChild(page);
 }
 
@@ -5091,27 +6526,42 @@ function renderImageDraftStats(insights) {
         overview.appendChild(card);
     });
     section.appendChild(overview);
-    if (insights.spots.length) {
-        section.appendChild(createStatsBarChart(
-            "Draft-position distribution",
-            "How often local images have been assigned each spot.",
-            insights.spots.map((value, index) => ({ label: `#${index + 1}`, value, title: `Draft spot #${index + 1} · ${value} assignment${value === 1 ? "" : "s"}` }))
-        ));
-    }
+    const repeatImages = insights.images.filter((image) => image.count >= 2)
+        .sort((a, b) => a.average - b.average || a.weightedAverage - b.weightedAverage || b.count - a.count);
+    const highlight = document.createElement("p");
+    highlight.className = "imageDraftCensorStat";
+    if (repeatImages.length) {
+        const mostRepeated = [...repeatImages].sort((a, b) => b.count - a.count || a.average - b.average)[0];
+        const mostConsistent = [...repeatImages].sort((a, b) => a.spread - b.spread || a.average - b.average)[0];
+        highlight.textContent = `Repeat contenders: ${repeatImages.length}. Most repeated: ${mostRepeated.label} (${mostRepeated.count} drafts). Most consistent: ${mostConsistent.label} (range #${mostConsistent.spread}).`;
+    } else highlight.textContent = "Repeat-image highlights appear after an image has been drafted at least twice.";
     const imageList = document.createElement("section");
-    imageList.className = "statsTimingList imageDraftImageStats";
+    imageList.className = "imageDraftStatsGallery";
     const imageHeading = document.createElement("h4");
-    imageHeading.textContent = "Individual image averages";
+    imageHeading.textContent = "Repeat image averages";
     imageList.appendChild(imageHeading);
-    insights.images.slice(0, 20).forEach((image) => {
-        const row = document.createElement("button");
-        row.type = "button";
+    repeatImages.slice(0, 24).forEach((image) => {
+        const row = document.createElement("article");
+        row.className = "imageDraftStatsCard";
+        const attachment = findAttachment(image.ref);
+        if (attachment) {
+            const photo = document.createElement("img");
+            setRenderedImageSource(photo, attachment);
+            photo.alt = image.label;
+            photo.addEventListener("click", () => openImageViewer(attachment, image.label));
+            row.appendChild(photo);
+        }
+        const detail = document.createElement("div");
         const label = document.createElement("strong");
         label.textContent = image.label;
-        const detail = document.createElement("span");
-        detail.textContent = `# ${image.channelName} · average #${image.average.toFixed(1)} · ${image.count} draft${image.count === 1 ? "" : "s"} · best #${image.best}`;
-        row.append(label, detail);
-        row.addEventListener("click", () => openView("channel", image.ref.channelId));
+        const stats = document.createElement("span");
+        stats.textContent = `# ${image.channelName} · avg #${image.average.toFixed(1)} · weighted #${image.weightedAverage.toFixed(1)} · ${image.count} drafts`;
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = "Open source";
+        open.addEventListener("click", () => openView("channel", image.ref.channelId));
+        detail.append(label, stats, open);
+        row.appendChild(detail);
         imageList.appendChild(row);
     });
     const censor = document.createElement("p");
@@ -5119,7 +6569,60 @@ function renderImageDraftStats(insights) {
     censor.textContent = insights.censorDrafts
         ? `${insights.censorDrafts} censor-mode draft${insights.censorDrafts === 1 ? "" : "s"} · ${insights.censorCopies} saved blurred cop${insights.censorCopies === 1 ? "y" : "ies"} · ${insights.censorRegions} total blur regions.`
         : "No censor-mode drafts completed yet.";
-    section.append(imageList, censor);
+    section.append(highlight, imageList, censor);
+    return section;
+}
+
+function renderExhibitStats(insights) {
+    const section = document.createElement("section");
+    section.className = "statsSection exhibitStats";
+    const heading = document.createElement("h3");
+    heading.textContent = "Museum exhibit statistics";
+    const help = document.createElement("p");
+    help.textContent = "Tracks permanent exhibit placements and guided-tour stops. Hall of Fame nominations are independent and do not affect these totals.";
+    section.append(heading, help);
+    if (insights.exhibits === 0) {
+        section.appendChild(emptyPanel("No permanent exhibits yet. Add any local photo or GIF to an exhibit from the Museum channel."));
+        return section;
+    }
+    const overview = document.createElement("div");
+    overview.className = "statsInsightGrid";
+    [
+        ["Exhibits", insights.exhibits],
+        ["Photo placements", insights.placements],
+        ["Unique photos", insights.uniqueImages],
+        ["Collections", insights.collections]
+    ].forEach(([label, value]) => {
+        const card = document.createElement("article");
+        card.className = "statsInsightMetric";
+        const number = document.createElement("strong");
+        number.textContent = String(value);
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        card.append(number, caption);
+        overview.appendChild(card);
+    });
+    const imageList = document.createElement("section");
+    imageList.className = "statsTimingList exhibitImageStats";
+    const imageHeading = document.createElement("h4");
+    imageHeading.textContent = "Most exhibited photos";
+    imageList.appendChild(imageHeading);
+    insights.images.slice(0, 20).forEach((image) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        const label = document.createElement("strong");
+        label.textContent = image.label;
+        const detail = document.createElement("span");
+        const exhibits = image.appearances.map((appearance) => appearance.exhibitTitle).join(", ");
+        detail.textContent = `# ${image.channelName} · ${image.exhibitCount} exhibit${image.exhibitCount === 1 ? "" : "s"} · ${exhibits}`;
+        row.append(label, detail);
+        row.addEventListener("click", () => openView("channel", image.ref.channelId));
+        imageList.appendChild(row);
+    });
+    const tags = document.createElement("p");
+    tags.className = "exhibitStatsFootnote";
+    tags.textContent = `${insights.collections} collection${insights.collections === 1 ? "" : "s"} and ${insights.tags} exhibit tag${insights.tags === 1 ? "" : "s"} are in use.`;
+    section.append(overview, imageList, tags);
     return section;
 }
 
@@ -5376,13 +6879,16 @@ async function attachmentToBackup(attachment) {
 
 async function exportLocalBackup() {
     const entries = await getAllChannelMessages();
-    const messages = await Promise.all(entries.map(async ({ channelId, messages: channelMessages }) => ({
-        channelId,
-        messages: await Promise.all(channelMessages.map(async (message) => ({
-            ...message,
-            attachments: await Promise.all((message.attachments || []).map(attachmentToBackup))
-        })))
-    })));
+    const messages = [];
+    for (const { channelId, messages: channelMessages } of entries) {
+        const copiedMessages = [];
+        for (const message of channelMessages) {
+            const attachments = [];
+            for (const attachment of (message.attachments || [])) attachments.push(await attachmentToBackup(attachment));
+            copiedMessages.push({ ...message, attachments });
+        }
+        messages.push({ channelId, messages: copiedMessages });
+    }
     const backup = { format: "knowledge-discord-backup", version: 1, exportedAt: new Date().toISOString(), structure: state.structure, messages };
     const url = URL.createObjectURL(new Blob([JSON.stringify(backup)], { type: "application/json" }));
     const link = document.createElement("a");
@@ -7367,10 +8873,8 @@ function renderAdventureMedia(adventureId, sceneId, ref) {
     const attachment = findAttachment(ref);
     if (attachment) {
         const image = document.createElement("img");
-        const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
-        image.src = objectUrl || attachment.dataUrl || "";
+        setRenderedImageSource(image, attachment);
         image.alt = attachment.note || attachment.name || "Adventure media";
-        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         wrap.appendChild(image);
     } else {
         wrap.appendChild(emptyPanel("Missing source media"));
@@ -8301,10 +9805,8 @@ function renderAdventurePlayerMedia(ref, caption = "") {
         return wrap;
     }
     const image = document.createElement("img");
-    const objectUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
-    image.src = objectUrl || attachment.dataUrl || "";
+    setRenderedImageSource(image, attachment);
     image.alt = caption || attachment.note || attachment.name || "Adventure media";
-    if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
     image.addEventListener("click", () => openImageViewer(attachment, image.alt));
     wrap.appendChild(image);
     if (caption) {
@@ -9032,10 +10534,8 @@ function renderLinkedPhotoReferences(message) {
         const button = document.createElement("button");
         button.type = "button";
         const image = document.createElement("img");
-        const objectUrl = item.attachment.blob ? URL.createObjectURL(item.attachment.blob) : "";
-        image.src = objectUrl || item.attachment.dataUrl || "";
+        setRenderedImageSource(image, item.attachment);
         image.alt = item.alt;
-        if (objectUrl) image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         const label = document.createElement("span");
         label.textContent = `# ${item.channelName}`;
         button.append(image, label);
@@ -9116,7 +10616,7 @@ function renderAttachments(attachments, message, channelId) {
 function renderComposer() {
     const hasChannel = Boolean(state.activeChannelId);
     const channel = getActiveChannel();
-    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
+    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isThisOrThatChannel || channel?.isHolisticRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
     const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel" && !isGalleryChannel;
     const canCompose = enabled && !state.pendingMessageSave;
     els.noteInput.disabled = !canCompose;
@@ -10065,7 +11565,7 @@ async function saveRandomPhotoArray() {
     ];
     state.messagesByChannel.set(channel.id, messages);
     state.channelMessageCounts.set(channel.id, (state.channelMessageCounts.get(channel.id) ?? messages.length - newMessages.length) + newMessages.length);
-    await Promise.all(newMessages.map((message) => saveChannelMessage(channel.id, message)));
+    for (const message of newMessages) await saveChannelMessage(channel.id, message);
     await saveStructure(state.structure);
 
     state.randomPhotoArray = [];
@@ -10276,7 +11776,15 @@ function startMetronome() {
     }
     metronomeContext ||= new AudioContextClass();
     metronomeContext.resume().catch(() => {});
-    const period = 60000 / getMetronomeSettings().bpm;
+    const settings = getMetronomeSettings();
+    els.metronomeBpm.value = settings.bpm;
+    // Any tool that starts a beat (drafts, slideshows, adventures, or the timer)
+    // now leaves the same BPM behind for every workspace tab.
+    if (state.structure.settings.metronomeBpm !== settings.bpm) {
+        state.structure.settings.metronomeBpm = settings.bpm;
+        void saveStructure(state.structure).catch(() => {});
+    }
+    const period = 60000 / settings.bpm;
     playMetronomeClick();
     metronomeTimer = window.setInterval(playMetronomeClick, period);
     renderMetronome();
@@ -10474,11 +11982,14 @@ function setRenderedImageSource(image, attachment) {
     if (!objectUrl) return;
 
     state.renderObjectUrls.add(objectUrl);
+    // Keep the object URL alive for the lifetime of this render. Revoking it
+    // immediately after `load` is usually fine on desktop, but iOS can later
+    // discard the decoded frame and leave a previously visible local image
+    // blank. `releaseRenderedObjectUrls` frees these on the next render.
     const release = () => {
         if (!state.renderObjectUrls.delete(objectUrl)) return;
         URL.revokeObjectURL(objectUrl);
     };
-    image.addEventListener("load", release, { once: true });
     image.addEventListener("error", release, { once: true });
 }
 
