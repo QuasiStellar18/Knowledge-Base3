@@ -1199,6 +1199,1214 @@ select:focus-visible {
     font-weight: 700;
 }
 
+.rouletteSlideshow {
+    display: grid;
+    gap: 14px;
+    width: min(900px, 100%);
+    margin: 0 auto;
+}
+
+.rouletteSlideshowControls {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.rouletteSlideshowControls label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.rouletteSlideshowControls input {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.rouletteSlideshowActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.rouletteSlideshowActions button {
+    min-height: 46px;
+    padding: 0 12px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.rouletteSlideshowFrame {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    min-height: min(64dvh, 680px);
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #111214;
+}
+
+.rouletteSlideshowFrame img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    object-fit: contain;
+    cursor: zoom-in;
+}
+
+.rouletteSlideshowFrame figcaption {
+    overflow: hidden;
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rouletteSlideshowProgress {
+    height: 5px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, .1);
+}
+
+.rouletteSlideshowProgress span {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--accent);
+}
+
+.rouletteSlideshowNote {
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+    color: var(--muted);
+}
+
+.imageDraft {
+    display: grid;
+    gap: 14px;
+    width: min(960px, 100%);
+    margin: 0 auto;
+}
+
+.imageDraftSetup {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.imageDraftSetup label {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.imageDraftSetup input[type="number"],
+.imageDraftSetup select {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #1e1f22;
+    color: var(--text);
+}
+
+.imageDraftToggle,
+.imageDraftPreview {
+    grid-column: 1 / -1;
+}
+
+.imageDraftToggle {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    color: var(--text) !important;
+    font-size: 14px !important;
+}
+
+.imageDraftWinnerStay {
+    display: flex !important;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    color: var(--text) !important;
+    font-size: 14px !important;
+}
+
+.imageDraftPreview {
+    margin: 0;
+    padding: 10px;
+    border-radius: 7px;
+    background: rgba(88, 101, 242, .13);
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.imageDraft > .adventurePrimary {
+    justify-self: center;
+    min-height: 46px;
+    padding: 0 18px;
+}
+
+.imageDraftOrder,
+.imageDraftResultList,
+.imageDraftSlots {
+    display: grid;
+    gap: 8px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.imageDraftOrderItem,
+.imageDraftSlots button,
+.imageDraftBack {
+    min-height: 42px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--panel-hover);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.imageDraftSlots {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.imageDraftSlots > strong { grid-column: 1 / -1; }
+
+.imageDraftSlots button:disabled { opacity: .46; cursor: not-allowed; }
+
+.imageDraftGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 10px;
+}
+
+.imageDraftCandidate {
+    position: relative;
+    display: grid;
+    grid-template-rows: 128px auto;
+    overflow: hidden;
+    min-width: 0;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--panel-bg);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.imageDraftCandidate:hover { border-color: var(--accent); }
+.imageDraftCandidate:disabled { cursor: default; opacity: .72; }
+
+.imageDraftCandidate img {
+    display: block;
+    width: 100%;
+    height: 128px;
+    object-fit: cover;
+}
+
+.imageDraftCandidateDetail {
+    display: grid;
+    gap: 3px;
+    padding: 8px;
+}
+
+.imageDraftCandidateDetail strong,
+.imageDraftCandidateDetail small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.imageDraftCandidateDetail strong { font-size: 13px; }
+.imageDraftCandidateDetail small { color: var(--muted); font-size: 12px; }
+
+.imageDraftRankBadge {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    min-width: 30px;
+    padding: 5px 7px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: white;
+    font-weight: 900;
+    text-align: center;
+}
+
+.imageDraftActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.imageDraftActions button,
+.imageDraftBack {
+    min-height: 46px;
+    padding: 0 12px;
+    border-radius: var(--radius);
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.imageDraftBlindMedia,
+.imageDraftPlaybackFrame {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    min-height: min(62dvh, 680px);
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: #111214;
+}
+
+.imageDraftBlindMedia img,
+.imageDraftPlaybackFrame img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    object-fit: contain;
+    cursor: zoom-in;
+}
+
+.imageDraftPlaybackFrame figcaption {
+    padding: 10px 12px;
+    color: var(--muted);
+    text-align: center;
+}
+
+.imageDraftResultItem {
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    min-height: 70px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.imageDraftResultItem img {
+    width: 70px;
+    height: 54px;
+    border-radius: 5px;
+    object-fit: cover;
+}
+
+.imageDraftResultItem div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.imageDraftResultItem strong,
+.imageDraftResultItem span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.imageDraftResultItem span { color: var(--muted); font-size: 12px; }
+
+.imageDraftCensor .adventurePlayerMediaItem { min-height: min(52dvh, 580px); }
+
+.imageDraftCensorStat {
+    margin: 0;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.draftRankingsChannel {
+    display: grid;
+    gap: 14px;
+    width: min(960px, 100%);
+    margin: 0 auto;
+}
+
+.draftRankingsList {
+    display: grid;
+    gap: 10px;
+}
+
+.draftRankingItem {
+    display: grid;
+    grid-template-columns: auto 82px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-bg);
+}
+
+.draftRankingPosition {
+    min-width: 35px;
+    color: var(--accent);
+    font-size: 17px;
+    text-align: center;
+}
+
+.draftRankingItem > img {
+    width: 82px;
+    height: 62px;
+    border-radius: 7px;
+    object-fit: cover;
+    cursor: zoom-in;
+}
+
+.draftRankingDetail {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.draftRankingDetail strong,
+.draftRankingDetail span,
+.draftRankingDetail small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.draftRankingDetail span { color: var(--text); font-size: 13px; }
+.draftRankingDetail small { color: var(--muted); font-size: 12px; }
+
+.draftRankingActions {
+    display: grid;
+    gap: 6px;
+}
+
+.draftRankingActions button {
+    min-height: 34px;
+    padding: 0 9px;
+    border-radius: 7px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.draftRankingActions button:disabled { opacity: .55; cursor: default; }
+
+.hallOfFame {
+    display: grid;
+    gap: 18px;
+    width: min(1120px, 100%);
+    margin: 0 auto;
+}
+
+.hallOfFameIntro {
+    padding: clamp(20px, 5vw, 42px);
+    border: 1px solid rgba(255, 215, 112, .42);
+    border-radius: 18px;
+    background:
+        radial-gradient(circle at 50% 0%, rgba(255, 213, 107, .22), transparent 52%),
+        linear-gradient(135deg, #251818, #16121c 56%, #1f1720);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04), 0 18px 42px rgba(0, 0, 0, .22);
+    text-align: center;
+}
+
+.hallOfFameIntro h3 {
+    margin: 4px 0 9px;
+    color: #ffe6a6;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(26px, 5vw, 40px);
+    letter-spacing: .04em;
+}
+
+.hallOfFameIntro p { margin: 0; color: #d7cfc4; line-height: 1.5; }
+
+.hallOfFameKicker {
+    color: #f8ce68 !important;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .16em;
+}
+
+.hallOfFameCurate {
+    justify-self: center;
+    min-height: 44px;
+    padding: 0 15px;
+    border: 1px solid rgba(255, 215, 112, .42);
+    border-radius: 999px;
+    background: rgba(255, 215, 112, .1);
+    color: #ffe5a5;
+    cursor: pointer;
+    font-weight: 850;
+}
+
+.hallOfFameGallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+    gap: 16px;
+}
+
+.hallOfFameExhibit {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid rgba(255, 215, 112, .34);
+    border-radius: 14px;
+    background: linear-gradient(150deg, #262027, #1c1b22);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .24);
+}
+
+.hallOfFameExhibit > img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1.22 / 1;
+    object-fit: contain;
+    background: #0e0c11;
+    cursor: zoom-in;
+}
+
+.hallOfFameDetail {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+}
+
+.hallOfFameDetail h4 {
+    margin: 0;
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 20px;
+}
+
+.hallOfFameStats {
+    margin: 0;
+    color: #d2cbc2;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.hallOfFameBlurb {
+    display: grid;
+    gap: 6px;
+    color: #f3d997;
+    font-size: 13px;
+    font-weight: 750;
+}
+
+.hallOfFameBlurb textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 88px;
+    padding: 10px;
+    border: 1px solid rgba(255, 215, 112, .3);
+    border-radius: 8px;
+    background: rgba(9, 8, 11, .4);
+    color: var(--text);
+    font: inherit;
+    font-weight: 400;
+    line-height: 1.45;
+}
+
+.hallOfFameVariants {
+    display: grid;
+    gap: 7px;
+    padding-top: 2px;
+}
+
+.hallOfFameVariants > strong { color: #f3d997; font-size: 13px; }
+
+.hallOfFameVariants > p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.hallOfFameVariantGrid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.hallOfFameVariantGrid button {
+    display: grid;
+    gap: 3px;
+    width: 74px;
+    padding: 4px;
+    border: 1px solid rgba(255, 215, 112, .25);
+    border-radius: 6px;
+    background: rgba(9, 8, 11, .35);
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.hallOfFameVariantGrid img {
+    width: 64px;
+    height: 50px;
+    border-radius: 4px;
+    object-fit: cover;
+}
+
+.hallOfFameVariantGrid small {
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hallOfFameActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.hallOfFameActions button {
+    min-height: 38px;
+    padding: 0 10px;
+    border-radius: 7px;
+    background: rgba(255, 226, 151, .12);
+    color: #ffe5a5;
+    cursor: pointer;
+    font-weight: 750;
+}
+
+.museumExhibits,
+.museumExhibitDetail {
+    display: grid;
+    gap: 16px;
+    width: min(1100px, 100%);
+    margin: 0 auto;
+}
+
+.museumExhibits > .adventurePrimary {
+    justify-self: center;
+    min-height: 46px;
+    padding: 0 18px;
+}
+
+.museumExhibitFilters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--panel-bg);
+}
+
+.museumExhibitFilters label,
+.museumCurationPlaque {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 750;
+}
+
+.museumExhibitFilters select {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #111214;
+    color: var(--text);
+    font: inherit;
+}
+
+.museumExhibitsIntro,
+.museumExhibitHeader {
+    display: grid;
+    gap: 9px;
+    padding: clamp(18px, 4vw, 34px);
+    border: 1px solid rgba(255, 215, 112, .35);
+    border-radius: 16px;
+    background: linear-gradient(130deg, #171924, #251e29);
+}
+
+.museumExhibitsIntro > p {
+    margin: 0;
+    color: #f8ce68;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .14em;
+}
+
+.museumExhibitsIntro h3,
+.museumExhibitHeader h3 {
+    margin: 0;
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(26px, 5vw, 38px);
+}
+
+.museumExhibitsIntro > span,
+.museumExhibitHeader > p { color: var(--muted); line-height: 1.5; }
+.museumExhibitHeader > p { margin: 0; }
+.museumExhibitNote { white-space: pre-wrap; }
+
+.museumExhibitLabels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.museumCollectionChip,
+.museumTagChip {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    min-height: 24px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.museumCollectionChip {
+    border: 1px solid rgba(248, 206, 104, .55);
+    background: rgba(248, 206, 104, .14);
+    color: #ffe5a5;
+}
+
+.museumTagChip {
+    border: 1px solid rgba(171, 177, 255, .4);
+    background: rgba(171, 177, 255, .12);
+    color: #daddff;
+}
+
+.museumExhibitHeader > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.museumExhibitHeader button,
+.museumExhibitBack {
+    min-height: 40px;
+    padding: 0 11px;
+    border-radius: 7px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 750;
+}
+
+.museumExhibitGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 14px;
+}
+
+.museumExhibitCard {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid rgba(255, 215, 112, .27);
+    border-radius: 12px;
+    background: var(--panel-bg);
+}
+
+.museumExhibitCard > img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1.55 / 1;
+    object-fit: cover;
+    background: #111214;
+}
+
+.museumExhibitCard > div {
+    display: grid;
+    gap: 7px;
+    padding: 12px;
+}
+
+.museumExhibitCard h4 {
+    margin: 0;
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 20px;
+}
+
+.museumExhibitCard p { margin: 0; color: var(--muted); line-height: 1.4; }
+.museumExhibitCard small { color: var(--subtle); }
+.museumExhibitCard > div > div { display: flex; gap: 7px; }
+
+.museumExhibitCard button {
+    min-height: 38px;
+    padding: 0 10px;
+    border-radius: 7px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 750;
+}
+
+.museumExhibitPhotoGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+}
+
+.museumExhibitPhoto {
+    position: relative;
+    display: grid;
+    overflow: hidden;
+    border: 1px solid rgba(255, 215, 112, .28);
+    border-radius: 10px;
+    background: var(--panel-bg);
+}
+
+.museumExhibitPhoto > span {
+    position: absolute;
+    z-index: 1;
+    top: 8px;
+    left: 8px;
+    min-width: 26px;
+    padding: 4px 6px;
+    border-radius: 999px;
+    background: rgba(17, 18, 20, .86);
+    color: #ffe5a5;
+    text-align: center;
+    font-weight: 900;
+}
+
+.museumExhibitPhoto img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    cursor: zoom-in;
+}
+
+.museumExhibitPhoto small { padding: 8px 10px; color: var(--muted); }
+
+.museumExhibitPlaque {
+    margin: 0;
+    padding: 0 10px 11px;
+    color: #e5ddce;
+    white-space: pre-wrap;
+    line-height: 1.45;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 14px;
+}
+
+.museumGuidedTour {
+    display: grid;
+    gap: 13px;
+    width: min(900px, 100%);
+    margin: 0 auto;
+}
+
+.museumTourHeader,
+.museumTourPlaque {
+    display: grid;
+    gap: 8px;
+    padding: clamp(15px, 3vw, 24px);
+    border: 1px solid rgba(255, 215, 112, .35);
+    border-radius: 14px;
+    background: linear-gradient(130deg, #171924, #251e29);
+}
+
+.museumTourHeader > p {
+    margin: 0;
+    color: #f8ce68;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .14em;
+}
+
+.museumTourHeader h3 {
+    margin: 0;
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: clamp(25px, 5vw, 36px);
+}
+
+.museumTourHeader > span,
+.museumTourPlaque small { color: var(--muted); }
+
+.museumTourHeader button,
+.museumTourControls button {
+    min-height: 42px;
+    padding: 0 12px;
+    border-radius: 8px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.museumTourHeader button { justify-self: start; }
+
+.museumTourFrame {
+    display: grid;
+    overflow: hidden;
+    min-height: min(58dvh, 720px);
+    border: 1px solid rgba(255, 215, 112, .28);
+    border-radius: 14px;
+    background: #0f1012;
+}
+
+.museumTourFrame > img {
+    display: block;
+    width: 100%;
+    height: min(66dvh, 720px);
+    object-fit: contain;
+    cursor: zoom-in;
+}
+
+.museumTourPlaque strong {
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 18px;
+}
+
+.museumTourPlaque p {
+    margin: 0;
+    color: #eee6d9;
+    white-space: pre-wrap;
+    line-height: 1.55;
+    font-family: Georgia, "Times New Roman", serif;
+}
+
+.museumTourControls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+}
+
+.museumTourControls button:last-child {
+    background: #5a3e16;
+    color: #fff0c7;
+}
+
+.museumCurationModal {
+    position: fixed;
+    z-index: 350;
+    inset: 0;
+    display: grid;
+    overflow: auto;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    background: rgba(0, 0, 0, .72);
+}
+
+.museumCurationCard {
+    display: grid;
+    align-content: start;
+    gap: 11px;
+    width: min(850px, 100%);
+    margin: auto;
+    padding: 15px;
+    border: 1px solid rgba(255, 215, 112, .34);
+    border-radius: 14px;
+    background: #1e1f22;
+}
+
+.museumCurationCard h3,
+.museumCurationCard p { margin: 0; }
+.museumCurationCard p { color: var(--muted); line-height: 1.4; }
+
+.museumCurationCard input,
+.museumCurationCard textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #111214;
+    color: var(--text);
+    font: inherit;
+}
+
+.museumCurationCard textarea { resize: vertical; line-height: 1.4; }
+.museumCurationSelection { color: #ffe5a5 !important; font-weight: 750; }
+
+.museumCurationCover {
+    display: grid;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.museumCurationCover select {
+    min-height: 42px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #111214;
+    color: var(--text);
+}
+
+.museumCurationGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 9px;
+    max-height: min(44dvh, 480px);
+    overflow-y: auto;
+}
+
+.museumCurationChoice {
+    display: grid;
+    gap: 5px;
+    overflow: hidden;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-bg);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.museumCurationChoice.isSelected { border-color: #f8ce68; box-shadow: inset 0 0 0 1px rgba(248, 206, 104, .45); }
+.museumCurationChoice img { width: 100%; aspect-ratio: 1 / 1; border-radius: 5px; object-fit: cover; }
+.museumCurationChoice span,
+.museumCurationChoice small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.museumCurationChoice span { font-size: 12px; font-weight: 700; }
+.museumCurationChoice small { color: var(--muted); font-size: 11px; }
+
+.museumCurationMore {
+    justify-self: center;
+    min-height: 40px;
+    padding: 0 12px;
+    border-radius: 7px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.museumCurationTourHeading {
+    margin: 5px 0 0;
+    color: #ffe5a5;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 21px;
+}
+
+.museumCurationTourHelp { font-size: 13px; }
+
+.museumCurationTourPlan {
+    display: grid;
+    gap: 9px;
+    max-height: min(55dvh, 700px);
+    overflow-y: auto;
+    padding: 2px;
+}
+
+.museumCurationTourEmpty {
+    padding: 12px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--muted) !important;
+}
+
+.museumCurationTourStop {
+    display: grid;
+    grid-template-columns: 34px 72px minmax(110px, 1fr) auto;
+    grid-template-areas: "number image detail order" "number plaque plaque plaque";
+    gap: 8px;
+    align-items: start;
+    padding: 8px;
+    border: 1px solid rgba(255, 215, 112, .25);
+    border-radius: 9px;
+    background: #15161a;
+}
+
+.museumCurationTourNumber {
+    grid-area: number;
+    display: grid;
+    place-items: center;
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 999px;
+    background: rgba(248, 206, 104, .18);
+    color: #ffe5a5;
+    font-weight: 900;
+}
+
+.museumCurationTourStop > img {
+    grid-area: image;
+    width: 72px;
+    height: 58px;
+    border-radius: 5px;
+    object-fit: cover;
+    background: #0f1012;
+}
+
+.museumCurationTourStop > div:nth-of-type(1) {
+    grid-area: detail;
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.museumCurationTourStop strong,
+.museumCurationTourStop small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.museumCurationTourStop strong { color: var(--text); font-size: 13px; }
+.museumCurationTourStop small { color: var(--muted); font-size: 12px; }
+
+.museumCurationTourOrder {
+    grid-area: order;
+    display: flex;
+    gap: 5px;
+}
+
+.museumCurationTourOrder button {
+    width: 35px;
+    min-height: 36px;
+    border-radius: 7px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 900;
+}
+
+.museumCurationTourOrder button:disabled {
+    cursor: not-allowed;
+    opacity: .42;
+}
+
+.museumCurationPlaque {
+    grid-area: plaque;
+    padding-top: 2px;
+}
+
+.museumCurationPlaque textarea { min-height: 68px; }
+
+.museumCurationActions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+}
+
+.museumCurationActions button {
+    min-height: 44px;
+    padding: 0 11px;
+    border-radius: 8px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.imageDraftWheelStage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: min(58dvh, 640px);
+    padding: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(88, 101, 242, .16), #111214 66%);
+}
+
+.imageDraftWheelCanvas {
+    display: block;
+    width: min(100%, 540px);
+    height: auto;
+    will-change: transform;
+}
+
+.imageDraftWheelPointer {
+    position: absolute;
+    z-index: 2;
+    top: 7px;
+    left: 50%;
+    width: 0;
+    height: 0;
+    transform: translateX(-50%);
+    border-right: 17px solid transparent;
+    border-left: 17px solid transparent;
+    border-top: 31px solid #ffffff;
+    filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .6));
+}
+
+.imageDraftWheelLegend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+}
+
+.imageDraftWheelLegend span {
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.imageDraftWinnerStatus {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid rgba(88, 101, 242, .46);
+    border-radius: 8px;
+    background: rgba(88, 101, 242, .13);
+    color: var(--text);
+    text-align: center;
+}
+
+.imageDraftWheelResult {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: min(58dvh, 650px);
+    margin: 0;
+    overflow: hidden;
+    border: 1px solid rgba(255, 215, 112, .45);
+    border-radius: var(--radius);
+    background: #111214;
+}
+
+.imageDraftWheelResult img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    object-fit: contain;
+    cursor: zoom-in;
+}
+
+.imageDraftWheelResult figcaption {
+    padding: 10px;
+    color: #ffe5a5;
+    text-align: center;
+}
+
 .channelQuiz {
     display: grid;
     gap: 14px;
@@ -3260,6 +4468,74 @@ video.embed {
     transform: scale(.985);
 }
 
+.censorEditor {
+    position: fixed;
+    z-index: 340;
+    inset: 0;
+    display: grid;
+    overflow: auto;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    background: rgba(0, 0, 0, .72);
+}
+
+.censorEditorCard {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    width: min(900px, 100%);
+    margin: auto;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: #1e1f22;
+}
+
+.censorEditorCard h3,
+.censorEditorHelp,
+.censorEditorStatus { margin: 0; }
+
+.censorEditorHelp,
+.censorEditorStatus {
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+.censorCanvasWrap {
+    display: grid;
+    place-items: center;
+    min-height: min(42dvh, 360px);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: #111214;
+}
+
+.censorCanvas {
+    display: block;
+    max-width: 100%;
+    max-height: min(58dvh, 660px);
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.censorEditorControls {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.censorEditorControls button {
+    min-height: 44px;
+    padding: 0 10px;
+    border-radius: 8px;
+    background: var(--panel-hover);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 750;
+}
+
+.censorEditorControls button:disabled { opacity: .48; cursor: not-allowed; }
+
 @keyframes actionSheetFade {
     from { opacity: 0; }
     to { opacity: 1; }
@@ -3731,6 +5007,47 @@ button:disabled {
         grid-template-columns: 1fr;
     }
 
+    .rouletteSlideshowControls {
+        grid-template-columns: 1fr 1fr;
+        padding: 11px;
+    }
+
+    .rouletteSlideshowFrame { min-height: min(52dvh, 560px); }
+
+    .censorEditorCard { padding: 12px; }
+    .censorCanvasWrap { min-height: min(38dvh, 300px); }
+    .censorEditorControls { grid-template-columns: 1fr 1fr; }
+
+    .imageDraftSetup { grid-template-columns: 1fr; padding: 11px; }
+    .imageDraftSlots { grid-template-columns: 1fr 1fr; padding: 11px; }
+    .imageDraftGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .imageDraftCandidate { grid-template-rows: 116px auto; }
+    .imageDraftCandidate img { height: 116px; }
+    .imageDraftBlindMedia,
+    .imageDraftPlaybackFrame { min-height: min(50dvh, 520px); }
+    .imageDraftResultList,
+    .imageDraftOrder,
+    .imageDraftSlots { padding: 11px; }
+    .draftRankingItem { grid-template-columns: 34px 64px minmax(0, 1fr); gap: 8px; padding: 8px; }
+    .draftRankingItem > img { width: 64px; height: 52px; }
+    .draftRankingActions { grid-column: 2 / -1; grid-template-columns: 1fr 1fr; }
+    .hallOfFameGallery { grid-template-columns: 1fr; }
+    .imageDraftWheelStage { min-height: min(48dvh, 480px); padding: 12px; }
+    .imageDraftWheelResult { min-height: min(46dvh, 520px); }
+    .museumExhibitGrid { grid-template-columns: 1fr; }
+    .museumExhibitPhotoGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .museumExhibitFilters { grid-template-columns: 1fr; }
+    .museumTourFrame { min-height: min(48dvh, 540px); }
+    .museumTourFrame > img { height: min(58dvh, 590px); }
+    .museumCurationTourStop {
+        grid-template-columns: 30px 60px minmax(0, 1fr);
+        grid-template-areas: "number image detail" "number plaque plaque" "number order order";
+    }
+    .museumCurationTourStop > img { width: 60px; height: 52px; }
+    .museumCurationTourOrder { justify-content: end; }
+    .museumCurationCard { padding: 12px; }
+    .museumCurationGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: min(42dvh, 420px); }
+
     .searchWrap {
         grid-column: 1 / -1;
         width: 100%;
@@ -4058,6 +5375,25 @@ button:disabled {
     .focusSessionSetup { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .focusSessionControls { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     .focusSessionControls button { min-height: 36px; padding: 0 7px; font-size: 12px; }
+    .rouletteSlideshowControls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .rouletteSlideshowFrame { min-height: min(58dvh, 620px); }
+    .censorEditorCard { width: min(1000px, 100%); }
+    .censorCanvasWrap { min-height: min(58dvh, 560px); }
+    .censorEditorControls { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .imageDraftSetup { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .imageDraftGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .imageDraftCandidate { grid-template-rows: 94px auto; }
+    .imageDraftCandidate img { height: 94px; }
+    .imageDraftBlindMedia,
+    .imageDraftPlaybackFrame { min-height: min(55dvh, 600px); }
+    .hallOfFameGallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .imageDraftWheelStage { min-height: min(60dvh, 620px); }
+    .museumExhibitGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .museumExhibitPhotoGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .museumTourFrame { min-height: min(48dvh, 520px); }
+    .museumTourFrame > img { height: min(58dvh, 620px); }
+    .museumCurationTourPlan { max-height: min(45dvh, 500px); }
+    .museumCurationGrid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 
     .adventureIntro,
     .adventureDetails,
