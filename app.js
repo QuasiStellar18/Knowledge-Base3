@@ -45,6 +45,10 @@ const DEFAULT_STRUCTURE = {
         showHiddenPhotos: false,
         interfaceMode: "classic",
         colorPalette: "discord",
+        rouletteSlideshowSettings: {},
+        draftHistory: [],
+        hallOfFame: [],
+        museumExhibits: [],
         channelQuizSettings: {},
         channelQuizHighScores: {},
         channelQuizPresets: {}
@@ -96,6 +100,8 @@ const state = {
     randomZoomSize: 60,
     randomZoomPreset: "normal",
     randomZoomSlideshowMs: 5000,
+    rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
+    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
     isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -105,6 +111,10 @@ const state = {
     focusAdventureSceneId: null,
     adventureEditorStage: "setup",
     streamlinedAdventureSceneId: null,
+    activeMuseumExhibitId: null,
+    museumCollectionFilter: "",
+    museumTagFilter: "",
+    museumTour: null,
     pendingMessageSave: false,
     lastSaveError: "",
     renderObjectUrls: new Set(),
@@ -125,6 +135,10 @@ let adventureAutoAdvanceStartedMetronome = false;
 let channelQuizPunishmentTimer;
 let channelQuizAdvanceTimer;
 let randomZoomSlideshowTimer;
+let rouletteSlideshowTimer;
+let imageDraftSlideshowTimer;
+let imageDraftWheelTimer;
+let imageDraftWinnerTimer;
 
 const els = {
     app: document.getElementById("app"),
@@ -222,10 +236,12 @@ async function initApp() {
         state.structure = normalizeStructure(savedStructure);
         const createdAdventureServer = ensureAdventureServer();
         const createdInbox = ensureInboxChannel();
+        const createdDraftGallery = ensureDraftGalleryFolder();
+        const createdMuseum = ensureMuseumFolder();
         selectInitialChannel();
         hydrateSettingsControls();
         state.ready = true;
-        if (createdInbox || createdAdventureServer) await saveStructure(state.structure);
+        if (createdInbox || createdAdventureServer || createdDraftGallery || createdMuseum) await saveStructure(state.structure);
         if (state.isUnlocked) {
             // Never leave a saved, already-unlocked session trapped behind the
             // lock screen while a large channel is still being read.
@@ -358,6 +374,10 @@ async function unlockWorkspace(event) {
 function lockWorkspace() {
     stopMetronome();
     stopRandomZoomSlideshow();
+    stopRouletteSlideshow({ restoreMetronome: false, render: false });
+    stopImageDraftSlideshow({ restoreMetronome: false, render: false });
+    clearImageDraftWheelTimer();
+    stopImageDraftWinnerStay({ render: false });
     state.isUnlocked = false;
     saveUnlockSession(false);
     state.messagesByChannel.clear();
@@ -401,7 +421,10 @@ function normalizeStructure(savedStructure) {
         settings: {
             ...DEFAULT_STRUCTURE.settings,
             ...(base.settings || {}),
-            photoCollections: Array.isArray(base.settings?.photoCollections) ? base.settings.photoCollections : []
+            photoCollections: Array.isArray(base.settings?.photoCollections) ? base.settings.photoCollections : [],
+            draftHistory: Array.isArray(base.settings?.draftHistory) ? base.settings.draftHistory.slice(-200) : [],
+            hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame.slice(-300) : [],
+            museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : []
         }
     };
 
@@ -431,6 +454,8 @@ function normalizeServer(server, serverIndex) {
             name: category.name || "General",
             collapsed: Boolean(category.collapsed),
             hidden: Boolean(category.hidden),
+            isDraftGalleryCategory: Boolean(category.isDraftGalleryCategory),
+            isMuseumCategory: Boolean(category.isMuseumCategory),
             channels: (category.channels || []).map((channel, channelIndex) => {
                 const name = typeof channel === "string"
                     ? channel
@@ -443,7 +468,10 @@ function normalizeServer(server, serverIndex) {
                     name,
                     hidden: Boolean(channel.hidden),
                     isInboxChannel: Boolean(channel.isInboxChannel),
-                    isSavedArrayChannel: Boolean(channel.isSavedArrayChannel)
+                    isSavedArrayChannel: Boolean(channel.isSavedArrayChannel),
+                    isDraftRankingsChannel: Boolean(channel.isDraftRankingsChannel),
+                    isHallOfFameChannel: Boolean(channel.isHallOfFameChannel),
+                    isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel)
                 };
             })
         }))
@@ -467,6 +495,75 @@ function ensureInboxChannel() {
             category.channels.unshift({ id: uniqueId("channel", "inbox"), name: "inbox", isInboxChannel: true });
             changed = true;
         }
+    });
+    return changed;
+}
+
+function ensureDraftGalleryFolder() {
+    let changed = false;
+    state.structure.servers.forEach((server) => {
+        if (server.isAdventureServer) return;
+        let category = server.categories.find((item) => item.isDraftGalleryCategory);
+        if (!category) {
+            category = {
+                id: uniqueId("category", "draft-gallery"),
+                name: "Draft gallery",
+                collapsed: false,
+                hidden: false,
+                isDraftGalleryCategory: true,
+                channels: []
+            };
+            server.categories.push(category);
+            changed = true;
+        }
+        const ensureChannel = (name, flag) => {
+            let channel = category.channels.find((item) => item[flag]);
+            if (!channel) {
+                channel = { id: uniqueId("channel", name), name, [flag]: true };
+                category.channels.push(channel);
+                changed = true;
+            }
+            return channel;
+        };
+        ensureChannel("draft-rankings", "isDraftRankingsChannel");
+    });
+    return changed;
+}
+
+function ensureMuseumFolder() {
+    let changed = false;
+    state.structure.servers.forEach((server) => {
+        if (server.isAdventureServer) return;
+        let category = server.categories.find((item) => item.isMuseumCategory);
+        if (!category) {
+            category = {
+                id: uniqueId("category", "museum"),
+                name: "Museum",
+                collapsed: false,
+                hidden: false,
+                isMuseumCategory: true,
+                channels: []
+            };
+            server.categories.push(category);
+            changed = true;
+        }
+        const moveOrCreate = (name, flag) => {
+            let channel = allChannels(server).find((item) => item[flag]);
+            if (!channel) {
+                channel = { id: uniqueId("channel", name), name, [flag]: true };
+                category.channels.push(channel);
+                changed = true;
+                return;
+            }
+            const currentCategory = server.categories.find((item) => item.channels.some((candidate) => candidate.id === channel.id));
+            if (currentCategory?.id !== category.id) {
+                currentCategory.channels = currentCategory.channels.filter((candidate) => candidate.id !== channel.id);
+                category.channels.push(channel);
+                changed = true;
+            }
+        };
+        moveOrCreate("hall-of-fame", "isHallOfFameChannel");
+        moveOrCreate("exhibits", "isMuseumExhibitsChannel");
     });
     return changed;
 }
@@ -531,7 +628,10 @@ function normalizeMessages(messages) {
                 : [],
             tags: Array.isArray(message.tags) ? message.tags : extractTags(message.text || ""),
             attachments: Array.isArray(message.attachments) ? message.attachments : [],
-            linkedPhotoRefs: Array.isArray(message.linkedPhotoRefs) ? message.linkedPhotoRefs.filter((ref) => ref?.channelId && ref?.messageId && ref?.attachmentId) : []
+            linkedPhotoRefs: Array.isArray(message.linkedPhotoRefs) ? message.linkedPhotoRefs.filter((ref) => ref?.channelId && ref?.messageId && ref?.attachmentId) : [],
+            censoredFrom: message.censoredFrom?.channelId && message.censoredFrom?.messageId && message.censoredFrom?.attachmentId
+                ? structuredClone(message.censoredFrom)
+                : null
         };
     });
 }
@@ -869,6 +969,20 @@ function renderSpecialViews() {
     }));
     if (!getActiveServer()?.isAdventureServer) {
         group.appendChild(renderSmartChannelRow({
+            id: "roulette-slideshow",
+            type: "rouletteSlideshow",
+            label: "roulette slideshow",
+            prefix: "◌",
+            title: "Random local images, durations, and BPMs"
+        }));
+        group.appendChild(renderSmartChannelRow({
+            id: "image-draft",
+            type: "imageDraft",
+            label: "image draft",
+            prefix: "✦",
+            title: "Rank local images, then play their shuffled draft"
+        }));
+        group.appendChild(renderSmartChannelRow({
             id: "channel-quiz",
             type: "channelQuiz",
             label: "channel quiz",
@@ -995,6 +1109,10 @@ function renderChannelRow(channel) {
 
 async function openView(type, id) {
     if (type !== "randomZoom") stopRandomZoomSlideshow();
+    if (type !== "rouletteSlideshow") stopRouletteSlideshow({ render: false });
+    if (type !== "imageDraft") stopImageDraftSlideshow({ render: false });
+    if (type !== "imageDraft") clearImageDraftWheelTimer();
+    if (type !== "imageDraft") stopImageDraftWinnerStay({ render: false });
     if (["channelQuiz", "zoomQuiz"].includes(type) && state.activeView.type !== type) {
         window.clearTimeout(channelQuizPunishmentTimer);
         window.clearTimeout(channelQuizAdvanceTimer);
@@ -1015,6 +1133,9 @@ async function openView(type, id) {
         state.activeChannelId = id;
         state.activeServerId = getChannelServer(id)?.id || state.activeServerId;
         await loadActiveChannelMessages();
+        if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
+            await ensureServerMessagesLoaded();
+        }
     } else if (["adventureEditor", "adventurePlay"].includes(type)) {
         await ensureServerMessagesLoaded();
     } else if (type !== "adventureStudio") {
@@ -1043,7 +1164,7 @@ function renderHeader() {
         : state.activeView.type === "randomArray"
             ? "Random array note"
             : "Random note";
-    const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "channelQuiz", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
+    const compareAvailable = state.ready && state.isUnlocked && !["settings", "stats", "focusSession", "rouletteSlideshow", "imageDraft", "channelQuiz", "adventureStudio", "adventureEditor", "adventureMap", "adventurePlay"].includes(state.activeView.type);
     els.comparePhotosBtn.hidden = !compareAvailable;
     els.comparePhotosBtn.disabled = !compareAvailable;
 
@@ -1062,6 +1183,18 @@ function renderHeader() {
     if (state.activeView.type === "focusSession") {
         els.activeTitle.textContent = "Focus session";
         els.activeMeta.textContent = "Local timer, metronome, and collection slideshow";
+        return;
+    }
+
+    if (state.activeView.type === "rouletteSlideshow") {
+        els.activeTitle.textContent = "Roulette Slideshow";
+        els.activeMeta.textContent = "Random local photos from random channels, durations, and BPMs";
+        return;
+    }
+
+    if (state.activeView.type === "imageDraft") {
+        els.activeTitle.textContent = "Image Draft";
+        els.activeMeta.textContent = "Rank local images, then play their positions with a shuffled location order";
         return;
     }
 
@@ -1146,6 +1279,21 @@ function renderHeader() {
     }
 
     const channel = getActiveChannel();
+    if (channel?.isDraftRankingsChannel) {
+        els.activeTitle.textContent = "Draft Rankings";
+        els.activeMeta.textContent = "Live average draft positions for photos that have appeared in an Image Draft";
+        return;
+    }
+    if (channel?.isHallOfFameChannel) {
+        els.activeTitle.textContent = "Hall of Fame";
+        els.activeMeta.textContent = "Nominated local photos with their draft and reaction history";
+        return;
+    }
+    if (channel?.isMuseumExhibitsChannel) {
+        els.activeTitle.textContent = "Museum Exhibits";
+        els.activeMeta.textContent = "Permanent curated exhibitions built from Hall of Fame nominations";
+        return;
+    }
     const category = getActiveCategory();
     const messages = getActiveMessages();
     const pinnedCount = messages.filter((message) => message.pinned).length;
@@ -1212,6 +1360,16 @@ function renderMessages() {
         return;
     }
 
+    if (state.activeView.type === "rouletteSlideshow") {
+        renderRouletteSlideshow();
+        return;
+    }
+
+    if (state.activeView.type === "imageDraft") {
+        renderImageDraft();
+        return;
+    }
+
     if (["channelQuiz", "zoomQuiz"].includes(state.activeView.type)) {
         renderChannelQuiz();
         return;
@@ -1246,6 +1404,20 @@ function renderMessages() {
 
     if (state.activeView.type === "adventurePlay") {
         renderAdventurePlayer(state.activeView.id);
+        return;
+    }
+
+    const activeChannel = getActiveChannel();
+    if (state.activeView.type === "channel" && activeChannel?.isDraftRankingsChannel) {
+        renderDraftRankingsChannel();
+        return;
+    }
+    if (state.activeView.type === "channel" && activeChannel?.isHallOfFameChannel) {
+        renderHallOfFameChannel();
+        return;
+    }
+    if (state.activeView.type === "channel" && activeChannel?.isMuseumExhibitsChannel) {
+        renderMuseumExhibitsChannel();
         return;
     }
 
@@ -1538,8 +1710,10 @@ function openPhotoActionSheet({ message, attachment, channelId, viewerItems, vie
     card.append(
         title,
         action(attachment.favorite ? "Remove favorite" : "Favorite", () => toggleAttachmentFlag(ref, "favorite")),
+        action(isHallOfFameRef(ref) ? "Remove Hall of Fame nomination" : "Nominate for Hall of Fame", () => toggleHallOfFameNomination(ref)),
         action("Add to collection", () => addPhotosToCollection([ref])),
         action(attachment.note ? "Edit image note" : "Add image note", () => editAttachmentNote(message.id, attachment.id, channelId)),
+        action("Blur regions & copy to #censored", () => openCensorEditor({ attachment, channelId, sourceRef: ref })),
         action(state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)) ? "Remove from compare" : "Add to compare (select 2–4 photos)", () => togglePhotoSelection(ref, !state.selectedPhotoRefs.some((item) => photoRefKey(item) === photoRefKey(ref)))),
         action(attachment.hidden ? "Unhide photo" : "Hide photo", () => toggleAttachmentFlag(ref, "hidden"), !attachment.hidden),
         action("Start slideshow", () => openSlideshow(viewerItems?.length ? viewerItems : [{ attachment, alt: alt || attachment.name || "Local photo", channelName: getChannelById(channelId)?.name || "channel", date: message.createdAt, tags: message.tags || [] }])),
@@ -1548,6 +1722,284 @@ function openPhotoActionSheet({ message, attachment, channelId, viewerItems, vie
     modal.addEventListener("click", (event) => { if (event.target === modal) close(); });
     modal.appendChild(card);
     document.body.appendChild(modal);
+}
+
+function getOrCreateCensoredChannel(sourceChannelId) {
+    const server = getChannelServer(sourceChannelId);
+    if (!server) return null;
+
+    const existing = allChannels(server).find((channel) => normalizeChannelName(channel.name) === "censored");
+    if (existing) return { server, channel: existing, created: false };
+
+    let category = server.categories.find((item) => !item.hidden) || server.categories[0];
+    if (!category) {
+        category = {
+            id: uniqueId("category", "private"),
+            name: "Private",
+            collapsed: false,
+            hidden: false,
+            channels: []
+        };
+        server.categories.push(category);
+    }
+
+    const channel = {
+        id: uniqueId("channel", "censored"),
+        name: "censored"
+    };
+    category.channels.push(channel);
+    return { server, channel, created: true };
+}
+
+function censorCopyName(name) {
+    const base = (name || "local-image").replace(/\.[^.]+$/, "").trim() || "local-image";
+    return `${base}-censored.png`;
+}
+
+function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, onSaved = null }) {
+    if (!attachment?.type?.startsWith("image/")) return;
+    const requiredCount = Math.max(1, Number.parseInt(requiredRegions, 10) || 1);
+
+    const modal = document.createElement("div");
+    modal.className = "censorEditor";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", "Blur and copy image");
+    const card = document.createElement("section");
+    card.className = "censorEditorCard";
+    const heading = document.createElement("h3");
+    heading.textContent = requiredCount > 1 ? `Make ${requiredCount} censor regions` : "Blur regions and copy";
+    const help = document.createElement("p");
+    help.className = "censorEditorHelp";
+    help.textContent = requiredCount > 1
+        ? `Drag on the image to make at least ${requiredCount} blurred regions. The original stays unchanged; the new copy will be saved in this server’s #censored channel.`
+        : "Drag on the image to blur a region. The original stays unchanged; the new copy will be saved in this server’s #censored channel.";
+    const canvasWrap = document.createElement("div");
+    canvasWrap.className = "censorCanvasWrap";
+    const canvas = document.createElement("canvas");
+    canvas.className = "censorCanvas";
+    canvas.setAttribute("aria-label", "Image editing canvas. Drag to select a region to blur.");
+    canvasWrap.appendChild(canvas);
+    const status = document.createElement("p");
+    status.className = "censorEditorStatus";
+    const controls = document.createElement("div");
+    controls.className = "censorEditorControls";
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.textContent = "Undo last blur";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.textContent = "Clear regions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "adventurePrimary";
+    save.textContent = "Save to #censored";
+    save.disabled = true;
+    controls.append(undo, clear, cancel, save);
+    card.append(heading, help, canvasWrap, status, controls);
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+
+    let imageUrl = "";
+    let sourceCanvas;
+    let regions = [];
+    let draft = null;
+    let saving = false;
+    const context = canvas.getContext("2d");
+    const close = () => {
+        if (imageUrl) URL.revokeObjectURL(imageUrl);
+        modal.remove();
+    };
+    const updateControls = () => {
+        const count = regions.length;
+        undo.disabled = count === 0 || saving;
+        clear.disabled = count === 0 || saving;
+        save.disabled = count < requiredCount || saving;
+        status.textContent = count
+            ? requiredCount > 1
+                ? `${count} of ${requiredCount} required censor regions selected. The saved copy is an optimized PNG.`
+                : `${count} blur region${count === 1 ? "" : "s"} selected. The saved copy is an optimized PNG.`
+            : requiredCount > 1
+                ? `Draw ${requiredCount} separate rectangles over the parts you want blurred.`
+                : "Draw one or more rectangles over the parts you want blurred.";
+    };
+    const draw = () => {
+        if (!sourceCanvas || !context) return;
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(sourceCanvas, 0, 0);
+        regions.forEach((region) => {
+            const blur = Math.max(12, Math.round(Math.min(region.width, region.height) / 5));
+            context.save();
+            context.beginPath();
+            context.rect(region.x, region.y, region.width, region.height);
+            context.clip();
+            context.filter = `blur(${blur}px)`;
+            context.drawImage(sourceCanvas, 0, 0);
+            context.restore();
+        });
+        if (draft && draft.width > 1 && draft.height > 1) {
+            context.save();
+            context.setLineDash([8, 6]);
+            context.lineWidth = Math.max(2, canvas.width / 700);
+            context.strokeStyle = "#ffffff";
+            context.fillStyle = "rgba(0, 0, 0, .24)";
+            context.fillRect(draft.x, draft.y, draft.width, draft.height);
+            context.strokeRect(draft.x, draft.y, draft.width, draft.height);
+            context.restore();
+        }
+    };
+    const pointFor = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: Math.max(0, Math.min(canvas.width, (event.clientX - rect.left) * (canvas.width / rect.width))),
+            y: Math.max(0, Math.min(canvas.height, (event.clientY - rect.top) * (canvas.height / rect.height)))
+        };
+    };
+    const normalisedRect = (first, second) => ({
+        x: Math.min(first.x, second.x),
+        y: Math.min(first.y, second.y),
+        width: Math.abs(second.x - first.x),
+        height: Math.abs(second.y - first.y)
+    });
+
+    let startPoint = null;
+    canvas.addEventListener("pointerdown", (event) => {
+        if (saving || !sourceCanvas) return;
+        event.preventDefault();
+        startPoint = pointFor(event);
+        draft = { ...startPoint, width: 0, height: 0 };
+        canvas.setPointerCapture?.(event.pointerId);
+        draw();
+    });
+    canvas.addEventListener("pointermove", (event) => {
+        if (!startPoint || saving) return;
+        draft = normalisedRect(startPoint, pointFor(event));
+        draw();
+    });
+    const finishRegion = (event) => {
+        if (!startPoint) return;
+        const region = normalisedRect(startPoint, pointFor(event));
+        startPoint = null;
+        draft = null;
+        if (region.width >= Math.max(8, canvas.width / 100) && region.height >= Math.max(8, canvas.height / 100)) {
+            regions.push(region);
+        }
+        draw();
+        updateControls();
+    };
+    canvas.addEventListener("pointerup", finishRegion);
+    canvas.addEventListener("pointercancel", () => {
+        startPoint = null;
+        draft = null;
+        draw();
+    });
+    undo.addEventListener("click", () => {
+        if (saving) return;
+        regions.pop();
+        draw();
+        updateControls();
+    });
+    clear.addEventListener("click", () => {
+        if (saving) return;
+        regions = [];
+        draw();
+        updateControls();
+    });
+    cancel.addEventListener("click", close);
+    modal.addEventListener("click", (event) => { if (event.target === modal && !saving) close(); });
+
+    save.addEventListener("click", async () => {
+        if (saving || regions.length < requiredCount) return;
+        saving = true;
+        updateControls();
+        save.textContent = "Saving…";
+        try {
+            const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+            if (!blob) throw new Error("The edited image could not be created.");
+            const file = new File([blob], censorCopyName(attachment.name), { type: "image/png" });
+            if (!(await hasSpaceForLocalFiles([file]))) {
+                saving = false;
+                save.textContent = "Save to #censored";
+                updateControls();
+                return;
+            }
+            const destination = getOrCreateCensoredChannel(channelId);
+            if (!destination) throw new Error("The source server is no longer available.");
+            if (destination.created) await saveStructure(state.structure);
+            if (!state.messagesByChannel.has(destination.channel.id)) {
+                state.messagesByChannel.set(destination.channel.id, normalizeMessages(await getChannelMessages(destination.channel.id)));
+            }
+            const copiedAttachment = {
+                id: crypto.randomUUID(),
+                name: file.name,
+                type: file.type,
+                size: file.size,
+                blob: file,
+                note: attachment.note || ""
+            };
+            const sourceName = getChannelById(channelId)?.name || "source";
+            const copiedMessage = createMessage(`Censored copy from #${sourceName}`, [copiedAttachment]);
+            if (sourceRef?.channelId && sourceRef?.messageId && sourceRef?.attachmentId) {
+                copiedMessage.censoredFrom = structuredClone(sourceRef);
+            }
+            const previousMessages = [...state.messagesByChannel.get(destination.channel.id)];
+            const previousCount = state.channelMessageCounts.get(destination.channel.id) ?? previousMessages.length;
+            state.messagesByChannel.set(destination.channel.id, [...previousMessages, copiedMessage]);
+            state.channelMessageCounts.set(destination.channel.id, previousCount + 1);
+            try {
+                await saveChannelMessage(destination.channel.id, copiedMessage);
+            } catch (error) {
+                state.messagesByChannel.set(destination.channel.id, previousMessages);
+                state.channelMessageCounts.set(destination.channel.id, previousCount);
+                throw error;
+            }
+            refreshStorageEstimate();
+            close();
+            if (onSaved) await onSaved({ regionCount: regions.length, copiedMessage, destinationChannelId: destination.channel.id });
+            else alert("Saved a blurred copy in #censored. Your original photo was not changed.");
+            render();
+        } catch (error) {
+            console.error("Could not save censored image copy:", error);
+            alert("Could not save the censored copy locally. Check available browser storage, then try again.");
+            saving = false;
+            save.textContent = "Save to #censored";
+            updateControls();
+        }
+    });
+
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => {
+        const maximumSide = 2048;
+        const scale = Math.min(1, maximumSide / Math.max(image.naturalWidth, image.naturalHeight));
+        const width = Math.max(1, Math.round(image.naturalWidth * scale));
+        const height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.width = width;
+        canvas.height = height;
+        sourceCanvas = document.createElement("canvas");
+        sourceCanvas.width = width;
+        sourceCanvas.height = height;
+        sourceCanvas.getContext("2d").drawImage(image, 0, 0, width, height);
+        if (imageUrl) {
+            URL.revokeObjectURL(imageUrl);
+            imageUrl = "";
+        }
+        if (attachment.type === "image/gif") {
+            help.textContent = "Drag on the image to blur a region. GIF copies use the first frame as a censored PNG; the original GIF stays unchanged.";
+        }
+        draw();
+        updateControls();
+    };
+    image.onerror = () => {
+        alert("This image could not be opened for editing.");
+        close();
+    };
+    imageUrl = attachment.blob ? URL.createObjectURL(attachment.blob) : "";
+    image.src = imageUrl || attachment.dataUrl || "";
+    updateControls();
 }
 
 async function toggleAttachmentFlag(ref, flag) {
@@ -1692,8 +2144,838 @@ function getWorkspaceStats() {
         pinned,
         favorites,
         reactionTotal,
-        reactionInsights: getReactionInsights(reactionEvents)
+        reactionInsights: getReactionInsights(reactionEvents),
+        draftInsights: getImageDraftInsights()
     };
+}
+
+function getImageDraftInsights() {
+    const serverId = getActiveServer()?.id;
+    const drafts = (state.structure.settings.draftHistory || []).filter((draft) => draft.serverId === serverId && Array.isArray(draft.items));
+    const placements = drafts.flatMap((draft) => draft.items.filter((item) => item?.ref && Number.isFinite(item.rank)).map((item) => ({ ...item, draftId: draft.id })));
+    const perImage = new Map();
+    placements.forEach((item) => {
+        const key = photoRefKey(item.ref);
+        if (!perImage.has(key)) perImage.set(key, { ref: item.ref, label: item.label || "Local image", channelName: item.channelName || getChannelById(item.ref.channelId)?.name || "channel", spots: [] });
+        perImage.get(key).spots.push(item.rank);
+    });
+    const images = [...perImage.values()].map((item) => ({
+        ...item,
+        count: item.spots.length,
+        average: item.spots.reduce((sum, spot) => sum + spot, 0) / item.spots.length,
+        best: Math.min(...item.spots),
+        worst: Math.max(...item.spots)
+    })).sort((a, b) => b.count - a.count || a.average - b.average || a.label.localeCompare(b.label));
+    const maxSpot = Math.max(0, ...placements.map((item) => item.rank));
+    const spots = Array.from({ length: maxSpot }, (_, index) => placements.filter((item) => item.rank === index + 1).length);
+    const censorResults = drafts.flatMap((draft) => Array.isArray(draft.censorResults) ? draft.censorResults : []);
+    return {
+        drafts: drafts.length,
+        placements,
+        averageSpot: placements.length ? placements.reduce((sum, item) => sum + item.rank, 0) / placements.length : 0,
+        images,
+        spots,
+        censorDrafts: drafts.filter((draft) => draft.censorMode).length,
+        censorCopies: censorResults.length,
+        censorRegions: censorResults.reduce((sum, item) => sum + (item.regionCount || 0), 0)
+    };
+}
+
+function getHallOfFameEntries(server = getActiveServer()) {
+    return (state.structure.settings.hallOfFame || [])
+        .filter((entry) => entry.serverId === server?.id && entry?.ref?.channelId && entry?.ref?.messageId && entry?.ref?.attachmentId)
+        .sort((a, b) => (b.nominatedAt || "").localeCompare(a.nominatedAt || ""));
+}
+
+function isHallOfFameRef(ref) {
+    return (state.structure.settings.hallOfFame || []).some((entry) => photoRefKey(entry.ref) === photoRefKey(ref));
+}
+
+async function toggleHallOfFameNomination(ref) {
+    const entries = state.structure.settings.hallOfFame || [];
+    const existing = entries.find((entry) => photoRefKey(entry.ref) === photoRefKey(ref));
+    if (existing) {
+        if (!confirm("Remove this photo from the Hall of Fame? Its original local image will remain untouched.")) return;
+        state.structure.settings.hallOfFame = entries.filter((entry) => entry !== existing);
+    } else {
+        const server = getChannelServer(ref.channelId);
+        if (!server) return;
+        state.structure.settings.hallOfFame = [...entries, {
+            id: crypto.randomUUID(),
+            serverId: server.id,
+            ref: structuredClone(ref),
+            nominatedAt: new Date().toISOString(),
+            blurb: ""
+        }].slice(-300);
+    }
+    await saveStructure(state.structure);
+    render();
+}
+
+async function saveHallOfFameBlurb(entryId, value) {
+    const entry = (state.structure.settings.hallOfFame || []).find((item) => item.id === entryId);
+    if (!entry) return;
+    entry.blurb = value.trim().slice(0, 2000);
+    entry.updatedAt = new Date().toISOString();
+    await saveStructure(state.structure);
+}
+
+function getDraftImageStat(ref, insights = getImageDraftInsights()) {
+    return insights.images.find((item) => photoRefKey(item.ref) === photoRefKey(ref)) || null;
+}
+
+function getCensoredVariants(sourceRef) {
+    const server = getChannelServer(sourceRef.channelId);
+    if (!server) return [];
+    return allChannels(server).flatMap((channel) => (
+        (state.messagesByChannel.get(channel.id) || []).flatMap((message) => {
+            if (!message.censoredFrom || photoRefKey(message.censoredFrom) !== photoRefKey(sourceRef)) return [];
+            return (message.attachments || [])
+                .filter((attachment) => attachment.type?.startsWith("image/"))
+                .map((attachment) => ({ channelId: channel.id, message, attachment }));
+        })
+    ));
+}
+
+function renderDraftRankingsChannel() {
+    const insights = getImageDraftInsights();
+    const page = document.createElement("section");
+    page.className = "draftRankingsChannel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Draft Rankings</h3><p>Only photos that have appeared in a completed Image Draft are shown. Lower average spot means a stronger average draft position.</p>";
+    page.appendChild(intro);
+    if (insights.images.length === 0) {
+        page.appendChild(emptyPanel("Complete an Image Draft to add its local photos to these rankings."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const list = document.createElement("section");
+    list.className = "draftRankingsList";
+    [...insights.images].sort((a, b) => a.average - b.average || b.count - a.count || a.label.localeCompare(b.label)).forEach((item, index) => {
+        const row = document.createElement("article");
+        row.className = "draftRankingItem";
+        const position = document.createElement("strong");
+        position.className = "draftRankingPosition";
+        position.textContent = `#${index + 1}`;
+        row.appendChild(position);
+        const attachment = findAttachment(item.ref);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = item.label;
+            image.addEventListener("click", () => openImageViewer(attachment, item.label));
+            row.appendChild(image);
+        }
+        const detail = document.createElement("div");
+        detail.className = "draftRankingDetail";
+        const title = document.createElement("strong");
+        title.textContent = item.label;
+        const stat = document.createElement("span");
+        stat.textContent = `Average draft spot #${item.average.toFixed(1)} · ${item.count} draft${item.count === 1 ? "" : "s"} · best #${item.best} · worst #${item.worst}`;
+        const source = document.createElement("small");
+        source.textContent = `First local channel: # ${item.channelName}`;
+        detail.append(title, stat, source);
+        row.appendChild(detail);
+        const actions = document.createElement("div");
+        actions.className = "draftRankingActions";
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = "Open source";
+        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        const nominate = document.createElement("button");
+        nominate.type = "button";
+        nominate.textContent = isHallOfFameRef(item.ref) ? "In Hall of Fame" : "Nominate";
+        nominate.disabled = isHallOfFameRef(item.ref);
+        nominate.addEventListener("click", () => toggleHallOfFameNomination(item.ref));
+        actions.append(open, nominate);
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+    page.appendChild(list);
+    els.messages.appendChild(page);
+}
+
+function renderHallOfFameChannel() {
+    const insights = getImageDraftInsights();
+    const entries = getHallOfFameEntries();
+    const page = document.createElement("section");
+    page.className = "hallOfFame";
+    const intro = document.createElement("section");
+    intro.className = "hallOfFameIntro";
+    intro.innerHTML = "<p class=\"hallOfFameKicker\">LOCAL GALLERY</p><h3>Hall of Fame</h3><p>Nominate any local photo from its photo-actions menu. Every nomination stays linked to its original image and can be placed into a permanent Museum exhibit.</p>";
+    page.appendChild(intro);
+    const exhibitChannel = allChannels(getActiveServer()).find((channel) => channel.isMuseumExhibitsChannel);
+    if (exhibitChannel) {
+        const curate = document.createElement("button");
+        curate.type = "button";
+        curate.className = "hallOfFameCurate";
+        curate.textContent = "Curate permanent exhibits";
+        curate.addEventListener("click", () => openView("channel", exhibitChannel.id));
+        page.appendChild(curate);
+    }
+    if (entries.length === 0) {
+        page.appendChild(emptyPanel("No nominations yet. Open a photo’s actions and choose Nominate for Hall of Fame."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const gallery = document.createElement("section");
+    gallery.className = "hallOfFameGallery";
+    entries.forEach((entry) => {
+        const card = document.createElement("article");
+        card.className = "hallOfFameExhibit";
+        const attachment = findAttachment(entry.ref);
+        const message = (state.messagesByChannel.get(entry.ref.channelId) || []).find((item) => item.id === entry.ref.messageId);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Hall of Fame image";
+            image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+            card.appendChild(image);
+        } else {
+            card.appendChild(emptyPanel("The original local photo is no longer available."));
+        }
+        const detail = document.createElement("div");
+        detail.className = "hallOfFameDetail";
+        const title = document.createElement("h4");
+        title.textContent = attachment?.note || attachment?.name || "Untitled exhibit";
+        const draftStat = getDraftImageStat(entry.ref, insights);
+        const reactions = message?.reactions || [];
+        const stats = document.createElement("p");
+        stats.className = "hallOfFameStats";
+        stats.textContent = [
+            `First local channel: # ${getChannelById(entry.ref.channelId)?.name || "missing"}`,
+            `Reactions: ${reactions.length ? reactions.join(" ") : "none"}`,
+            draftStat ? `Average draft spot: #${draftStat.average.toFixed(1)} across ${draftStat.count} draft${draftStat.count === 1 ? "" : "s"}` : "Draft position: not drafted yet",
+            `Nominated ${formatDate(entry.nominatedAt)}`
+        ].join(" · ");
+        const blurbLabel = document.createElement("label");
+        blurbLabel.className = "hallOfFameBlurb";
+        const blurbHeading = document.createElement("span");
+        blurbHeading.textContent = "Curator’s blurb";
+        const blurb = document.createElement("textarea");
+        blurb.maxLength = 2000;
+        blurb.rows = 4;
+        blurb.placeholder = "Write a short note or essay about this exhibit…";
+        blurb.value = entry.blurb || "";
+        blurbLabel.append(blurbHeading, blurb);
+        const variants = getCensoredVariants(entry.ref);
+        const variantSection = document.createElement("section");
+        variantSection.className = "hallOfFameVariants";
+        const variantHeading = document.createElement("strong");
+        variantHeading.textContent = `Censored variants (${variants.length})`;
+        variantSection.appendChild(variantHeading);
+        if (variants.length === 0) {
+            const empty = document.createElement("p");
+            empty.textContent = "No linked censored variants yet. Create one from this photo’s actions to preserve it here.";
+            variantSection.appendChild(empty);
+        } else {
+            const variantGrid = document.createElement("div");
+            variantGrid.className = "hallOfFameVariantGrid";
+            variants.forEach((variant) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                const image = document.createElement("img");
+                setRenderedImageSource(image, variant.attachment);
+                image.alt = `Censored variant of ${title.textContent}`;
+                const label = document.createElement("small");
+                label.textContent = formatDate(variant.message.createdAt);
+                button.append(image, label);
+                button.addEventListener("click", () => openImageViewer(variant.attachment, image.alt));
+                variantGrid.appendChild(button);
+            });
+            variantSection.appendChild(variantGrid);
+        }
+        const actions = document.createElement("div");
+        actions.className = "hallOfFameActions";
+        const save = document.createElement("button");
+        save.type = "button";
+        save.textContent = "Save blurb";
+        save.addEventListener("click", async () => {
+            save.disabled = true;
+            save.textContent = "Saved";
+            try {
+                await saveHallOfFameBlurb(entry.id, blurb.value);
+            } catch (error) {
+                console.error("Could not save Hall of Fame blurb:", error);
+                save.textContent = "Could not save";
+            } finally {
+                window.setTimeout(() => {
+                    save.disabled = false;
+                    save.textContent = "Save blurb";
+                }, 900);
+            }
+        });
+        const source = document.createElement("button");
+        source.type = "button";
+        source.textContent = "Open source";
+        source.addEventListener("click", () => openView("channel", entry.ref.channelId));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "dangerAction";
+        remove.textContent = "Remove nomination";
+        remove.addEventListener("click", () => toggleHallOfFameNomination(entry.ref));
+        actions.append(save, source, remove);
+        detail.append(title, stats, blurbLabel, variantSection, actions);
+        card.appendChild(detail);
+        gallery.appendChild(card);
+    });
+    page.appendChild(gallery);
+    els.messages.appendChild(page);
+}
+
+function getMuseumExhibits(server = getActiveServer()) {
+    return (state.structure.settings.museumExhibits || [])
+        .filter((exhibit) => exhibit.serverId === server?.id)
+        .sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""));
+}
+
+function getMuseumExhibit(exhibitId) {
+    return getMuseumExhibits().find((exhibit) => exhibit.id === exhibitId);
+}
+
+function normalizeMuseumTags(value) {
+    const source = Array.isArray(value) ? value : String(value || "").split(",");
+    return [...new Set(source
+        .map((tag) => normalizeDisplayName(String(tag).replace(/^#/, "")).toLowerCase().slice(0, 40))
+        .filter(Boolean))]
+        .slice(0, 16);
+}
+
+function getMuseumExhibitTags(exhibit) {
+    return normalizeMuseumTags(exhibit?.tags);
+}
+
+function appendMuseumExhibitLabels(target, exhibit) {
+    const labels = document.createElement("div");
+    labels.className = "museumExhibitLabels";
+    const collection = normalizeDisplayName(exhibit?.collection || "").slice(0, 60);
+    if (collection) {
+        const chip = document.createElement("span");
+        chip.className = "museumCollectionChip";
+        chip.textContent = collection;
+        labels.appendChild(chip);
+    }
+    getMuseumExhibitTags(exhibit).forEach((tag) => {
+        const chip = document.createElement("span");
+        chip.className = "museumTagChip";
+        chip.textContent = `#${tag}`;
+        labels.appendChild(chip);
+    });
+    if (labels.childElementCount) target.appendChild(labels);
+}
+
+function getExhibitCoverRef(exhibit) {
+    const refs = exhibit?.photoRefs || [];
+    if (exhibit?.coverRef && findAttachment(exhibit.coverRef)) return exhibit.coverRef;
+    return refs.find((ref) => findAttachment(ref)) || refs[0] || null;
+}
+
+function openMuseumCurationEditor(exhibit = null) {
+    const nominations = getHallOfFameEntries().filter((entry) => findAttachment(entry.ref));
+    if (nominations.length === 0) {
+        alert("Nominate at least one local photo in Hall of Fame before creating an exhibit.");
+        return;
+    }
+    const modal = document.createElement("section");
+    modal.className = "museumCurationModal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", exhibit ? "Edit permanent exhibit" : "Create permanent exhibit");
+    const card = document.createElement("div");
+    card.className = "museumCurationCard";
+    const heading = document.createElement("h3");
+    heading.textContent = exhibit ? "Curate exhibit" : "Create permanent exhibit";
+    const help = document.createElement("p");
+    help.textContent = "Choose Hall of Fame nominations, set a title and cover, then write the permanent wall text. These exhibits stay in your local Museum until you edit or remove them.";
+    const title = document.createElement("input");
+    title.type = "text";
+    title.maxLength = 90;
+    title.placeholder = "Exhibit title";
+    title.value = exhibit?.title || "";
+    const collection = document.createElement("input");
+    collection.type = "text";
+    collection.maxLength = 60;
+    collection.placeholder = "Collection, e.g. Favorites or 2026 (optional)";
+    collection.value = exhibit?.collection || "";
+    const tags = document.createElement("input");
+    tags.type = "text";
+    tags.maxLength = 300;
+    tags.placeholder = "Tags, separated by commas, e.g. surreal, blue, dream";
+    tags.value = getMuseumExhibitTags(exhibit).join(", ");
+    const subtitle = document.createElement("input");
+    subtitle.type = "text";
+    subtitle.maxLength = 180;
+    subtitle.placeholder = "Short exhibition subtitle (optional)";
+    subtitle.value = exhibit?.subtitle || "";
+    const note = document.createElement("textarea");
+    note.rows = 5;
+    note.maxLength = 3000;
+    note.placeholder = "Curator’s wall text — what connects these images?";
+    note.value = exhibit?.curatorNote || "";
+    const selected = new Map((exhibit?.photoRefs || []).map((ref) => [photoRefKey(ref), ref]));
+    const plaques = new Map(Object.entries(exhibit?.plaques || {}));
+    let coverKey = exhibit?.coverRef ? photoRefKey(exhibit.coverRef) : selected.keys().next().value;
+    const selectedLabel = document.createElement("p");
+    selectedLabel.className = "museumCurationSelection";
+    const coverField = document.createElement("label");
+    coverField.className = "museumCurationCover";
+    const coverLabel = document.createElement("span");
+    coverLabel.textContent = "Exhibit cover";
+    const cover = document.createElement("select");
+    coverField.append(coverLabel, cover);
+    const grid = document.createElement("div");
+    grid.className = "museumCurationGrid";
+    const tourHeading = document.createElement("h4");
+    tourHeading.className = "museumCurationTourHeading";
+    tourHeading.textContent = "Guided tour order & plaques";
+    const tourHelp = document.createElement("p");
+    tourHelp.className = "museumCurationTourHelp";
+    tourHelp.textContent = "The first photo is the first stop. Move photos into order, then add optional text that appears only in this exhibit’s guided tour and gallery.";
+    const tourPlan = document.createElement("section");
+    tourPlan.className = "museumCurationTourPlan";
+    const loadMore = document.createElement("button");
+    loadMore.type = "button";
+    loadMore.className = "museumCurationMore";
+    let visibleLimit = 10;
+    const refreshSelection = () => {
+        if (!selected.has(coverKey)) coverKey = selected.keys().next().value;
+        selectedLabel.textContent = selected.size
+            ? `${selected.size} permanent exhibit photo${selected.size === 1 ? "" : "s"} selected.`
+            : "Select at least one Hall of Fame nomination.";
+        cover.replaceChildren();
+        selected.forEach((ref, key) => {
+            const option = document.createElement("option");
+            const attachment = findAttachment(ref);
+            option.value = key;
+            option.selected = key === coverKey;
+            option.textContent = attachment?.note || attachment?.name || "Selected photo";
+            cover.appendChild(option);
+        });
+        cover.disabled = selected.size === 0;
+    };
+    const moveSelectedPhoto = (key, direction) => {
+        const entries = [...selected.entries()];
+        const index = entries.findIndex(([entryKey]) => entryKey === key);
+        const nextIndex = index + direction;
+        if (index < 0 || nextIndex < 0 || nextIndex >= entries.length) return;
+        [entries[index], entries[nextIndex]] = [entries[nextIndex], entries[index]];
+        selected.clear();
+        entries.forEach(([entryKey, ref]) => selected.set(entryKey, ref));
+        refreshSelection();
+        renderChoices();
+    };
+    const renderTourPlan = () => {
+        tourPlan.replaceChildren();
+        if (!selected.size) {
+            const empty = document.createElement("p");
+            empty.className = "museumCurationTourEmpty";
+            empty.textContent = "Select exhibit photos above to build a guided tour.";
+            tourPlan.appendChild(empty);
+            return;
+        }
+        [...selected.entries()].forEach(([key, ref], index) => {
+            const attachment = findAttachment(ref);
+            const stop = document.createElement("article");
+            stop.className = "museumCurationTourStop";
+            const number = document.createElement("span");
+            number.className = "museumCurationTourNumber";
+            number.textContent = String(index + 1);
+            const photo = document.createElement("img");
+            if (attachment) setRenderedImageSource(photo, attachment);
+            photo.alt = attachment?.note || attachment?.name || `Tour stop ${index + 1}`;
+            const detail = document.createElement("div");
+            const name = document.createElement("strong");
+            name.textContent = attachment?.note || attachment?.name || "Selected photo";
+            const source = document.createElement("small");
+            source.textContent = `# ${getChannelById(ref.channelId)?.name || "missing"}`;
+            detail.append(name, source);
+            const order = document.createElement("div");
+            order.className = "museumCurationTourOrder";
+            const up = document.createElement("button");
+            up.type = "button";
+            up.textContent = "↑";
+            up.title = "Move earlier in the tour";
+            up.disabled = index === 0;
+            up.addEventListener("click", () => moveSelectedPhoto(key, -1));
+            const down = document.createElement("button");
+            down.type = "button";
+            down.textContent = "↓";
+            down.title = "Move later in the tour";
+            down.disabled = index === selected.size - 1;
+            down.addEventListener("click", () => moveSelectedPhoto(key, 1));
+            order.append(up, down);
+            const plaqueField = document.createElement("label");
+            plaqueField.className = "museumCurationPlaque";
+            const plaqueLabel = document.createElement("span");
+            plaqueLabel.textContent = `Plaque for stop ${index + 1} (optional)`;
+            const plaque = document.createElement("textarea");
+            plaque.rows = 2;
+            plaque.maxLength = 600;
+            plaque.placeholder = "What should visitors read beside this image?";
+            plaque.value = plaques.get(key) || "";
+            plaque.addEventListener("input", () => {
+                const value = plaque.value.slice(0, 600);
+                if (value.trim()) plaques.set(key, value);
+                else plaques.delete(key);
+            });
+            plaqueField.append(plaqueLabel, plaque);
+            stop.append(number, photo, detail, order, plaqueField);
+            tourPlan.appendChild(stop);
+        });
+    };
+    cover.addEventListener("change", () => { coverKey = cover.value; renderChoices(); });
+    const renderChoices = () => {
+        grid.replaceChildren();
+        nominations.slice(0, visibleLimit).forEach((entry) => {
+            const ref = entry.ref;
+            const key = photoRefKey(ref);
+            const attachment = findAttachment(ref);
+            const choice = document.createElement("button");
+            choice.type = "button";
+            choice.className = `museumCurationChoice${selected.has(key) ? " isSelected" : ""}`;
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Hall of Fame nomination";
+            const label = document.createElement("span");
+            label.textContent = attachment.note || attachment.name || "Untitled nomination";
+            const marker = document.createElement("small");
+            marker.textContent = selected.has(key) ? (coverKey === key ? "Cover" : "Selected") : "Select";
+            choice.append(image, label, marker);
+            choice.addEventListener("click", () => {
+                if (selected.has(key)) selected.delete(key);
+                else selected.set(key, structuredClone(ref));
+                refreshSelection();
+                renderChoices();
+            });
+            grid.appendChild(choice);
+        });
+        loadMore.hidden = visibleLimit >= nominations.length;
+        loadMore.textContent = `Show 10 more (${Math.max(0, nominations.length - visibleLimit)} remaining)`;
+        renderTourPlan();
+    };
+    loadMore.addEventListener("click", () => {
+        visibleLimit = Math.min(nominations.length, visibleLimit + 10);
+        renderChoices();
+    });
+    const actions = document.createElement("div");
+    actions.className = "museumCurationActions";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "adventurePrimary";
+    save.textContent = exhibit ? "Save exhibit" : "Create exhibit";
+    save.addEventListener("click", async () => {
+        const cleanedTitle = normalizeDisplayName(title.value);
+        const refs = [...selected.values()];
+        if (!cleanedTitle) { alert("Give the exhibit a title."); title.focus(); return; }
+        if (refs.length === 0) { alert("Select at least one Hall of Fame photo."); return; }
+        save.disabled = true;
+        try {
+            const next = {
+                id: exhibit?.id || crypto.randomUUID(),
+                serverId: getActiveServer()?.id,
+                title: cleanedTitle,
+                collection: normalizeDisplayName(collection.value).slice(0, 60),
+                tags: normalizeMuseumTags(tags.value),
+                subtitle: normalizeDisplayName(subtitle.value).slice(0, 180),
+                curatorNote: note.value.trim().slice(0, 3000),
+                photoRefs: refs,
+                coverRef: selected.get(coverKey) || refs[0],
+                plaques: Object.fromEntries([...selected.keys()]
+                    .map((key) => [key, String(plaques.get(key) || "").trim().slice(0, 600)])
+                    .filter(([, plaque]) => plaque)),
+                createdAt: exhibit?.createdAt || new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            };
+            const exhibits = state.structure.settings.museumExhibits || [];
+            state.structure.settings.museumExhibits = exhibit
+                ? exhibits.map((item) => item.id === exhibit.id ? next : item)
+                : [...exhibits, next].slice(-100);
+            await saveStructure(state.structure);
+            modal.remove();
+            state.activeMuseumExhibitId = next.id;
+            state.museumTour = null;
+            render();
+        } catch (error) {
+            console.error("Could not save museum exhibit:", error);
+            save.disabled = false;
+            alert("Could not save this exhibit locally. Try again after checking storage.");
+        }
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => modal.remove());
+    actions.append(save, cancel);
+    card.append(heading, help, title, collection, tags, subtitle, note, selectedLabel, coverField, grid, loadMore, tourHeading, tourHelp, tourPlan, actions);
+    modal.appendChild(card);
+    modal.addEventListener("click", (event) => { if (event.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+    refreshSelection();
+    renderChoices();
+}
+
+async function deleteMuseumExhibit(exhibit) {
+    if (!confirm(`Remove the permanent exhibit “${exhibit.title}”? The Hall of Fame nominations and original photos will remain.`)) return;
+    state.structure.settings.museumExhibits = (state.structure.settings.museumExhibits || []).filter((item) => item.id !== exhibit.id);
+    state.activeMuseumExhibitId = null;
+    state.museumTour = null;
+    await saveStructure(state.structure);
+    render();
+}
+
+function renderMuseumExhibitsChannel() {
+    const exhibit = getMuseumExhibit(state.activeMuseumExhibitId);
+    if (exhibit) {
+        if (state.museumTour?.exhibitId === exhibit.id) renderMuseumGuidedTour(exhibit);
+        else renderMuseumExhibitDetail(exhibit);
+        return;
+    }
+    state.museumTour = null;
+    const allExhibits = getMuseumExhibits();
+    const collections = [...new Set(allExhibits
+        .map((item) => normalizeDisplayName(item.collection || "").slice(0, 60))
+        .filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+    const tags = [...new Set(allExhibits.flatMap((item) => getMuseumExhibitTags(item)))]
+        .sort((a, b) => a.localeCompare(b));
+    if (!collections.includes(state.museumCollectionFilter)) state.museumCollectionFilter = "";
+    if (!tags.includes(state.museumTagFilter)) state.museumTagFilter = "";
+    const exhibits = allExhibits.filter((item) => (
+        (!state.museumCollectionFilter || normalizeDisplayName(item.collection || "") === state.museumCollectionFilter)
+        && (!state.museumTagFilter || getMuseumExhibitTags(item).includes(state.museumTagFilter))
+    ));
+    const page = document.createElement("section");
+    page.className = "museumExhibits";
+    const intro = document.createElement("section");
+    intro.className = "museumExhibitsIntro";
+    intro.innerHTML = "<p>PERMANENT COLLECTION</p><h3>Museum Exhibits</h3><span>Build lasting themed galleries from Hall of Fame nominations. Every exhibit can be reopened and recut later.</span>";
+    const create = document.createElement("button");
+    create.type = "button";
+    create.className = "adventurePrimary";
+    create.textContent = "Create permanent exhibit";
+    create.addEventListener("click", () => openMuseumCurationEditor());
+    page.append(intro, create);
+    if (!allExhibits.length) {
+        page.appendChild(emptyPanel("No permanent exhibits yet. Nominate Hall of Fame photos, then create your first curated gallery."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const filters = document.createElement("section");
+    filters.className = "museumExhibitFilters";
+    const collectionLabel = document.createElement("label");
+    collectionLabel.textContent = "Collection";
+    const collectionSelect = document.createElement("select");
+    collectionSelect.innerHTML = "<option value=\"\">All collections</option>";
+    collections.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        option.selected = name === state.museumCollectionFilter;
+        collectionSelect.appendChild(option);
+    });
+    collectionSelect.addEventListener("change", () => {
+        state.museumCollectionFilter = collectionSelect.value;
+        renderMessages();
+    });
+    collectionLabel.appendChild(collectionSelect);
+    const tagLabel = document.createElement("label");
+    tagLabel.textContent = "Tag";
+    const tagSelect = document.createElement("select");
+    tagSelect.innerHTML = "<option value=\"\">All tags</option>";
+    tags.forEach((tag) => {
+        const option = document.createElement("option");
+        option.value = tag;
+        option.textContent = `#${tag}`;
+        option.selected = tag === state.museumTagFilter;
+        tagSelect.appendChild(option);
+    });
+    tagSelect.addEventListener("change", () => {
+        state.museumTagFilter = tagSelect.value;
+        renderMessages();
+    });
+    tagLabel.appendChild(tagSelect);
+    filters.append(collectionLabel, tagLabel);
+    page.appendChild(filters);
+    if (!exhibits.length) {
+        page.appendChild(emptyPanel("No exhibits match those filters. Change a filter or curate a new collection."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const gallery = document.createElement("section");
+    gallery.className = "museumExhibitGrid";
+    exhibits.forEach((item) => {
+        const card = document.createElement("article");
+        card.className = "museumExhibitCard";
+        const cover = findAttachment(getExhibitCoverRef(item) || {});
+        if (cover) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, cover);
+            image.alt = item.title;
+            card.appendChild(image);
+        }
+        const detail = document.createElement("div");
+        const title = document.createElement("h4");
+        title.textContent = item.title;
+        const subtitle = document.createElement("p");
+        subtitle.textContent = item.subtitle || item.curatorNote || "A permanent local exhibition";
+        const meta = document.createElement("small");
+        meta.textContent = `${item.photoRefs?.length || 0} exhibit photos · updated ${formatDate(item.updatedAt || item.createdAt)}`;
+        appendMuseumExhibitLabels(detail, item);
+        const actions = document.createElement("div");
+        const view = document.createElement("button");
+        view.type = "button";
+        view.textContent = "Enter exhibit";
+        view.addEventListener("click", () => { state.activeMuseumExhibitId = item.id; renderMessages(); });
+        const curate = document.createElement("button");
+        curate.type = "button";
+        curate.textContent = "Curate";
+        curate.addEventListener("click", () => openMuseumCurationEditor(item));
+        actions.append(view, curate);
+        detail.append(title, subtitle, meta, actions);
+        card.appendChild(detail);
+        gallery.appendChild(card);
+    });
+    page.appendChild(gallery);
+    els.messages.appendChild(page);
+}
+
+function renderMuseumExhibitDetail(exhibit) {
+    const page = document.createElement("section");
+    page.className = "museumExhibitDetail";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "museumExhibitBack";
+    back.textContent = "All exhibits";
+    back.addEventListener("click", () => { state.activeMuseumExhibitId = null; state.museumTour = null; renderMessages(); });
+    const header = document.createElement("section");
+    header.className = "museumExhibitHeader";
+    const title = document.createElement("h3");
+    title.textContent = exhibit.title;
+    const subtitle = document.createElement("p");
+    subtitle.textContent = exhibit.subtitle || "Permanent local exhibition";
+    const note = document.createElement("p");
+    note.className = "museumExhibitNote";
+    note.textContent = exhibit.curatorNote || "No wall text has been written yet.";
+    const tools = document.createElement("div");
+    const tour = document.createElement("button");
+    tour.type = "button";
+    tour.textContent = "Start guided tour";
+    tour.disabled = !(exhibit.photoRefs || []).length;
+    tour.addEventListener("click", () => {
+        state.museumTour = { exhibitId: exhibit.id, index: 0 };
+        renderMessages();
+    });
+    const curate = document.createElement("button");
+    curate.type = "button";
+    curate.textContent = "Curate exhibit";
+    curate.addEventListener("click", () => openMuseumCurationEditor(exhibit));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "dangerAction";
+    remove.textContent = "Remove exhibit";
+    remove.addEventListener("click", () => deleteMuseumExhibit(exhibit));
+    tools.append(tour, curate, remove);
+    header.append(title, subtitle, note);
+    appendMuseumExhibitLabels(header, exhibit);
+    header.appendChild(tools);
+    const gallery = document.createElement("section");
+    gallery.className = "museumExhibitPhotoGrid";
+    (exhibit.photoRefs || []).forEach((ref, index) => {
+        const attachment = findAttachment(ref);
+        const item = document.createElement("article");
+        item.className = "museumExhibitPhoto";
+        const number = document.createElement("span");
+        number.textContent = `${index + 1}`;
+        item.appendChild(number);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Exhibit photo";
+            image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+            item.appendChild(image);
+        } else item.appendChild(emptyPanel("Original unavailable"));
+        const info = document.createElement("small");
+        info.textContent = `# ${getChannelById(ref.channelId)?.name || "missing"}`;
+        item.appendChild(info);
+        const plaqueText = String(exhibit.plaques?.[photoRefKey(ref)] || "").trim();
+        if (plaqueText) {
+            const plaque = document.createElement("p");
+            plaque.className = "museumExhibitPlaque";
+            plaque.textContent = plaqueText;
+            item.appendChild(plaque);
+        }
+        gallery.appendChild(item);
+    });
+    page.append(back, header, gallery);
+    els.messages.appendChild(page);
+}
+
+function renderMuseumGuidedTour(exhibit) {
+    const refs = exhibit.photoRefs || [];
+    if (!refs.length) {
+        state.museumTour = null;
+        renderMuseumExhibitDetail(exhibit);
+        return;
+    }
+    const tour = state.museumTour || { exhibitId: exhibit.id, index: 0 };
+    const index = Math.min(Math.max(0, Number(tour.index) || 0), refs.length - 1);
+    state.museumTour = { exhibitId: exhibit.id, index };
+    const ref = refs[index];
+    const attachment = findAttachment(ref);
+    const page = document.createElement("section");
+    page.className = "museumGuidedTour";
+    const header = document.createElement("section");
+    header.className = "museumTourHeader";
+    const identity = document.createElement("p");
+    identity.textContent = "GUIDED TOUR";
+    const title = document.createElement("h3");
+    title.textContent = exhibit.title;
+    const progress = document.createElement("span");
+    progress.textContent = `Stop ${index + 1} of ${refs.length}`;
+    const exit = document.createElement("button");
+    exit.type = "button";
+    exit.textContent = "Exit guided tour";
+    exit.addEventListener("click", () => { state.museumTour = null; renderMessages(); });
+    header.append(identity, title, progress, exit);
+    const frame = document.createElement("article");
+    frame.className = "museumTourFrame";
+    if (attachment) {
+        const image = document.createElement("img");
+        setRenderedImageSource(image, attachment);
+        image.alt = attachment.note || attachment.name || `Tour stop ${index + 1}`;
+        image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        frame.appendChild(image);
+    } else frame.appendChild(emptyPanel("The original photo is unavailable."));
+    const plaque = document.createElement("section");
+    plaque.className = "museumTourPlaque";
+    const plaqueHeading = document.createElement("strong");
+    plaqueHeading.textContent = `Plaque ${index + 1}`;
+    const plaqueText = document.createElement("p");
+    plaqueText.textContent = String(exhibit.plaques?.[photoRefKey(ref)] || "").trim() || "No plaque text for this stop.";
+    const source = document.createElement("small");
+    source.textContent = `From # ${getChannelById(ref.channelId)?.name || "missing"}`;
+    plaque.append(plaqueHeading, plaqueText, source);
+    const controls = document.createElement("div");
+    controls.className = "museumTourControls";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "Previous";
+    previous.disabled = index === 0;
+    previous.addEventListener("click", () => {
+        state.museumTour = { exhibitId: exhibit.id, index: index - 1 };
+        renderMessages();
+    });
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = index === refs.length - 1 ? "Finish tour" : "Next stop";
+    next.addEventListener("click", () => {
+        state.museumTour = index === refs.length - 1 ? null : { exhibitId: exhibit.id, index: index + 1 };
+        renderMessages();
+    });
+    controls.append(previous, next);
+    page.append(header, frame, plaque, controls);
+    els.messages.appendChild(page);
 }
 
 function getReactionInsights(events) {
@@ -1849,6 +3131,1093 @@ function renderFocusSession() {
     els.messages.appendChild(page);
 }
 
+function getRouletteSlideshowSettings() {
+    const serverId = getActiveServer()?.id || "main";
+    const saved = state.structure.settings.rouletteSlideshowSettings?.[serverId] || {};
+    return {
+        minSeconds: 3,
+        maxSeconds: 10,
+        minBpm: 80,
+        maxBpm: 160,
+        ...saved
+    };
+}
+
+async function saveRouletteSlideshowSettings(settings) {
+    const serverId = getActiveServer()?.id || "main";
+    state.structure.settings.rouletteSlideshowSettings ||= {};
+    state.structure.settings.rouletteSlideshowSettings[serverId] = settings;
+    await saveStructure(state.structure);
+}
+
+function rouletteRangeValue(value, minimum, maximum, fallback) {
+    return Math.min(maximum, Math.max(minimum, Number.parseInt(value, 10) || fallback));
+}
+
+function rouletteRandomInteger(first, second) {
+    const minimum = Math.min(first, second);
+    const maximum = Math.max(first, second);
+    return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+}
+
+function formatRouletteSeconds(seconds) {
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+function getRouletteCandidatesByChannel() {
+    const candidates = new Map();
+    getServerEntries().forEach((entry) => {
+        const images = (entry.message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+            .map((attachment) => ({
+                ref: { channelId: entry.channelId, messageId: entry.message.id, attachmentId: attachment.id }
+            }));
+        if (images.length) candidates.set(entry.channelId, [...(candidates.get(entry.channelId) || []), ...images]);
+    });
+    return candidates;
+}
+
+function startRouletteSlideshow() {
+    const roulette = state.rouletteSlideshow;
+    if (roulette.isPlaying) return;
+    roulette.previousBpm = els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120;
+    roulette.previousMetronomeRunning = Boolean(metronomeTimer);
+    roulette.isPlaying = true;
+    roulette.lastChannelId = null;
+    advanceRouletteSlideshow();
+}
+
+function advanceRouletteSlideshow() {
+    const roulette = state.rouletteSlideshow;
+    if (!roulette.isPlaying) return;
+    window.clearTimeout(rouletteSlideshowTimer);
+    const candidatesByChannel = getRouletteCandidatesByChannel();
+    const allChannelIds = [...candidatesByChannel.keys()];
+    if (!allChannelIds.length) {
+        stopRouletteSlideshow({ render: false });
+        alert("Add local images or GIFs to this workspace before starting Roulette Slideshow.");
+        renderMessages();
+        return;
+    }
+    const eligibleChannels = allChannelIds.length > 1
+        ? allChannelIds.filter((channelId) => channelId !== roulette.lastChannelId)
+        : allChannelIds;
+    const channelId = randomItem(eligibleChannels);
+    const selected = randomItem(candidatesByChannel.get(channelId) || []);
+    if (!selected) return;
+    const settings = getRouletteSlideshowSettings();
+    const durationSeconds = rouletteRandomInteger(
+        rouletteRangeValue(settings.minSeconds, 1, 120, 3),
+        rouletteRangeValue(settings.maxSeconds, 1, 120, 10)
+    );
+    const bpm = rouletteRandomInteger(
+        rouletteRangeValue(settings.minBpm, 20, 300, 80),
+        rouletteRangeValue(settings.maxBpm, 20, 300, 160)
+    );
+    roulette.current = { ...selected, durationSeconds, bpm, startedAt: Date.now() };
+    roulette.lastChannelId = channelId;
+    els.metronomeBpm.value = String(bpm);
+    startMetronome();
+    rouletteSlideshowTimer = window.setTimeout(() => {
+        if (state.activeView.type !== "rouletteSlideshow") {
+            stopRouletteSlideshow({ render: false });
+            return;
+        }
+        advanceRouletteSlideshow();
+    }, durationSeconds * 1000);
+    renderMessages();
+}
+
+function stopRouletteSlideshow({ restoreMetronome = true, render = true } = {}) {
+    const roulette = state.rouletteSlideshow;
+    const wasPlaying = roulette.isPlaying;
+    window.clearTimeout(rouletteSlideshowTimer);
+    rouletteSlideshowTimer = undefined;
+    roulette.isPlaying = false;
+    if (restoreMetronome && wasPlaying && roulette.previousBpm !== null) {
+        els.metronomeBpm.value = String(roulette.previousBpm);
+        if (roulette.previousMetronomeRunning) startMetronome();
+        else stopMetronome(false);
+    }
+    roulette.previousBpm = null;
+    roulette.previousMetronomeRunning = false;
+    if (render && state.activeView.type === "rouletteSlideshow") renderMessages();
+}
+
+function renderRouletteSlideshow() {
+    const roulette = state.rouletteSlideshow;
+    const settings = getRouletteSlideshowSettings();
+    const page = document.createElement("section");
+    page.className = "rouletteSlideshow";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Roulette Slideshow</h3><p>Each turn chooses a channel first, then a random local image or GIF from it. The duration and metronome BPM change independently within your ranges.</p>";
+    const controls = document.createElement("section");
+    controls.className = "rouletteSlideshowControls";
+    const makeNumber = (labelText, value, minimum, maximum) => {
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = String(minimum);
+        input.max = String(maximum);
+        input.inputMode = "numeric";
+        input.value = value;
+        label.appendChild(input);
+        return { label, input };
+    };
+    const minimumDuration = makeNumber("Minimum slide seconds", settings.minSeconds, 1, 120);
+    const maximumDuration = makeNumber("Maximum slide seconds", settings.maxSeconds, 1, 120);
+    const minimumBpm = makeNumber("Minimum BPM", settings.minBpm, 20, 300);
+    const maximumBpm = makeNumber("Maximum BPM", settings.maxBpm, 20, 300);
+    const saveSettings = async () => {
+        await saveRouletteSlideshowSettings({
+            minSeconds: rouletteRangeValue(minimumDuration.input.value, 1, 120, 3),
+            maxSeconds: rouletteRangeValue(maximumDuration.input.value, 1, 120, 10),
+            minBpm: rouletteRangeValue(minimumBpm.input.value, 20, 300, 80),
+            maxBpm: rouletteRangeValue(maximumBpm.input.value, 20, 300, 160)
+        });
+    };
+    [minimumDuration.input, maximumDuration.input, minimumBpm.input, maximumBpm.input]
+        .forEach((input) => input.addEventListener("change", saveSettings));
+    controls.append(minimumDuration.label, maximumDuration.label, minimumBpm.label, maximumBpm.label);
+    const actions = document.createElement("div");
+    actions.className = "rouletteSlideshowActions";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "adventurePrimary";
+    toggle.textContent = roulette.isPlaying ? "Stop roulette" : roulette.current ? "Resume roulette" : "Start roulette";
+    toggle.addEventListener("click", () => {
+        if (roulette.isPlaying) stopRouletteSlideshow();
+        else startRouletteSlideshow();
+    });
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Spin next now";
+    next.disabled = !roulette.isPlaying;
+    next.addEventListener("click", advanceRouletteSlideshow);
+    actions.append(toggle, next);
+    const current = roulette.current;
+    const attachment = current ? findAttachment(current.ref) : null;
+    if (attachment) {
+        const frame = renderAdventurePlayerMedia(current.ref);
+        frame.className = "rouletteSlideshowFrame";
+        const caption = document.createElement("figcaption");
+        caption.textContent = `# ${getChannelById(current.ref.channelId)?.name || "channel"} · ${formatRouletteSeconds(current.durationSeconds)} · ${current.bpm} BPM`;
+        const progress = document.createElement("div");
+        progress.className = "rouletteSlideshowProgress";
+        const progressFill = document.createElement("span");
+        progress.appendChild(progressFill);
+        if (roulette.isPlaying) {
+            requestAnimationFrame(() => {
+                progressFill.style.transition = `width ${current.durationSeconds * 1000}ms linear`;
+                progressFill.style.width = "100%";
+            });
+        } else {
+            progressFill.style.width = "100%";
+        }
+        frame.append(caption, progress);
+        page.append(intro, controls, actions, frame);
+    } else {
+        const empty = emptyPanel("Choose Start roulette to draw a local image or GIF from a random channel in this workspace.");
+        page.append(intro, controls, actions, empty);
+    }
+    const note = document.createElement("p");
+    note.className = "rouletteSlideshowNote";
+    note.textContent = "Everything stays local. Stopping restores the metronome state you had before the roulette started.";
+    page.appendChild(note);
+    els.messages.appendChild(page);
+}
+
+function getImageDraftDurationPresets() {
+    return {
+        "gentle-rise": { label: "Top pick linger", description: "Long-to-short: 10 to 3 seconds", start: 10, end: 3 },
+        "dramatic-rise": { label: "Top pick spotlight", description: "Long-to-short: 18 to 2 seconds", start: 18, end: 2 },
+        "reverse-fade": { label: "Quick descent", description: "Long-to-short: 12 to 3 seconds", start: 12, end: 3 }
+    };
+}
+
+function getImageDraftBpmPresets() {
+    return {
+        "calm-rise": { label: "Top pick energy", description: "High-to-low: 160 to 70 BPM", start: 160, end: 70 },
+        "full-rise": { label: "Top pick maximum", description: "High-to-low: 220 to 60 BPM", start: 220, end: 60 },
+        "reverse-calm": { label: "Steady descent", description: "High-to-low: 180 to 75 BPM", start: 180, end: 75 }
+    };
+}
+
+function getImageDraftScaleValue(preset, position, total) {
+    const progress = total <= 1 ? 0 : (position - 1) / (total - 1);
+    return Math.round(preset.start + (preset.end - preset.start) * progress);
+}
+
+function shuffledCopy(items) {
+    const copy = [...items];
+    for (let index = copy.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(Math.random() * (index + 1));
+        [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+    }
+    return copy;
+}
+
+function getImageDraftSourceChannels() {
+    const draft = state.imageDraft;
+    const server = getActiveServer();
+    if (!server) return [];
+    const visibleChannels = allChannels(server).filter((channel) => !channel.hidden && !getChannelCategory(channel.id)?.hidden);
+    if (draft.sourceType === "channel") return visibleChannels.filter((channel) => channel.id === draft.sourceId);
+    if (draft.sourceType === "category") {
+        const category = server.categories.find((item) => item.id === draft.sourceId && !item.hidden);
+        return category?.channels.filter((channel) => !channel.hidden) || [];
+    }
+    return visibleChannels;
+}
+
+async function getImageDraftCandidates() {
+    const channels = getImageDraftSourceChannels();
+    await Promise.all(channels.map(async (channel) => {
+        if (!state.messagesByChannel.has(channel.id)) {
+            state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
+        }
+    }));
+    return channels.flatMap((channel) => (
+        (state.messagesByChannel.get(channel.id) || []).flatMap((message) => (
+            (message.attachments || [])
+                .filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment))
+                .map((attachment) => ({
+                    ref: { channelId: channel.id, messageId: message.id, attachmentId: attachment.id },
+                    label: attachment.note || attachment.name || "Local image",
+                    channelName: channel.name
+                }))
+        ))
+    ));
+}
+
+function imageDraftRankedItems() {
+    return (state.imageDraft.ranked || []).filter(Boolean);
+}
+
+function getImageDraftSlideValues(item) {
+    const total = imageDraftRankedItems().length;
+    const durationPreset = getImageDraftDurationPresets()[state.imageDraft.durationPreset] || getImageDraftDurationPresets()["gentle-rise"];
+    const bpmPreset = getImageDraftBpmPresets()[state.imageDraft.bpmPreset] || getImageDraftBpmPresets()["calm-rise"];
+    return {
+        durationSeconds: getImageDraftScaleValue(durationPreset, item.rank, total),
+        bpm: getImageDraftScaleValue(bpmPreset, item.rank, total)
+    };
+}
+
+function getImageDraftPresentationSequence() {
+    const ranked = imageDraftRankedItems();
+    if (state.imageDraft.playOrder === "first-to-last") return [...ranked];
+    if (state.imageDraft.playOrder === "last-to-first") return [...ranked].reverse();
+    return shuffledCopy(ranked);
+}
+
+function renderImageDraft() {
+    const stage = state.imageDraft.stage;
+    if (stage === "visible") return renderImageDraftVisible();
+    if (stage === "blind") return renderImageDraftBlind();
+    if (stage === "result") return renderImageDraftResult();
+    if (stage === "play") return renderImageDraftPlayback();
+    if (stage === "censor") return renderImageDraftCensorChallenge();
+    if (stage === "wheel") return renderImageDraftWheel();
+    renderImageDraftSetup();
+}
+
+function imageDraftSelect(options, selected, onChange) {
+    const select = document.createElement("select");
+    options.forEach(({ value, label }) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        option.selected = value === selected;
+        select.appendChild(option);
+    });
+    select.addEventListener("change", () => onChange(select.value));
+    return select;
+}
+
+function imageDraftField(labelText, control) {
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    label.appendChild(control);
+    return label;
+}
+
+function getImageDraftSourceOptions(type) {
+    const server = getActiveServer();
+    if (!server) return [];
+    if (type === "category") {
+        return server.categories
+            .filter((category) => !category.hidden && category.channels.some((channel) => !channel.hidden))
+            .map((category) => ({ value: category.id, label: `${category.name} folder` }));
+    }
+    return allChannels(server)
+        .filter((channel) => !channel.hidden && !getChannelCategory(channel.id)?.hidden)
+        .map((channel) => ({ value: channel.id, label: `# ${channel.name}` }));
+}
+
+function updateImageDraftSourceDefault() {
+    const draft = state.imageDraft;
+    if (draft.sourceType === "all") {
+        draft.sourceId = "";
+        return;
+    }
+    const options = getImageDraftSourceOptions(draft.sourceType);
+    if (!options.some((option) => option.value === draft.sourceId)) draft.sourceId = options[0]?.value || "";
+}
+
+function renderImageDraftSetup() {
+    const draft = state.imageDraft;
+    updateImageDraftSourceDefault();
+    const page = document.createElement("section");
+    page.className = "imageDraft";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = "<h3>Image Draft</h3><p>Draw a local set of images, draft them into positions, then play them in a random order. Each position controls its duration and BPM — not its location in the show.</p>";
+    const setup = document.createElement("section");
+    setup.className = "imageDraftSetup";
+    const count = document.createElement("input");
+    count.type = "number";
+    count.min = "2";
+    count.max = "20";
+    count.inputMode = "numeric";
+    count.value = String(draft.count);
+    const mode = imageDraftSelect([
+        { value: "visible", label: "Visible draft — see every image" },
+        { value: "blind", label: "Blind draft — rank one image at a time" }
+    ], draft.mode, (value) => { draft.mode = value; });
+    const sourceType = imageDraftSelect([
+        { value: "all", label: "All visible channels in this workspace" },
+        { value: "category", label: "One folder" },
+        { value: "channel", label: "One channel" }
+    ], draft.sourceType, (value) => {
+        draft.sourceType = value;
+        draft.sourceId = "";
+        renderMessages();
+    });
+    const source = imageDraftSelect(getImageDraftSourceOptions(draft.sourceType), draft.sourceId, (value) => { draft.sourceId = value; });
+    const sourceField = imageDraftField(draft.sourceType === "category" ? "Folder" : "Channel", source);
+    sourceField.hidden = draft.sourceType === "all";
+    const order = imageDraftSelect([
+        { value: "random", label: "Randomized locations (default)" },
+        { value: "first-to-last", label: "First draft spot to last" },
+        { value: "last-to-first", label: "Last draft spot to first" }
+    ], draft.playOrder, (value) => { draft.playOrder = value; });
+    const censor = document.createElement("input");
+    censor.type = "checkbox";
+    censor.checked = draft.censorMode;
+    const censorLabel = document.createElement("label");
+    censorLabel.className = "imageDraftToggle";
+    censorLabel.append(censor, document.createTextNode(" Censor mode — position becomes the required number of blur regions"));
+    const duration = imageDraftSelect(Object.entries(getImageDraftDurationPresets()).map(([value, preset]) => ({ value, label: `${preset.label} · ${preset.description}` })), draft.durationPreset, (value) => { draft.durationPreset = value; });
+    const bpm = imageDraftSelect(Object.entries(getImageDraftBpmPresets()).map(([value, preset]) => ({ value, label: `${preset.label} · ${preset.description}` })), draft.bpmPreset, (value) => { draft.bpmPreset = value; });
+    const durationField = imageDraftField("Duration scaling", duration);
+    const bpmField = imageDraftField("BPM scaling", bpm);
+    const winnerStays = document.createElement("input");
+    winnerStays.type = "checkbox";
+    winnerStays.checked = draft.wheelWinnerStays;
+    const winnerTimer = document.createElement("input");
+    winnerTimer.type = "number";
+    winnerTimer.min = "0";
+    winnerTimer.max = "7200";
+    winnerTimer.inputMode = "numeric";
+    winnerTimer.value = String(draft.wheelWinnerTimerSeconds || 0);
+    const winnerField = document.createElement("label");
+    winnerField.className = "imageDraftWinnerStay";
+    winnerField.append(winnerStays, document.createTextNode(" Winner stays — keep the wheel result’s BPM running"));
+    const winnerTimerField = imageDraftField("Winner-stays timer (seconds, 0 = until exit)", winnerTimer);
+    const preview = document.createElement("p");
+    preview.className = "imageDraftPreview";
+    const refreshPreview = () => {
+        draft.count = Math.min(20, Math.max(2, Number.parseInt(count.value, 10) || 6));
+        count.value = String(draft.count);
+        if (draft.censorMode) {
+            preview.textContent = `Censor mode: draft spot #1 needs 1 blur region; #${draft.count} needs ${draft.count}. The challenge order follows your selected location order.`;
+            durationField.hidden = true;
+            bpmField.hidden = true;
+            winnerField.hidden = true;
+            winnerTimerField.hidden = true;
+        } else {
+            const durationPreset = getImageDraftDurationPresets()[draft.durationPreset] || getImageDraftDurationPresets()["gentle-rise"];
+            const bpmPreset = getImageDraftBpmPresets()[draft.bpmPreset] || getImageDraftBpmPresets()["calm-rise"];
+            const firstValues = { durationSeconds: getImageDraftScaleValue(durationPreset, 1, draft.count), bpm: getImageDraftScaleValue(bpmPreset, 1, draft.count) };
+            const lastValues = { durationSeconds: getImageDraftScaleValue(durationPreset, draft.count, draft.count), bpm: getImageDraftScaleValue(bpmPreset, draft.count, draft.count) };
+            preview.textContent = `Scale preview: #1 is ${firstValues.durationSeconds}s at ${firstValues.bpm} BPM; #${draft.count} is ${lastValues.durationSeconds}s at ${lastValues.bpm} BPM.`;
+            durationField.hidden = false;
+            bpmField.hidden = false;
+            winnerField.hidden = false;
+            winnerTimerField.hidden = !draft.wheelWinnerStays;
+        }
+    };
+    count.addEventListener("input", refreshPreview);
+    duration.addEventListener("change", refreshPreview);
+    bpm.addEventListener("change", refreshPreview);
+    censor.addEventListener("change", () => { draft.censorMode = censor.checked; refreshPreview(); });
+    winnerStays.addEventListener("change", () => { draft.wheelWinnerStays = winnerStays.checked; refreshPreview(); });
+    winnerTimer.addEventListener("input", () => {
+        draft.wheelWinnerTimerSeconds = Math.min(7200, Math.max(0, Number.parseInt(winnerTimer.value, 10) || 0));
+    });
+    setup.append(
+        imageDraftField("Images to draft", count),
+        imageDraftField("Draft mode", mode),
+        imageDraftField("Draw from", sourceType),
+        sourceField,
+        imageDraftField("Playback order", order),
+        durationField,
+        bpmField,
+        winnerField,
+        winnerTimerField,
+        censorLabel,
+        preview
+    );
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "adventurePrimary";
+    start.textContent = "Draw images and begin draft";
+    start.addEventListener("click", () => beginImageDraft().catch((error) => {
+        console.error("Could not start image draft:", error);
+        alert("Could not load the selected local images for this draft.");
+    }));
+    page.append(intro, setup, start);
+    els.messages.appendChild(page);
+    refreshPreview();
+}
+
+async function beginImageDraft() {
+    const draft = state.imageDraft;
+    updateImageDraftSourceDefault();
+    const candidates = await getImageDraftCandidates();
+    const count = Math.min(20, Math.max(2, Number.parseInt(draft.count, 10) || 6));
+    draft.count = count;
+    if (candidates.length < count) {
+        alert(`The selected source has ${candidates.length} available local image${candidates.length === 1 ? "" : "s"}. Choose ${Math.max(2, Math.min(count, candidates.length))} or fewer, or select another source.`);
+        return;
+    }
+    draft.candidates = shuffledCopy(candidates).slice(0, count);
+    draft.ranked = draft.mode === "blind" ? Array(count).fill(null) : [];
+    draft.blindIndex = 0;
+    draft.historyId = null;
+    draft.play = null;
+    draft.censor = null;
+    draft.wheel = null;
+    draft.stage = draft.mode;
+    renderMessages();
+}
+
+function renderImageDraftCandidate(item, rank = null, blind = false) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `imageDraftCandidate${rank ? " isRanked" : ""}`;
+    const attachment = findAttachment(item.ref);
+    if (attachment) {
+        const image = document.createElement("img");
+        setRenderedImageSource(image, attachment);
+        image.alt = blind ? "Draft image" : item.label;
+        button.appendChild(image);
+    }
+    const detail = document.createElement("span");
+    detail.className = "imageDraftCandidateDetail";
+    const title = document.createElement("strong");
+    title.textContent = blind ? "Current image" : item.label;
+    detail.appendChild(title);
+    if (!blind) {
+        const channel = document.createElement("small");
+        channel.textContent = `# ${item.channelName}`;
+        detail.appendChild(channel);
+    }
+    button.appendChild(detail);
+    if (rank) {
+        const badge = document.createElement("span");
+        badge.className = "imageDraftRankBadge";
+        badge.textContent = `#${rank}`;
+        button.appendChild(badge);
+        button.disabled = true;
+    }
+    return button;
+}
+
+function renderImageDraftVisible() {
+    const draft = state.imageDraft;
+    const page = document.createElement("section");
+    page.className = "imageDraft";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = `<h3>Visible draft</h3><p>Tap an image to assign the next spot. Choose #${draft.ranked.length + 1} of ${draft.candidates.length}.</p>`;
+    const selected = document.createElement("section");
+    selected.className = "imageDraftOrder";
+    const selectedHeading = document.createElement("strong");
+    selectedHeading.textContent = "Your draft order";
+    selected.appendChild(selectedHeading);
+    if (draft.ranked.length === 0) selected.appendChild(emptyPanel("Nothing drafted yet."));
+    else {
+        draft.ranked.forEach((item, index) => {
+            const row = document.createElement("button");
+            row.type = "button";
+            row.className = "imageDraftOrderItem";
+            row.textContent = `#${index + 1} · ${item.label} · #${item.channelName} · remove`;
+            row.addEventListener("click", () => {
+                draft.ranked.splice(index, 1);
+                renderMessages();
+            });
+            selected.appendChild(row);
+        });
+    }
+    const grid = document.createElement("div");
+    grid.className = "imageDraftGrid";
+    const rankedByKey = new Map(draft.ranked.map((item, index) => [photoRefKey(item.ref), index + 1]));
+    draft.candidates.forEach((item) => {
+        const rank = rankedByKey.get(photoRefKey(item.ref));
+        const card = renderImageDraftCandidate(item, rank);
+        if (!rank) card.addEventListener("click", () => {
+            draft.ranked.push(item);
+            renderMessages();
+        });
+        grid.appendChild(card);
+    });
+    const actions = document.createElement("div");
+    actions.className = "imageDraftActions";
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.textContent = "Start over";
+    restart.addEventListener("click", resetImageDraft);
+    const complete = document.createElement("button");
+    complete.type = "button";
+    complete.className = "adventurePrimary";
+    complete.textContent = "Complete draft";
+    complete.disabled = draft.ranked.length !== draft.candidates.length;
+    complete.addEventListener("click", () => finalizeImageDraft().catch(reportImageDraftSaveError));
+    actions.append(restart, complete);
+    page.append(intro, selected, grid, actions);
+    els.messages.appendChild(page);
+}
+
+function renderImageDraftBlind() {
+    const draft = state.imageDraft;
+    const current = draft.candidates[draft.blindIndex];
+    if (!current) return finalizeImageDraft().catch(reportImageDraftSaveError);
+    const page = document.createElement("section");
+    page.className = "imageDraft imageDraftBlind";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = `<h3>Blind draft</h3><p>Image ${draft.blindIndex + 1} of ${draft.candidates.length}. Pick its draft spot without seeing the other images.</p>`;
+    const attachment = findAttachment(current.ref);
+    const media = attachment ? renderAdventurePlayerMedia(current.ref, "Assign this image a draft spot") : emptyPanel("This source image is no longer available.");
+    media.classList.add("imageDraftBlindMedia");
+    const slots = document.createElement("section");
+    slots.className = "imageDraftSlots";
+    const slotHeading = document.createElement("strong");
+    slotHeading.textContent = "Choose an available draft spot";
+    slots.appendChild(slotHeading);
+    draft.ranked.forEach((item, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = item ? `#${index + 1} filled` : `Draft spot #${index + 1}`;
+        button.disabled = Boolean(item) || !attachment;
+        button.addEventListener("click", () => assignBlindImageDraftSpot(index));
+        slots.appendChild(button);
+    });
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.className = "imageDraftBack";
+    restart.textContent = "Cancel this draft";
+    restart.addEventListener("click", resetImageDraft);
+    page.append(intro, media, slots, restart);
+    els.messages.appendChild(page);
+}
+
+async function assignBlindImageDraftSpot(index) {
+    const draft = state.imageDraft;
+    const candidate = draft.candidates[draft.blindIndex];
+    if (!candidate || draft.ranked[index]) return;
+    draft.ranked[index] = candidate;
+    draft.blindIndex += 1;
+    if (draft.blindIndex >= draft.candidates.length) await finalizeImageDraft();
+    else renderMessages();
+}
+
+function resetImageDraft() {
+    stopImageDraftSlideshow({ render: false });
+    clearImageDraftWheelTimer();
+    stopImageDraftWinnerStay({ render: false });
+    state.imageDraft.stage = "setup";
+    state.imageDraft.candidates = [];
+    state.imageDraft.ranked = [];
+    state.imageDraft.historyId = null;
+    state.imageDraft.play = null;
+    state.imageDraft.censor = null;
+    state.imageDraft.wheel = null;
+    renderMessages();
+}
+
+function reportImageDraftSaveError(error) {
+    console.error("Could not save image draft statistics:", error);
+    alert("Your draft could not be saved to local statistics. Please try the draft again.");
+}
+
+async function finalizeImageDraft() {
+    const draft = state.imageDraft;
+    if (imageDraftRankedItems().length !== draft.candidates.length) return;
+    const server = getActiveServer();
+    if (!server) return;
+    const record = {
+        id: crypto.randomUUID(),
+        serverId: server.id,
+        createdAt: new Date().toISOString(),
+        mode: draft.mode,
+        sourceType: draft.sourceType,
+        sourceId: draft.sourceId,
+        playOrder: draft.playOrder,
+        durationPreset: draft.durationPreset,
+        bpmPreset: draft.bpmPreset,
+        censorMode: Boolean(draft.censorMode),
+        items: draft.ranked.map((item, index) => ({
+            ref: structuredClone(item.ref),
+            rank: index + 1,
+            label: item.label,
+            channelName: item.channelName
+        })),
+        censorResults: []
+    };
+    state.structure.settings.draftHistory = [...(state.structure.settings.draftHistory || []), record].slice(-200);
+    await saveStructure(state.structure);
+    draft.historyId = record.id;
+    draft.stage = "result";
+    renderMessages();
+}
+
+function renderImageDraftResult() {
+    const draft = state.imageDraft;
+    const page = document.createElement("section");
+    page.className = "imageDraft";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = draft.censorMode
+        ? "<h3>Draft saved</h3><p>The draft positions are now stored in local statistics. Start the censor challenge to make an increasing number of blur regions based on each image’s draft spot.</p>"
+        : "<h3>Draft saved</h3><p>The draft positions are now stored in local statistics. Playback uses your selected duration and BPM scaling while locations follow your selected order.</p>";
+    const list = document.createElement("section");
+    list.className = "imageDraftResultList";
+    imageDraftRankedItems().forEach((item) => {
+        const values = getImageDraftSlideValues(item);
+        const row = document.createElement("article");
+        row.className = "imageDraftResultItem";
+        const attachment = findAttachment(item.ref);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = item.label;
+            row.appendChild(image);
+        }
+        const detail = document.createElement("div");
+        const label = document.createElement("strong");
+        label.textContent = `#${item.rank} · ${item.label}`;
+        const meta = document.createElement("span");
+        meta.textContent = draft.censorMode
+            ? `# ${item.channelName} · requires ${item.rank} censor region${item.rank === 1 ? "" : "s"}`
+            : `# ${item.channelName} · ${values.durationSeconds}s · ${values.bpm} BPM`;
+        detail.append(label, meta);
+        row.appendChild(detail);
+        list.appendChild(row);
+    });
+    const actions = document.createElement("div");
+    actions.className = "imageDraftActions";
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "adventurePrimary";
+    play.textContent = draft.censorMode ? "Start censor challenge" : "Start draft slideshow";
+    play.addEventListener("click", () => {
+        if (draft.censorMode) startImageDraftCensorChallenge();
+        else startImageDraftSlideshow();
+    });
+    const newDraft = document.createElement("button");
+    newDraft.type = "button";
+    newDraft.textContent = "New draft";
+    newDraft.addEventListener("click", resetImageDraft);
+    actions.append(play, newDraft);
+    page.append(intro, list, actions);
+    els.messages.appendChild(page);
+}
+
+function startImageDraftSlideshow() {
+    const draft = state.imageDraft;
+    const sequence = getImageDraftPresentationSequence();
+    if (!sequence.length) return;
+    draft.play = {
+        sequence,
+        index: 0,
+        isPlaying: true,
+        previousBpm: els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120,
+        previousMetronomeRunning: Boolean(metronomeTimer)
+    };
+    draft.stage = "play";
+    advanceImageDraftSlideshow();
+}
+
+function advanceImageDraftSlideshow() {
+    const draft = state.imageDraft;
+    const play = draft.play;
+    if (!play?.isPlaying) return;
+    window.clearTimeout(imageDraftSlideshowTimer);
+    if (play.index >= play.sequence.length) {
+        stopImageDraftSlideshow({ render: false });
+        startImageDraftWheel();
+        return;
+    }
+    const item = play.sequence[play.index];
+    const values = getImageDraftSlideValues(item);
+    play.current = { item, values, startedAt: Date.now() };
+    els.metronomeBpm.value = String(values.bpm);
+    startMetronome();
+    imageDraftSlideshowTimer = window.setTimeout(() => {
+        if (state.activeView.type !== "imageDraft" || state.imageDraft.stage !== "play") {
+            stopImageDraftSlideshow({ render: false });
+            return;
+        }
+        play.index += 1;
+        advanceImageDraftSlideshow();
+    }, values.durationSeconds * 1000);
+    renderMessages();
+}
+
+function stopImageDraftSlideshow({ restoreMetronome = true, render = true } = {}) {
+    const draft = state.imageDraft;
+    const play = draft.play;
+    window.clearTimeout(imageDraftSlideshowTimer);
+    imageDraftSlideshowTimer = undefined;
+    if (play?.isPlaying && restoreMetronome && play.previousBpm !== undefined) {
+        els.metronomeBpm.value = String(play.previousBpm);
+        if (play.previousMetronomeRunning) startMetronome();
+        else stopMetronome(false);
+    }
+    if (play) play.isPlaying = false;
+    draft.play = null;
+    if (draft.stage === "play") draft.stage = "result";
+    if (render && state.activeView.type === "imageDraft") renderMessages();
+}
+
+function renderImageDraftPlayback() {
+    const draft = state.imageDraft;
+    const current = draft.play?.current;
+    if (!current) return renderImageDraftResult();
+    const page = document.createElement("section");
+    page.className = "imageDraft imageDraftPlayback";
+    const heading = document.createElement("section");
+    heading.className = "focusSessionIntro";
+    heading.innerHTML = `<h3>Draft slideshow</h3><p>Slide ${draft.play.index + 1} of ${draft.play.sequence.length} · draft spot #${current.item.rank}</p>`;
+    const media = renderAdventurePlayerMedia(current.item.ref);
+    media.className = "imageDraftPlaybackFrame";
+    const caption = document.createElement("figcaption");
+    caption.textContent = `Draft spot #${current.item.rank} · ${current.values.durationSeconds} seconds · ${current.values.bpm} BPM`;
+    const progress = document.createElement("div");
+    progress.className = "rouletteSlideshowProgress";
+    const fill = document.createElement("span");
+    progress.appendChild(fill);
+    requestAnimationFrame(() => {
+        fill.style.transition = `width ${current.values.durationSeconds * 1000}ms linear`;
+        fill.style.width = "100%";
+    });
+    media.append(caption, progress);
+    const actions = document.createElement("div");
+    actions.className = "imageDraftActions";
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next now";
+    next.addEventListener("click", () => {
+        draft.play.index += 1;
+        advanceImageDraftSlideshow();
+    });
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.textContent = "Stop slideshow";
+    stop.addEventListener("click", stopImageDraftSlideshow);
+    actions.append(next, stop);
+    page.append(heading, media, actions);
+    els.messages.appendChild(page);
+}
+
+function clearImageDraftWheelTimer() {
+    window.clearTimeout(imageDraftWheelTimer);
+    imageDraftWheelTimer = undefined;
+}
+
+function clearImageDraftWinnerTimer() {
+    window.clearTimeout(imageDraftWinnerTimer);
+    imageDraftWinnerTimer = undefined;
+}
+
+function startImageDraftWinnerStay() {
+    const draft = state.imageDraft;
+    const wheel = draft.wheel;
+    if (!wheel?.result || !draft.wheelWinnerStays || wheel.winnerStayActive) return;
+    const values = getImageDraftSlideValues(wheel.result);
+    wheel.previousBpm = els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120;
+    wheel.previousMetronomeRunning = Boolean(metronomeTimer);
+    wheel.winnerBpm = values.bpm;
+    wheel.winnerStayActive = true;
+    els.metronomeBpm.value = String(values.bpm);
+    startMetronome();
+    const seconds = Math.min(7200, Math.max(0, Number.parseInt(draft.wheelWinnerTimerSeconds, 10) || 0));
+    if (seconds > 0) {
+        imageDraftWinnerTimer = window.setTimeout(() => {
+            if (state.imageDraft.wheel === wheel) stopImageDraftWinnerStay();
+        }, seconds * 1000);
+    }
+}
+
+function stopImageDraftWinnerStay({ render = true } = {}) {
+    clearImageDraftWinnerTimer();
+    const wheel = state.imageDraft.wheel;
+    if (!wheel?.winnerStayActive) return;
+    els.metronomeBpm.value = String(wheel.previousBpm || state.structure.settings.metronomeBpm || 120);
+    if (wheel.previousMetronomeRunning) startMetronome();
+    else stopMetronome(false);
+    wheel.winnerStayActive = false;
+    if (render && state.activeView.type === "imageDraft" && state.imageDraft.stage === "wheel") renderMessages();
+}
+
+function startImageDraftWheel() {
+    clearImageDraftWheelTimer();
+    clearImageDraftWinnerTimer();
+    const items = imageDraftRankedItems();
+    if (!items.length) {
+        state.imageDraft.stage = "result";
+        renderMessages();
+        return;
+    }
+    state.imageDraft.wheel = {
+        items,
+        result: null,
+        spinning: false,
+        rotation: 0,
+        fromRotation: 0,
+        winnerStayActive: false
+    };
+    state.imageDraft.stage = "wheel";
+    renderMessages();
+}
+
+function getImageDraftWheelWeight(item, items) {
+    return Math.max(1, items.length - item.rank + 1);
+}
+
+function drawImageDraftWheel(canvas, items) {
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const size = 640;
+    const center = size / 2;
+    const radius = center - 16;
+    const totalWeight = items.reduce((sum, item) => sum + getImageDraftWheelWeight(item, items), 0);
+    const colors = ["#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245", "#00b0f4", "#9b59b6", "#e67e22"];
+    canvas.width = size;
+    canvas.height = size;
+    context.clearRect(0, 0, size, size);
+    let start = -Math.PI / 2;
+    items.forEach((item, index) => {
+        const weight = getImageDraftWheelWeight(item, items);
+        const arc = (weight / totalWeight) * Math.PI * 2;
+        context.beginPath();
+        context.moveTo(center, center);
+        context.arc(center, center, radius, start, start + arc);
+        context.closePath();
+        context.fillStyle = colors[index % colors.length];
+        context.fill();
+        context.strokeStyle = "rgba(17, 18, 20, .9)";
+        context.lineWidth = 3;
+        context.stroke();
+        const labelAngle = start + arc / 2;
+        context.save();
+        context.translate(center, center);
+        context.rotate(labelAngle);
+        context.fillStyle = "#ffffff";
+        context.font = "800 25px system-ui, sans-serif";
+        context.textAlign = "center";
+        context.fillText(`#${item.rank}`, radius * .67, 8);
+        context.restore();
+        start += arc;
+    });
+    context.beginPath();
+    context.arc(center, center, 38, 0, Math.PI * 2);
+    context.fillStyle = "#1e1f22";
+    context.fill();
+    context.strokeStyle = "rgba(255,255,255,.34)";
+    context.lineWidth = 4;
+    context.stroke();
+}
+
+function chooseImageDraftWheelResult(wheel) {
+    const totalWeight = wheel.items.reduce((sum, item) => sum + getImageDraftWheelWeight(item, wheel.items), 0);
+    let roll = Math.random() * totalWeight;
+    let before = 0;
+    for (const item of wheel.items) {
+        const weight = getImageDraftWheelWeight(item, wheel.items);
+        if (roll < weight) return { item, weight, before, totalWeight };
+        roll -= weight;
+        before += weight;
+    }
+    const item = wheel.items[wheel.items.length - 1];
+    const weight = getImageDraftWheelWeight(item, wheel.items);
+    return { item, weight, before: totalWeight - weight, totalWeight };
+}
+
+function spinImageDraftWheel() {
+    const wheel = state.imageDraft.wheel;
+    if (!wheel || wheel.spinning || wheel.result) return;
+    const selection = chooseImageDraftWheelResult(wheel);
+    const midpoint = -90 + ((selection.before + selection.weight / 2) / selection.totalWeight) * 360;
+    const desired = ((-90 - midpoint) % 360 + 360) % 360;
+    const currentMod = ((wheel.rotation % 360) + 360) % 360;
+    wheel.fromRotation = wheel.rotation;
+    wheel.rotation = wheel.rotation + 2160 + ((desired - currentMod + 360) % 360);
+    wheel.result = selection.item;
+    wheel.spinning = true;
+    renderMessages();
+    imageDraftWheelTimer = window.setTimeout(() => {
+        if (state.imageDraft.stage !== "wheel" || state.imageDraft.wheel !== wheel) return;
+        wheel.spinning = false;
+        startImageDraftWinnerStay();
+        renderMessages();
+    }, 1150);
+}
+
+function renderImageDraftWheel() {
+    const draft = state.imageDraft;
+    const wheel = draft.wheel;
+    if (!wheel?.items?.length) return renderImageDraftResult();
+    const page = document.createElement("section");
+    page.className = "imageDraft imageDraftWheel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = wheel.result
+        ? "<h3>Draft wheel settled</h3><p>The wheel uses one slice per drafted image. Earlier draft spots have larger slices. This result will remain here until you exit the draft.</p>"
+        : "<h3>Draft end wheel</h3><p>The slideshow reached its natural end. Each drafted image gets a wheel slice; earlier draft spots receive larger slices.</p>";
+    const stage = document.createElement("div");
+    stage.className = "imageDraftWheelStage";
+    const pointer = document.createElement("span");
+    pointer.className = "imageDraftWheelPointer";
+    pointer.setAttribute("aria-hidden", "true");
+    const canvas = document.createElement("canvas");
+    canvas.className = "imageDraftWheelCanvas";
+    drawImageDraftWheel(canvas, wheel.items);
+    canvas.style.transform = `rotate(${wheel.spinning ? wheel.fromRotation : wheel.rotation}deg)`;
+    if (wheel.spinning) {
+        requestAnimationFrame(() => {
+            canvas.style.transition = "transform 1100ms cubic-bezier(.12, .72, .1, 1)";
+            canvas.style.transform = `rotate(${wheel.rotation}deg)`;
+        });
+    }
+    stage.append(pointer, canvas);
+    const legend = document.createElement("div");
+    legend.className = "imageDraftWheelLegend";
+    wheel.items.forEach((item) => {
+        const label = document.createElement("span");
+        const weight = getImageDraftWheelWeight(item, wheel.items);
+        label.textContent = `#${item.rank} = ${weight} slice${weight === 1 ? "" : "s"}`;
+        legend.appendChild(label);
+    });
+    const winnerStatus = document.createElement("p");
+    winnerStatus.className = "imageDraftWinnerStatus";
+    if (wheel.result && draft.wheelWinnerStays) {
+        const limit = Number.parseInt(draft.wheelWinnerTimerSeconds, 10) || 0;
+        winnerStatus.textContent = wheel.winnerStayActive
+            ? `Winner stays active at ${wheel.winnerBpm} BPM${limit > 0 ? ` for up to ${limit} seconds` : " until you exit the draft"}.`
+            : "Winner-stays BPM finished; the selected image remains on display.";
+    }
+    const actions = document.createElement("div");
+    actions.className = "imageDraftActions";
+    const spin = document.createElement("button");
+    spin.type = "button";
+    spin.className = "adventurePrimary";
+    spin.textContent = wheel.spinning ? "Spinning…" : wheel.result ? "Wheel settled" : "Spin wheel";
+    spin.disabled = wheel.spinning || Boolean(wheel.result);
+    spin.addEventListener("click", spinImageDraftWheel);
+    const exit = document.createElement("button");
+    exit.type = "button";
+    exit.textContent = "Exit draft";
+    exit.addEventListener("click", resetImageDraft);
+    actions.append(spin, exit);
+    page.append(intro, stage, legend);
+    if (winnerStatus.textContent) page.appendChild(winnerStatus);
+    page.appendChild(actions);
+    if (wheel.result && !wheel.spinning) {
+        const attachment = findAttachment(wheel.result.ref);
+        const result = attachment
+            ? renderAdventurePlayerMedia(wheel.result.ref, `Wheel result · draft spot #${wheel.result.rank}`)
+            : emptyPanel("The selected local image is no longer available.");
+        result.classList.add("imageDraftWheelResult");
+        page.appendChild(result);
+    }
+    els.messages.appendChild(page);
+}
+
+function startImageDraftCensorChallenge() {
+    const sequence = getImageDraftPresentationSequence();
+    if (!sequence.length) return;
+    state.imageDraft.censor = { sequence, index: 0, results: [] };
+    state.imageDraft.stage = "censor";
+    renderMessages();
+}
+
+async function saveImageDraftCensorResult(item, regionCount) {
+    const draft = state.imageDraft;
+    const record = (state.structure.settings.draftHistory || []).find((entry) => entry.id === draft.historyId);
+    if (!record) return;
+    record.censorResults ||= [];
+    record.censorResults = record.censorResults.filter((result) => photoRefKey(result.ref) !== photoRefKey(item.ref));
+    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, requiredRegions: item.rank, regionCount, at: new Date().toISOString() });
+    if (record.censorResults.length >= record.items.length) record.censorCompletedAt = new Date().toISOString();
+    await saveStructure(state.structure);
+}
+
+async function completeImageDraftCensorStep(item, regionCount) {
+    const draft = state.imageDraft;
+    await saveImageDraftCensorResult(item, regionCount);
+    draft.censor.results.push({ ref: item.ref, rank: item.rank, regionCount });
+    draft.censor.index += 1;
+    if (draft.censor.index >= draft.censor.sequence.length) {
+        draft.stage = "result";
+        alert("Censor challenge complete. The blurred copies are in #censored and the results were added to local draft statistics.");
+    }
+    renderMessages();
+}
+
+function renderImageDraftCensorChallenge() {
+    const draft = state.imageDraft;
+    const challenge = draft.censor;
+    const item = challenge?.sequence[challenge.index];
+    if (!item) {
+        draft.stage = "result";
+        return renderImageDraftResult();
+    }
+    const page = document.createElement("section");
+    page.className = "imageDraft imageDraftCensor";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = `<h3>Censor draft</h3><p>Challenge ${challenge.index + 1} of ${challenge.sequence.length}. This image was drafted in spot #${item.rank}, so it needs ${item.rank} separate censor region${item.rank === 1 ? "" : "s"}.</p>`;
+    const attachment = findAttachment(item.ref);
+    const media = attachment ? renderAdventurePlayerMedia(item.ref, "Blur the required regions, then save the local copy") : emptyPanel("This source image is no longer available.");
+    const actions = document.createElement("div");
+    actions.className = "imageDraftActions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "adventurePrimary";
+    edit.textContent = `Blur ${item.rank} region${item.rank === 1 ? "" : "s"} and save`;
+    edit.disabled = !attachment;
+    edit.addEventListener("click", () => openCensorEditor({
+        attachment,
+        channelId: item.ref.channelId,
+        sourceRef: item.ref,
+        requiredRegions: item.rank,
+        onSaved: ({ regionCount }) => completeImageDraftCensorStep(item, regionCount).catch(reportImageDraftSaveError)
+    }));
+    const end = document.createElement("button");
+    end.type = "button";
+    end.textContent = "End challenge";
+    end.addEventListener("click", () => { draft.stage = "result"; renderMessages(); });
+    actions.append(edit, end);
+    page.append(intro, media, actions);
+    els.messages.appendChild(page);
+}
+
 function renderChannelQuiz() {
     const quiz = state.channelQuiz;
     const isZoomQuiz = state.activeView.type === "zoomQuiz";
@@ -1967,6 +4336,16 @@ function renderChannelQuiz() {
     bpmStepInput.max = "100";
     bpmStepInput.value = quizSettings.bpmIncrease;
     bpmStep.appendChild(bpmStepInput);
+    const correctPreview = document.createElement("label");
+    correctPreview.textContent = "Keep a correct image visible (seconds)";
+    const correctPreviewInput = document.createElement("input");
+    correctPreviewInput.type = "number";
+    correctPreviewInput.min = "0.5";
+    correctPreviewInput.max = "60";
+    correctPreviewInput.step = "0.5";
+    correctPreviewInput.inputMode = "decimal";
+    correctPreviewInput.value = quizSettings.correctRevealSeconds;
+    correctPreview.appendChild(correctPreviewInput);
     const punishment = document.createElement("label");
     const punishmentInput = document.createElement("input");
     punishmentInput.type = "checkbox";
@@ -2029,6 +4408,7 @@ function renderChannelQuiz() {
         saveChannelQuizSettings({
             increaseBpmOnWrong: bpmPenaltyInput.checked,
             bpmIncrease: clampAdventureNumber(bpmStepInput.value, 1, 100, 10),
+            correctRevealSeconds: clampQuizSeconds(correctPreviewInput.value, 0.5, 60, 1.2),
             punishmentEnabled: punishmentInput.checked,
             punishmentChannelId: punishmentChannelInput.value || null,
             punishmentSeconds: clampAdventureNumber(punishmentSecondsInput.value, 1, 60, 5),
@@ -2036,8 +4416,8 @@ function renderChannelQuiz() {
             randomCropSize: clampAdventureNumber(cropSizeInput.value, 20, 100, 60)
         });
     };
-    [bpmPenaltyInput, bpmStepInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput, randomCropInput, cropSizeInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
-    settings.append(settingsSummary, bpmPenalty, bpmStep, punishment, punishmentChannel, punishmentSeconds, randomCrop, cropPreset, cropSize);
+    [bpmPenaltyInput, bpmStepInput, correctPreviewInput, punishmentInput, punishmentChannelInput, punishmentSecondsInput, randomCropInput, cropSizeInput].forEach((input) => input.addEventListener("change", saveQuizSettings));
+    settings.append(settingsSummary, bpmPenalty, bpmStep, correctPreview, punishment, punishmentChannel, punishmentSeconds, randomCrop, cropPreset, cropSize);
     const start = document.createElement("button");
     start.type = "button";
     start.className = "adventurePrimary";
@@ -2177,7 +4557,9 @@ function renderChannelQuizPlay() {
     if (quiz.feedback) {
         const feedback = document.createElement("p");
         feedback.className = `channelQuizFeedback ${quiz.feedback.correct ? "isCorrect" : "isWrong"}`;
-        feedback.textContent = `${quiz.feedback.correct ? "Correct" : "Not quite"} — it was #${quiz.feedback.sourceName}. Revealing the full image…`;
+        feedback.textContent = quiz.feedback.correct
+            ? `Correct — it was #${quiz.feedback.sourceName}. Keeping the full image visible for ${formatQuizSeconds(quiz.feedback.previewSeconds)}…`
+            : `Not quite — it was #${quiz.feedback.sourceName}. Revealing the full image…`;
         answerArea.appendChild(feedback);
         answerPanel.append(question, answerArea);
         content.append(media, answerPanel);
@@ -2436,7 +4818,8 @@ async function answerChannelQuiz(answer) {
 
 function showChannelQuizReveal(correct, sourceName, punishmentRef = null) {
     const quiz = state.channelQuiz;
-    quiz.feedback = { correct, sourceName };
+    const previewSeconds = correct ? getChannelQuizSettings().correctRevealSeconds : 1.2;
+    quiz.feedback = { correct, sourceName, previewSeconds };
     quiz.revealed = true;
     renderMessages();
     window.clearTimeout(channelQuizAdvanceTimer);
@@ -2454,7 +4837,7 @@ function showChannelQuizReveal(correct, sourceName, punishmentRef = null) {
             return;
         }
         drawChannelQuizQuestion();
-    }, 1200);
+    }, Math.round(previewSeconds * 1000));
 }
 
 async function finishChannelQuizAsBusted() {
@@ -2477,6 +4860,7 @@ function getChannelQuizSettings() {
     return {
         increaseBpmOnWrong: false,
         bpmIncrease: 10,
+        correctRevealSeconds: 1.2,
         punishmentEnabled: false,
         punishmentChannelId: defaultPunishment,
         punishmentSeconds: 5,
@@ -2484,6 +4868,17 @@ function getChannelQuizSettings() {
         randomCropSize: 60,
         ...saved
     };
+}
+
+function clampQuizSeconds(value, minimum, maximum, fallback) {
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.round(Math.min(maximum, Math.max(minimum, parsed)) * 10) / 10;
+}
+
+function formatQuizSeconds(value) {
+    const seconds = clampQuizSeconds(value, 0.5, 60, 1.2);
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
 async function saveChannelQuizSettings(settings) {
@@ -2570,7 +4965,8 @@ function renderStatsPage() {
         ["GIFs", stats.gifs],
         ["Reaction uses", stats.reactionTotal],
         ["Pinned notes", stats.pinned],
-        ["Favorite photos", stats.favorites]
+        ["Favorite photos", stats.favorites],
+        ["Completed drafts", stats.draftInsights.drafts]
     ].forEach(([label, value]) => {
         const card = document.createElement("div");
         card.className = "statsMetric";
@@ -2661,8 +5057,70 @@ function renderStatsPage() {
         });
         tagSection.appendChild(tags);
     }
-    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderReactionTimingStats(stats.reactionInsights));
+    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderImageDraftStats(stats.draftInsights), renderReactionTimingStats(stats.reactionInsights));
     els.messages.appendChild(page);
+}
+
+function renderImageDraftStats(insights) {
+    const section = document.createElement("section");
+    section.className = "statsSection imageDraftStats";
+    const heading = document.createElement("h3");
+    heading.textContent = "Image draft statistics";
+    const help = document.createElement("p");
+    help.textContent = "Every completed visible or blind draft is recorded locally. Censor-mode results are shown separately without replacing the draft positions.";
+    section.append(heading, help);
+    if (insights.drafts === 0) {
+        section.appendChild(emptyPanel("Complete an Image Draft to begin tracking positions and image averages."));
+        return section;
+    }
+    const overview = document.createElement("div");
+    overview.className = "statsInsightGrid";
+    [
+        ["Drafts", insights.drafts],
+        ["Images ranked", insights.placements.length],
+        ["Average draft spot", insights.averageSpot.toFixed(1)],
+        ["Censor copies", insights.censorCopies]
+    ].forEach(([label, value]) => {
+        const card = document.createElement("article");
+        card.className = "statsInsightMetric";
+        const number = document.createElement("strong");
+        number.textContent = String(value);
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        card.append(number, caption);
+        overview.appendChild(card);
+    });
+    section.appendChild(overview);
+    if (insights.spots.length) {
+        section.appendChild(createStatsBarChart(
+            "Draft-position distribution",
+            "How often local images have been assigned each spot.",
+            insights.spots.map((value, index) => ({ label: `#${index + 1}`, value, title: `Draft spot #${index + 1} · ${value} assignment${value === 1 ? "" : "s"}` }))
+        ));
+    }
+    const imageList = document.createElement("section");
+    imageList.className = "statsTimingList imageDraftImageStats";
+    const imageHeading = document.createElement("h4");
+    imageHeading.textContent = "Individual image averages";
+    imageList.appendChild(imageHeading);
+    insights.images.slice(0, 20).forEach((image) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        const label = document.createElement("strong");
+        label.textContent = image.label;
+        const detail = document.createElement("span");
+        detail.textContent = `# ${image.channelName} · average #${image.average.toFixed(1)} · ${image.count} draft${image.count === 1 ? "" : "s"} · best #${image.best}`;
+        row.append(label, detail);
+        row.addEventListener("click", () => openView("channel", image.ref.channelId));
+        imageList.appendChild(row);
+    });
+    const censor = document.createElement("p");
+    censor.className = "imageDraftCensorStat";
+    censor.textContent = insights.censorDrafts
+        ? `${insights.censorDrafts} censor-mode draft${insights.censorDrafts === 1 ? "" : "s"} · ${insights.censorCopies} saved blurred cop${insights.censorCopies === 1 ? "y" : "ies"} · ${insights.censorRegions} total blur regions.`
+        : "No censor-mode drafts completed yet.";
+    section.append(imageList, censor);
+    return section;
 }
 
 function renderReactionTimingStats(insights) {
@@ -6657,7 +9115,9 @@ function renderAttachments(attachments, message, channelId) {
 
 function renderComposer() {
     const hasChannel = Boolean(state.activeChannelId);
-    const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel";
+    const channel = getActiveChannel();
+    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
+    const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel" && !isGalleryChannel;
     const canCompose = enabled && !state.pendingMessageSave;
     els.noteInput.disabled = !canCompose;
     els.sendBtn.disabled = !canCompose;
@@ -6817,6 +9277,8 @@ function openStreamlinedHub() {
         addGroup("Play & focus", [
             ["Channel quiz", () => openView("channelQuiz", "quiz")],
             ["Zoom quiz", () => openView("zoomQuiz", "zoom-quiz")],
+            ["Roulette slideshow", () => openView("rouletteSlideshow", "roulette-slideshow")],
+            ["Image draft", () => openView("imageDraft", "image-draft")],
             ["Focus session", () => openView("focusSession", "focus")],
             [countdownTimer ? "Pause timer" : "Start timer", () => els.chatTimerQuick.click()],
             [metronomeTimer ? "Stop metronome" : "Start metronome", toggleMetronome]
@@ -7101,6 +9563,8 @@ async function createServer() {
     };
 
     state.structure.servers.push(server);
+    ensureDraftGalleryFolder();
+    ensureMuseumFolder();
     state.activeServerId = server.id;
     state.activeChannelId = server.categories[0].channels[0].id;
     state.activeView = { type: "channel", id: state.activeChannelId };
