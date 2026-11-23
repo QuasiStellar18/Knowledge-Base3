@@ -50,6 +50,7 @@ const DEFAULT_STRUCTURE = {
         hallOfFame: [],
         museumExhibits: [],
         thisOrThatHistory: [],
+        censorPresets: [],
         museumQuietMode: false,
         channelQuizSettings: {},
         channelQuizHighScores: {},
@@ -61,6 +62,8 @@ const CHANNEL_PIN = "58008";
 const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
+const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
+const APP_BUILD_VERSION = "99";
 
 function hasUnlockSession() {
     try {
@@ -103,8 +106,8 @@ const state = {
     randomZoomPreset: "normal",
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
-    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
-    thisOrThat: { current: null },
+    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    thisOrThat: { current: null, mode: "fresh", screen: "setup", rounds: 0, lastWinner: null },
     isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -432,7 +435,8 @@ function normalizeStructure(savedStructure) {
             draftHistory: Array.isArray(base.settings?.draftHistory) ? base.settings.draftHistory.slice(-200) : [],
             hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame.slice(-300) : [],
             museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : [],
-            thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : []
+            thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : [],
+            censorPresets: Array.isArray(base.settings?.censorPresets) ? base.settings.censorPresets.slice(-12) : []
         }
     };
 
@@ -464,6 +468,7 @@ function normalizeServer(server, serverIndex) {
             hidden: Boolean(category.hidden),
             isDraftGalleryCategory: Boolean(category.isDraftGalleryCategory),
             isMuseumCategory: Boolean(category.isMuseumCategory),
+            isCensorFolder: Boolean(category.isCensorFolder),
             channels: (category.channels || []).map((channel, channelIndex) => {
                 const name = typeof channel === "string"
                     ? channel
@@ -479,9 +484,13 @@ function normalizeServer(server, serverIndex) {
                     isSavedArrayChannel: Boolean(channel.isSavedArrayChannel),
                     isDraftRankingsChannel: Boolean(channel.isDraftRankingsChannel),
                     isThisOrThatChannel: Boolean(channel.isThisOrThatChannel),
+                    isThisOrThatRankingsChannel: Boolean(channel.isThisOrThatRankingsChannel),
                     isHolisticRankingsChannel: Boolean(channel.isHolisticRankingsChannel),
                     isHallOfFameChannel: Boolean(channel.isHallOfFameChannel),
-                    isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel)
+                    isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel),
+                    isExhibitStagingChannel: Boolean(channel.isExhibitStagingChannel),
+                    exhibitId: channel.exhibitId || null,
+                    isCensorFolderChannel: Boolean(channel.isCensorFolderChannel)
                 };
             })
         }))
@@ -536,7 +545,17 @@ function ensureDraftGalleryFolder() {
             return channel;
         };
         ensureChannel("draft-rankings", "isDraftRankingsChannel");
-        ensureChannel("this-or-that", "isThisOrThatChannel");
+        // Versions before the game launcher used #this-or-that as a game
+        // screen. Preserve that channel and its position, but turn it into
+        // the results channel instead of creating a duplicate.
+        const legacyThisOrThat = category.channels.find((item) => item.isThisOrThatChannel);
+        if (legacyThisOrThat) {
+            legacyThisOrThat.isThisOrThatChannel = false;
+            legacyThisOrThat.isThisOrThatRankingsChannel = true;
+            legacyThisOrThat.name = "this-or-that-rankings";
+            changed = true;
+        }
+        ensureChannel("this-or-that-rankings", "isThisOrThatRankingsChannel");
         ensureChannel("holistic-rankings", "isHolisticRankingsChannel");
     });
     return changed;
@@ -1012,6 +1031,13 @@ function renderSpecialViews() {
             title: "Rank local images, then play their shuffled draft"
         }));
         group.appendChild(renderSmartChannelRow({
+            id: "this-or-that",
+            type: "thisOrThat",
+            label: "this or that",
+            prefix: "↔",
+            title: "Choose between two local photos round after round"
+        }));
+        group.appendChild(renderSmartChannelRow({
             id: "channel-quiz",
             type: "channelQuiz",
             label: "channel quiz",
@@ -1084,22 +1110,7 @@ function renderChannelRow(channel) {
             showMobileStage("chat");
             return;
         }
-
-        state.activeChannelId = channel.id;
-        state.activeView = { type: "channel", id: channel.id };
-        state.selectedPhotoRefs = [];
-        state.loadingChannelId = channel.id;
-        renderChannels();
-        renderHeader();
-        renderMessages();
-        renderComposer();
-        showMobileStage("chat");
-        await loadActiveChannelMessages();
-        state.loadingChannelId = null;
-        renderChannels();
-        renderHeader();
-        renderMessages();
-        renderComposer();
+        await openView("channel", channel.id);
     });
 
     const rename = document.createElement("button");
@@ -1163,9 +1174,9 @@ async function openView(type, id) {
         state.activeChannelId = id;
         state.activeServerId = getChannelServer(id)?.id || state.activeServerId;
         await loadActiveChannelMessages();
-        if (getActiveChannel()?.isThisOrThatChannel || getActiveChannel()?.isHolisticRankingsChannel) {
-            await ensureWorkspaceMessagesLoaded();
-        } else if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
+        if (getActiveChannel()?.isHolisticRankingsChannel) {
+            await ensureServerMessagesLoaded();
+        } else if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isThisOrThatChannel || getActiveChannel()?.isThisOrThatRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
             await ensureServerMessagesLoaded();
         }
         if (getActiveChannel()?.isHallOfFameChannel) {
@@ -1176,6 +1187,8 @@ async function openView(type, id) {
                 .filter((draft) => draft.serverId === getActiveServer()?.id)
                 .flatMap((draft) => draft.items || []).map((item) => item.ref));
         }
+    } else if (type === "thisOrThat") {
+        await ensureServerMessagesLoaded();
     } else if (["adventureEditor", "adventurePlay"].includes(type)) {
         await ensureWorkspaceMessagesLoaded();
     } else if (type !== "adventureStudio") {
@@ -1341,15 +1354,21 @@ function renderHeader() {
         return;
     }
 
+    if (state.activeView.type === "thisOrThat") {
+        els.activeTitle.textContent = "This or That";
+        els.activeMeta.textContent = "Choose between two random photos from this server, round after round";
+        return;
+    }
+
     const channel = getActiveChannel();
     if (channel?.isDraftRankingsChannel) {
         els.activeTitle.textContent = "Draft Rankings";
         els.activeMeta.textContent = "Live average draft positions for photos that have appeared in an Image Draft";
         return;
     }
-    if (channel?.isThisOrThatChannel) {
-        els.activeTitle.textContent = "This or That";
-        els.activeMeta.textContent = "Choose between two random local photos to build a workspace ranking";
+    if (channel?.isThisOrThatRankingsChannel || channel?.isThisOrThatChannel) {
+        els.activeTitle.textContent = "This or That Rankings";
+        els.activeMeta.textContent = "Results from local This or That rounds in this server";
         return;
     }
     if (channel?.isHolisticRankingsChannel) {
@@ -1365,6 +1384,11 @@ function renderHeader() {
     if (channel?.isMuseumExhibitsChannel) {
         els.activeTitle.textContent = "Museum Exhibits";
         els.activeMeta.textContent = "Permanent curated exhibitions built from any local photo or GIF in this workspace";
+        return;
+    }
+    if (channel?.isExhibitStagingChannel) {
+        els.activeTitle.textContent = `# ${channel.name}`;
+        els.activeMeta.textContent = "Exhibit staging · upload local photos here, then return to Curate";
         return;
     }
     const category = getActiveCategory();
@@ -1443,6 +1467,11 @@ function renderMessages() {
         return;
     }
 
+    if (state.activeView.type === "thisOrThat") {
+        renderThisOrThatGame();
+        return;
+    }
+
     if (state.activeView.type === "museumWalk") {
         renderMuseumWalk();
         return;
@@ -1500,8 +1529,8 @@ function renderMessages() {
         renderDraftRankingsChannel();
         return;
     }
-    if (state.activeView.type === "channel" && activeChannel?.isThisOrThatChannel) {
-        renderThisOrThatChannel();
+    if (state.activeView.type === "channel" && (activeChannel?.isThisOrThatRankingsChannel || activeChannel?.isThisOrThatChannel)) {
+        renderThisOrThatRankingsChannel();
         return;
     }
     if (state.activeView.type === "channel" && activeChannel?.isHolisticRankingsChannel) {
@@ -1824,20 +1853,20 @@ function getOrCreateCensoredChannel(sourceChannelId) {
     const server = getChannelServer(sourceChannelId);
     if (!server) return null;
 
-    const existing = allChannels(server).find((channel) => normalizeChannelName(channel.name) === "censored");
-    if (existing) return { server, channel: existing, created: false };
-
-    let category = server.categories.find((item) => !item.hidden) || server.categories[0];
+    let category = server.categories.find((item) => item.isCensorFolder);
     if (!category) {
         category = {
-            id: uniqueId("category", "private"),
-            name: "Private",
+            id: uniqueId("category", "censoring"),
+            name: "Censoring",
             collapsed: false,
             hidden: false,
+            isCensorFolder: true,
             channels: []
         };
         server.categories.push(category);
     }
+    const existing = category.channels.find((channel) => normalizeChannelName(channel.name) === "censored");
+    if (existing) return { server, channel: existing, created: false };
 
     const channel = {
         id: uniqueId("channel", "censored"),
@@ -1852,9 +1881,11 @@ function censorCopyName(name) {
     return `${base}-censored.png`;
 }
 
-function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, onSaved = null }) {
+function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, requiredAreaPercent = 0, mosaicDensity = 4, onSaved = null }) {
     if (!attachment?.type?.startsWith("image/")) return;
     const requiredCount = Math.max(1, Number.parseInt(requiredRegions, 10) || 1);
+    const requiredArea = Math.min(95, Math.max(0, Number(requiredAreaPercent) || 0));
+    const density = Math.min(12, Math.max(1, Number(mosaicDensity) || 4));
 
     const modal = document.createElement("div");
     modal.className = "censorEditor";
@@ -1864,12 +1895,10 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     const card = document.createElement("section");
     card.className = "censorEditorCard";
     const heading = document.createElement("h3");
-    heading.textContent = requiredCount > 1 ? `Make ${requiredCount} censor regions` : "Blur regions and copy";
+    heading.textContent = requiredArea ? `Censor ${requiredArea}% of the image` : "Blur regions and copy";
     const help = document.createElement("p");
     help.className = "censorEditorHelp";
-    help.textContent = requiredCount > 1
-        ? `Drag on the image to make at least ${requiredCount} blurred regions. The original stays unchanged; the new copy will be saved in this server’s #censored channel.`
-        : "Drag on the image to blur a region. The original stays unchanged; the new copy will be saved in this server’s #censored channel.";
+    help.textContent = `Drag on the image to mosaic-censor it. The original stays unchanged; the copy is saved in this server’s Censoring folder. Mosaic density: ${density}/12.`;
     const canvasWrap = document.createElement("div");
     canvasWrap.className = "censorCanvasWrap";
     const canvas = document.createElement("canvas");
@@ -1911,16 +1940,13 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     };
     const updateControls = () => {
         const count = regions.length;
+        const covered = canvas.width && canvas.height ? Math.min(100, regions.reduce((sum, region) => sum + region.width * region.height, 0) / (canvas.width * canvas.height) * 100) : 0;
         undo.disabled = count === 0 || saving;
         clear.disabled = count === 0 || saving;
-        save.disabled = count < requiredCount || saving;
-        status.textContent = count
-            ? requiredCount > 1
-                ? `${count} of ${requiredCount} required censor regions selected. The saved copy is an optimized PNG.`
-                : `${count} blur region${count === 1 ? "" : "s"} selected. The saved copy is an optimized PNG.`
-            : requiredCount > 1
-                ? `Draw ${requiredCount} separate rectangles over the parts you want blurred.`
-                : "Draw one or more rectangles over the parts you want blurred.";
+        save.disabled = count < requiredCount || covered < requiredArea || saving;
+        status.textContent = requiredArea
+            ? `${covered.toFixed(1)}% of ${requiredArea}% required area selected · ${count} region${count === 1 ? "" : "s"}.`
+            : `${count} mosaic region${count === 1 ? "" : "s"} selected. The saved copy is an optimized PNG.`;
     };
     const draw = () => {
         if (!sourceCanvas || !context) return;
@@ -1930,7 +1956,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             // Canvas filter support has been inconsistent in iOS standalone apps.
             // A small source canvas scaled without smoothing creates a durable mosaic blur
             // in both the preview and the saved PNG.
-            const blockSize = Math.max(8, Math.round(Math.min(region.width, region.height) / 12));
+            const blockSize = Math.max(3, Math.round(Math.min(region.width, region.height) / (4 + density * 2)));
             const preview = document.createElement("canvas");
             preview.width = Math.max(1, Math.round(region.width / blockSize));
             preview.height = Math.max(1, Math.round(region.height / blockSize));
@@ -2018,7 +2044,8 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     modal.addEventListener("click", (event) => { if (event.target === modal && !saving) close(); });
 
     save.addEventListener("click", async () => {
-        if (saving || regions.length < requiredCount) return;
+        const covered = canvas.width && canvas.height ? Math.min(100, regions.reduce((sum, region) => sum + region.width * region.height, 0) / (canvas.width * canvas.height) * 100) : 0;
+        if (saving || regions.length < requiredCount || covered < requiredArea) return;
         saving = true;
         updateControls();
         save.textContent = "Saving…";
@@ -2066,7 +2093,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             }
             refreshStorageEstimate();
             close();
-            if (onSaved) await onSaved({ regionCount: regions.length, copiedMessage, destinationChannelId: destination.channel.id });
+            if (onSaved) await onSaved({ regionCount: regions.length, areaPercent: covered, mosaicDensity: density, copiedMessage, destinationChannelId: destination.channel.id });
             else alert("Saved a blurred copy in #censored. Your original photo was not changed.");
             render();
         } catch (error) {
@@ -2476,15 +2503,18 @@ function renderDraftRankingsChannel() {
 }
 
 function getThisOrThatCandidates() {
-    return state.structure.servers
-        .filter((server) => !server.isAdventureServer)
-        .flatMap((server) => getExhibitPhotoCandidates(server))
+    return getExhibitPhotoCandidates(getActiveServer())
         .filter((candidate) => findAttachment(candidate.ref));
 }
 
-function chooseThisOrThatPair() {
+function chooseThisOrThatPair(winnerStays = null) {
     const candidates = getThisOrThatCandidates();
     if (candidates.length < 2) return null;
+    if (winnerStays) {
+        const challengerPool = candidates.filter((item) => photoRefKey(item.ref) !== photoRefKey(winnerStays.ref));
+        if (!challengerPool.length) return null;
+        return [winnerStays, challengerPool[Math.floor(Math.random() * challengerPool.length)]];
+    }
     const firstIndex = Math.floor(Math.random() * candidates.length);
     let secondIndex = Math.floor(Math.random() * (candidates.length - 1));
     if (secondIndex >= firstIndex) secondIndex += 1;
@@ -2492,8 +2522,10 @@ function chooseThisOrThatPair() {
 }
 
 function getThisOrThatInsights() {
+    const serverId = getActiveServer()?.id;
     const history = (state.structure.settings.thisOrThatHistory || [])
-        .filter((round) => round.winner && round.loser);
+        .filter((round) => round.winner && round.loser)
+        .filter((round) => (round.serverId || getChannelServer(round.winner.channelId)?.id) === serverId);
     const records = new Map();
     const ensure = (ref) => {
         const key = photoRefKey(ref);
@@ -2517,24 +2549,62 @@ function getThisOrThatInsights() {
 async function chooseThisOrThatWinner(winner, loser) {
     state.structure.settings.thisOrThatHistory = [
         ...(state.structure.settings.thisOrThatHistory || []),
-        { id: crypto.randomUUID(), winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }
+        { id: crypto.randomUUID(), serverId: getActiveServer()?.id, winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }
     ].slice(-2000);
-    state.thisOrThat.current = chooseThisOrThatPair();
+    state.thisOrThat.rounds += 1;
+    state.thisOrThat.lastWinner = winner;
+    state.thisOrThat.current = chooseThisOrThatPair(state.thisOrThat.mode === "winner-stays" ? winner : null);
     await saveStructure(state.structure);
     renderMessages();
 }
 
-function renderThisOrThatChannel() {
-    if (!state.thisOrThat.current || !state.thisOrThat.current.every((item) => findAttachment(item.ref))) {
-        state.thisOrThat.current = chooseThisOrThatPair();
+function renderThisOrThatGame() {
+    const game = state.thisOrThat;
+    if (game.screen !== "play") {
+        const page = document.createElement("section");
+        page.className = "thisOrThatChannel";
+        const intro = document.createElement("section");
+        intro.className = "focusSessionIntro";
+        intro.innerHTML = "<h3>This or That</h3><p>Two random local photos from this server face off. Your choices are saved locally and appear in #this-or-that-rankings.</p>";
+        const modes = document.createElement("section");
+        modes.className = "thisOrThatModes";
+        [["fresh", "Fresh pair every round", "Every answer draws two new random images."], ["winner-stays", "Winner stays", "Your selected image remains and faces one new challenger."]].forEach(([value, title, detail]) => {
+            const choice = document.createElement("button");
+            choice.type = "button";
+            choice.className = game.mode === value ? "active" : "";
+            const strong = document.createElement("strong");
+            strong.textContent = title;
+            const small = document.createElement("span");
+            small.textContent = detail;
+            choice.append(strong, small);
+            choice.addEventListener("click", () => { game.mode = value; renderMessages(); });
+            modes.appendChild(choice);
+        });
+        const start = document.createElement("button");
+        start.type = "button";
+        start.className = "adventurePrimary";
+        start.textContent = "Start This or That";
+        start.addEventListener("click", () => {
+            game.current = chooseThisOrThatPair();
+            game.rounds = 0;
+            game.lastWinner = null;
+            game.screen = "play";
+            renderMessages();
+        });
+        page.append(intro, modes, start);
+        els.messages.appendChild(page);
+        return;
     }
-    const pair = state.thisOrThat.current;
+    if (!game.current || !game.current.every((item) => findAttachment(item.ref))) {
+        game.current = chooseThisOrThatPair(game.mode === "winner-stays" ? game.lastWinner : null);
+    }
+    const pair = game.current;
     const page = document.createElement("section");
     page.className = "thisOrThatChannel";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
     const insights = getThisOrThatInsights();
-    intro.innerHTML = `<h3>This or That</h3><p>Pick the photo you prefer. Each local choice updates the separate comparison ranking. ${insights.rounds} choice${insights.rounds === 1 ? "" : "s"} saved in this workspace.</p>`;
+    intro.innerHTML = `<h3>This or That</h3><p>${game.mode === "winner-stays" ? "Winner stays active: your pick faces a new challenger." : "Fresh mode: each answer draws two new random images."} ${game.rounds} round${game.rounds === 1 ? "" : "s"} this run · ${insights.rounds} saved choice${insights.rounds === 1 ? "" : "s"} in this server.</p>`;
     page.appendChild(intro);
     if (!pair) {
         page.appendChild(emptyPanel("Add at least two local images or GIFs to this server to start comparing."));
@@ -2575,8 +2645,60 @@ function renderThisOrThatChannel() {
     skip.type = "button";
     skip.className = "thisOrThatSkip";
     skip.textContent = "Skip this pairing";
-    skip.addEventListener("click", () => { state.thisOrThat.current = chooseThisOrThatPair(); renderMessages(); });
-    page.append(matchup, skip);
+    skip.addEventListener("click", () => { game.current = chooseThisOrThatPair(game.mode === "winner-stays" ? game.lastWinner : null); renderMessages(); });
+    const end = document.createElement("button");
+    end.type = "button";
+    end.textContent = "End game";
+    end.addEventListener("click", () => { game.screen = "setup"; game.current = null; game.lastWinner = null; renderMessages(); });
+    page.append(matchup, skip, end);
+    els.messages.appendChild(page);
+}
+
+function renderThisOrThatRankingsChannel() {
+    const insights = getThisOrThatInsights();
+    const page = document.createElement("section");
+    page.className = "draftRankingsChannel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    intro.innerHTML = `<h3>This or That Rankings</h3><p>${insights.rounds} local choice${insights.rounds === 1 ? "" : "s"} from this server. Score is wins minus losses; win rate breaks ties.</p>`;
+    page.appendChild(intro);
+    if (!insights.images.length) {
+        page.appendChild(emptyPanel("Play This or That from the Workspace list to build this ranking."));
+        els.messages.appendChild(page);
+        return;
+    }
+    const list = document.createElement("section");
+    list.className = "draftRankingsList";
+    insights.images.forEach((item, index) => {
+        const row = document.createElement("article");
+        row.className = "draftRankingItem";
+        const position = document.createElement("strong");
+        position.className = "draftRankingPosition";
+        position.textContent = `#${index + 1}`;
+        const attachment = findAttachment(item.ref);
+        if (attachment) {
+            const image = document.createElement("img");
+            setRenderedImageSource(image, attachment);
+            image.alt = attachment.note || attachment.name || "Ranked photo";
+            image.addEventListener("click", () => openImageViewer(attachment, image.alt));
+            row.appendChild(image);
+        }
+        const detail = document.createElement("div");
+        detail.className = "draftRankingDetail";
+        const title = document.createElement("strong");
+        title.textContent = attachment?.note || attachment?.name || "Local photo";
+        const stats = document.createElement("span");
+        const confidence = Math.min(100, Math.round(item.games / 8 * 100));
+        stats.textContent = `${item.wins} wins · ${item.losses} losses · ${(item.winRate * 100).toFixed(0)}% win rate · ${confidence}% confidence${item.games < 8 ? ` · ${8 - item.games} more comparison${8 - item.games === 1 ? "" : "s"} recommended` : ""}`;
+        detail.append(title, stats);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.textContent = "Open source";
+        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        row.append(position, detail, open);
+        list.appendChild(row);
+    });
+    page.appendChild(list);
     els.messages.appendChild(page);
 }
 
@@ -2707,9 +2829,14 @@ function renderHallOfFameChannel() {
     const curator = document.createElement("section");
     curator.className = "hallOfFameCuratorNote";
     const curatorTitle = document.createElement("h5");
-    curatorTitle.textContent = "Curator’s note";
-    const curatorHelp = document.createElement("p");
-    curatorHelp.textContent = "A local standalone note. Saving it also supplies the default Museum plaque unless that exhibit has its own plaque text.";
+    curatorTitle.textContent = "Inscription";
+    const inscription = document.createElement("blockquote");
+    inscription.className = "hallOfFameInscription";
+    inscription.textContent = entry.blurb || "No inscription has been written yet.";
+    const editor = document.createElement("details");
+    editor.className = "hallOfFameInscriptionEditor";
+    const editorSummary = document.createElement("summary");
+    editorSummary.textContent = "Edit inscription";
     const blurb = document.createElement("textarea");
     blurb.maxLength = 2000;
     blurb.rows = 7;
@@ -2722,6 +2849,7 @@ function renderHallOfFameChannel() {
         save.disabled = true;
         try {
             await saveHallOfFameBlurb(entry.id, blurb.value);
+            inscription.textContent = blurb.value.trim() || "No inscription has been written yet.";
             save.textContent = "Saved locally";
         } catch (error) {
             console.error("Could not save Hall of Fame blurb:", error);
@@ -2730,7 +2858,8 @@ function renderHallOfFameChannel() {
             window.setTimeout(() => { save.disabled = false; save.textContent = "Save curator’s note"; }, 1000);
         }
     });
-    curator.append(curatorTitle, curatorHelp, blurb, save);
+    editor.append(editorSummary, blurb, save);
+    curator.append(curatorTitle, inscription, editor);
     const variants = getCensoredVariants(entry.ref);
     const variantSection = document.createElement("section");
     variantSection.className = "hallOfFameVariants";
@@ -2871,6 +3000,36 @@ function getExhibitPhotoCandidates(server = getActiveServer()) {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+function getChannelPhotoCandidates(channelId) {
+    return (state.messagesByChannel.get(channelId) || [])
+        .flatMap((message) => (message.attachments || [])
+            .filter((attachment) => attachment.type?.startsWith("image/"))
+            .map((attachment) => ({
+                ref: { channelId, messageId: message.id, attachmentId: attachment.id },
+                attachment,
+                message,
+                createdAt: message.createdAt || ""
+            })))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function getOrCreateExhibitStagingChannel(exhibit) {
+    const server = state.structure.servers.find((item) => item.id === exhibit?.serverId);
+    if (!server || !exhibit) return null;
+    const existing = allChannels(server).find((channel) => channel.id === exhibit.stagingChannelId || channel.exhibitId === exhibit.id);
+    if (existing) return { channel: existing, created: false };
+    let category = server.categories.find((item) => item.isMuseumCategory);
+    if (!category) return null;
+    const channel = {
+        id: uniqueId("channel", `staging-${exhibit.title || "exhibit"}`),
+        name: `staging-${slugify(exhibit.title || "exhibit").slice(0, 36) || "exhibit"}`,
+        isExhibitStagingChannel: true,
+        exhibitId: exhibit.id
+    };
+    category.channels.push(channel);
+    return { channel, created: true };
+}
+
 function getExhibitPhotoRefs(exhibit, server = getActiveServer()) {
     const rule = exhibit?.smartRule;
     if (!rule?.enabled) return exhibit?.photoRefs || [];
@@ -2887,11 +3046,8 @@ function getExhibitPhotoRefs(exhibit, server = getActiveServer()) {
 }
 
 function openMuseumCurationEditor(exhibit = null) {
-    const candidates = getExhibitPhotoCandidates();
-    if (candidates.length === 0) {
-        alert("Add a local photo or GIF to this workspace before creating an exhibit.");
-        return;
-    }
+    const existingStaging = exhibit ? getOrCreateExhibitStagingChannel(exhibit) : null;
+    const candidates = existingStaging ? getChannelPhotoCandidates(existingStaging.channel.id) : [];
     const modal = document.createElement("section");
     modal.className = "museumCurationModal";
     modal.setAttribute("role", "dialog");
@@ -2902,7 +3058,9 @@ function openMuseumCurationEditor(exhibit = null) {
     const heading = document.createElement("h3");
     heading.textContent = exhibit ? "Curate exhibit" : "Create permanent exhibit";
     const help = document.createElement("p");
-    help.textContent = "Choose any local photo or GIF from this workspace, set a title and cover, then write the permanent wall text. Museum exhibits are independent from Hall of Fame nominations.";
+    help.textContent = exhibit
+        ? `Select from this exhibit’s #${existingStaging?.channel.name || "staging"} channel. Upload there first, then curate the photos into the exhibit.`
+        : "Name the exhibit first. Saving creates its own staging channel, where you can upload photos before curating them into the gallery.";
     const title = document.createElement("input");
     title.type = "text";
     title.maxLength = 90;
@@ -2953,6 +3111,20 @@ function openMuseumCurationEditor(exhibit = null) {
     smartTag.value = exhibit?.smartRule?.tag || "";
     smartTagLabel.appendChild(smartTag);
     smartDetails.append(smartSummary, smartHelp, smartEnabledLabel, smartFavoriteLabel, smartYearLabel, smartTagLabel);
+    const doorwayField = document.createElement("label");
+    doorwayField.className = "museumCurationPlaque";
+    doorwayField.textContent = "Doorways to other exhibits (optional)";
+    const doorways = document.createElement("select");
+    doorways.multiple = true;
+    doorways.size = 3;
+    getMuseumExhibits().filter((item) => item.id !== exhibit?.id).forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.title;
+        option.selected = (exhibit?.doorwayIds || []).includes(item.id);
+        doorways.appendChild(option);
+    });
+    doorwayField.appendChild(doorways);
     const roomLayout = getMuseumRoomLayout(exhibit);
     const placement = document.createElement("details");
     placement.className = "museumCurationPlacement";
@@ -3067,7 +3239,9 @@ function openMuseumCurationEditor(exhibit = null) {
         if (!selected.has(coverKey)) coverKey = selected.keys().next().value;
         selectedLabel.textContent = selected.size
             ? `${selected.size} permanent exhibit photo${selected.size === 1 ? "" : "s"} selected.`
-            : "Select at least one local photo or GIF.";
+            : exhibit
+                ? "Upload photos into this exhibit’s staging channel, then select them here."
+                : "Save this exhibit to create its staging channel, then upload photos there.";
         cover.replaceChildren();
         selected.forEach((ref, key) => {
             const option = document.createElement("option");
@@ -3202,7 +3376,6 @@ function openMuseumCurationEditor(exhibit = null) {
             ? getExhibitPhotoRefs({ smartRule })
             : [...selected.values()];
         if (!cleanedTitle) { alert("Give the exhibit a title."); title.focus(); return; }
-        if (refs.length === 0) { alert("Select at least one local photo or GIF."); return; }
         save.disabled = true;
         try {
             const next = {
@@ -3222,6 +3395,7 @@ function openMuseumCurationEditor(exhibit = null) {
                 curatorNote: note.value.trim().slice(0, 3000),
                 photoRefs: refs,
                 smartRule,
+                doorwayIds: [...doorways.selectedOptions].map((option) => option.value),
                 coverRef: smartRule.enabled ? refs[0] : (selected.get(coverKey) || refs[0]),
                 plaques: Object.fromEntries([...selected.keys()]
                     .map((key) => [key, String(plaques.get(key) || "").trim().slice(0, 600)])
@@ -3229,6 +3403,9 @@ function openMuseumCurationEditor(exhibit = null) {
                 createdAt: exhibit?.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
+            const staging = existingStaging || getOrCreateExhibitStagingChannel(next);
+            if (!staging) throw new Error("Could not create this exhibit’s staging channel.");
+            next.stagingChannelId = staging.channel.id;
             const exhibits = state.structure.settings.museumExhibits || [];
             state.structure.settings.museumExhibits = exhibit
                 ? exhibits.map((item) => item.id === exhibit.id ? next : item)
@@ -3237,7 +3414,10 @@ function openMuseumCurationEditor(exhibit = null) {
             modal.remove();
             state.activeMuseumExhibitId = next.id;
             state.museumTour = null;
-            render();
+            if (!exhibit) {
+                state.activeChannelId = staging.channel.id;
+                await openView("channel", staging.channel.id);
+            } else render();
         } catch (error) {
             console.error("Could not save museum exhibit:", error);
             save.disabled = false;
@@ -3249,7 +3429,7 @@ function openMuseumCurationEditor(exhibit = null) {
     cancel.textContent = "Cancel";
     cancel.addEventListener("click", () => modal.remove());
     actions.append(save, cancel);
-    card.append(heading, help, title, collection, tags, smartDetails, placement, subtitle, note, selectedLabel, coverField, grid, loadMore, tourHeading, tourHelp, tourPlan, actions);
+    card.append(heading, help, title, collection, tags, smartDetails, doorwayField, placement, subtitle, note, selectedLabel, coverField, grid, loadMore, tourHeading, tourHelp, tourPlan, actions);
     modal.appendChild(card);
     modal.addEventListener("click", (event) => { if (event.target === modal) modal.remove(); });
     document.body.appendChild(modal);
@@ -3526,6 +3706,22 @@ function renderMuseumExhibitDetail(exhibit) {
     header.append(title, subtitle, note);
     appendMuseumExhibitLabels(header, exhibit);
     header.appendChild(tools);
+    const linkedExhibits = (exhibit.doorwayIds || []).map((id) => getMuseumExhibit(id)).filter(Boolean);
+    if (linkedExhibits.length) {
+        const doorways = document.createElement("section");
+        doorways.className = "museumExhibitLabels";
+        const label = document.createElement("strong");
+        label.textContent = "Doorways";
+        doorways.appendChild(label);
+        linkedExhibits.forEach((linked) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = linked.title;
+            button.addEventListener("click", () => { state.activeMuseumExhibitId = linked.id; state.museumTour = null; renderMessages(); });
+            doorways.appendChild(button);
+        });
+        header.appendChild(doorways);
+    }
     const gallery = document.createElement("section");
     gallery.className = "museumExhibitPhotoGrid";
     getExhibitPhotoRefs(exhibit).forEach((ref, index) => {
@@ -4868,6 +5064,18 @@ function imageDraftField(labelText, control) {
     return label;
 }
 
+function getCensorPresets() {
+    return state.structure.settings.censorPresets || [];
+}
+
+async function saveCensorPreset(name, draft) {
+    const cleaned = normalizeDisplayName(name).slice(0, 40);
+    if (!cleaned) return;
+    const preset = { id: crypto.randomUUID(), name: cleaned, metric: draft.censorMetric, areaStep: draft.censorAreaStep, granularityStep: draft.censorGranularityStep };
+    state.structure.settings.censorPresets = [...getCensorPresets().filter((item) => item.name.toLowerCase() !== cleaned.toLowerCase()), preset].slice(-12);
+    await saveStructure(state.structure);
+}
+
 function getImageDraftSourceOptions(type) {
     const server = getActiveServer();
     if (!server) return [];
@@ -4933,7 +5141,48 @@ function renderImageDraftSetup() {
     censor.checked = draft.censorMode;
     const censorLabel = document.createElement("label");
     censorLabel.className = "imageDraftToggle";
-    censorLabel.append(censor, document.createTextNode(" Censor mode — position becomes the required number of blur regions"));
+    censorLabel.append(censor, document.createTextNode(" Censor mode — draft position scales censorship difficulty"));
+    const censorMetric = imageDraftSelect([
+        { value: "area", label: "Increasing censored area" },
+        { value: "granularity", label: "Increasing mosaic granularity" },
+        { value: "both", label: "Area + granularity" }
+    ], draft.censorMetric, (value) => { draft.censorMetric = value; refreshPreview(); });
+    const censorArea = document.createElement("input");
+    censorArea.type = "number";
+    censorArea.min = "1";
+    censorArea.max = "40";
+    censorArea.value = String(draft.censorAreaStep || 8);
+    const censorGranularity = document.createElement("input");
+    censorGranularity.type = "number";
+    censorGranularity.min = "1";
+    censorGranularity.max = "6";
+    censorGranularity.value = String(draft.censorGranularityStep || 2);
+    const censorMetricField = imageDraftField("Censor challenge", censorMetric);
+    const censorAreaField = imageDraftField("Area increase per draft spot (%)", censorArea);
+    const censorGranularityField = imageDraftField("Granularity increase per spot", censorGranularity);
+    const censorPreset = document.createElement("select");
+    censorPreset.innerHTML = "<option value=\"\">Censor presets</option>";
+    getCensorPresets().forEach((item) => {
+        const option = document.createElement("option"); option.value = item.id; option.textContent = item.name; censorPreset.appendChild(option);
+    });
+    censorPreset.addEventListener("change", () => {
+        const selected = getCensorPresets().find((item) => item.id === censorPreset.value);
+        if (!selected) return;
+        draft.censorMetric = selected.metric; draft.censorAreaStep = selected.areaStep; draft.censorGranularityStep = selected.granularityStep;
+        renderMessages();
+    });
+    const savePreset = document.createElement("button");
+    savePreset.type = "button";
+    savePreset.textContent = "Save censor preset";
+    savePreset.addEventListener("click", async () => {
+        const name = prompt("Preset name?");
+        if (!name) return;
+        await saveCensorPreset(name, draft);
+        renderMessages();
+    });
+    const censorPresetField = document.createElement("div");
+    censorPresetField.className = "imageDraftActions";
+    censorPresetField.append(censorPreset, savePreset);
     const duration = imageDraftSelect(Object.entries(getImageDraftDurationPresets()).map(([value, preset]) => ({ value, label: `${preset.label} · ${preset.description}` })), draft.durationPreset, (value) => { draft.durationPreset = value; });
     const bpm = imageDraftSelect(Object.entries(getImageDraftBpmPresets()).map(([value, preset]) => ({ value, label: `${preset.label} · ${preset.description}` })), draft.bpmPreset, (value) => { draft.bpmPreset = value; });
     const durationField = imageDraftField("Duration scaling", duration);
@@ -4966,6 +5215,13 @@ function renderImageDraftSetup() {
             bpmField.hidden = true;
             winnerField.hidden = true;
             winnerTimerField.hidden = true;
+            censorMetricField.hidden = false;
+            censorAreaField.hidden = !["area", "both"].includes(draft.censorMetric);
+            censorGranularityField.hidden = !["granularity", "both"].includes(draft.censorMetric);
+            censorPresetField.hidden = false;
+            const area = Math.min(95, Math.max(0, (Number(draft.censorAreaStep) || 8) * previewCount));
+            const density = Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * previewCount));
+            preview.textContent = `${draft.censorMetric === "granularity" ? `Mosaic density grows to ${density}/12 at #${previewCount}.` : draft.censorMetric === "area" ? `Censored area grows to ${area}% at #${previewCount}.` : `At #${previewCount}: censor ${area}% with mosaic density ${density}/12.`}`;
         } else {
             const durationPreset = getImageDraftDurationPresets()[draft.durationPreset] || getImageDraftDurationPresets()["gentle-rise"];
             const bpmPreset = getImageDraftBpmPresets()[draft.bpmPreset] || getImageDraftBpmPresets()["calm-rise"];
@@ -4976,6 +5232,10 @@ function renderImageDraftSetup() {
             bpmField.hidden = false;
             winnerField.hidden = false;
             winnerTimerField.hidden = !draft.wheelWinnerStays;
+            censorMetricField.hidden = true;
+            censorAreaField.hidden = true;
+            censorGranularityField.hidden = true;
+            censorPresetField.hidden = true;
         }
     };
     count.addEventListener("input", () => refreshPreview(false));
@@ -4983,6 +5243,8 @@ function renderImageDraftSetup() {
     duration.addEventListener("change", refreshPreview);
     bpm.addEventListener("change", refreshPreview);
     censor.addEventListener("change", () => { draft.censorMode = censor.checked; refreshPreview(); });
+    censorArea.addEventListener("input", () => { draft.censorAreaStep = Math.min(40, Math.max(1, Number.parseInt(censorArea.value, 10) || 8)); refreshPreview(); });
+    censorGranularity.addEventListener("input", () => { draft.censorGranularityStep = Math.min(6, Math.max(1, Number.parseInt(censorGranularity.value, 10) || 2)); refreshPreview(); });
     winnerStays.addEventListener("change", () => { draft.wheelWinnerStays = winnerStays.checked; refreshPreview(); });
     winnerTimer.addEventListener("input", () => {
         draft.wheelWinnerTimerSeconds = Math.min(7200, Math.max(0, Number.parseInt(winnerTimer.value, 10) || 0));
@@ -4998,6 +5260,10 @@ function renderImageDraftSetup() {
         winnerField,
         winnerTimerField,
         censorLabel,
+        censorMetricField,
+        censorAreaField,
+        censorGranularityField,
+        censorPresetField,
         preview
     );
     const start = document.createElement("button");
@@ -5205,6 +5471,9 @@ async function finalizeImageDraft() {
         durationPreset: draft.durationPreset,
         bpmPreset: draft.bpmPreset,
         censorMode: Boolean(draft.censorMode),
+        censorMetric: draft.censorMetric,
+        censorAreaStep: draft.censorAreaStep,
+        censorGranularityStep: draft.censorGranularityStep,
         items: rankedItems.map((item, index) => ({
             ref: structuredClone(item.ref),
             rank: index + 1,
@@ -5247,7 +5516,7 @@ function renderImageDraftResult() {
         label.textContent = `#${item.rank} · ${item.label}`;
         const meta = document.createElement("span");
         meta.textContent = draft.censorMode
-            ? `# ${item.channelName} · requires ${item.rank} censor region${item.rank === 1 ? "" : "s"}`
+            ? `# ${item.channelName} · ${getImageDraftCensorRequirement(item).label}`
             : `# ${item.channelName} · ${values.durationSeconds}s · ${values.bpm} BPM`;
         detail.append(label, meta);
         row.appendChild(detail);
@@ -5511,7 +5780,7 @@ function spinImageDraftWheel() {
         wheel.spinning = false;
         startImageDraftWinnerStay();
         renderMessages();
-    }, 1150);
+    }, IMAGE_DRAFT_WHEEL_SPIN_MS + 50);
 }
 
 function renderImageDraftWheel() {
@@ -5536,7 +5805,7 @@ function renderImageDraftWheel() {
     canvas.style.transform = `rotate(${wheel.spinning ? wheel.fromRotation : wheel.rotation}deg)`;
     if (wheel.spinning) {
         requestAnimationFrame(() => {
-            canvas.style.transition = "transform 1100ms cubic-bezier(.12, .72, .1, 1)";
+            canvas.style.transition = `transform ${IMAGE_DRAFT_WHEEL_SPIN_MS}ms cubic-bezier(.12, .72, .1, 1)`;
             canvas.style.transform = `rotate(${wheel.rotation}deg)`;
         });
     }
@@ -5592,21 +5861,32 @@ function startImageDraftCensorChallenge() {
     renderMessages();
 }
 
-async function saveImageDraftCensorResult(item, regionCount) {
+function getImageDraftCensorRequirement(item) {
+    const draft = state.imageDraft;
+    const metric = ["area", "granularity", "both"].includes(draft.censorMetric) ? draft.censorMetric : "area";
+    return {
+        metric,
+        areaPercent: ["area", "both"].includes(metric) ? Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank)) : 0,
+        mosaicDensity: ["granularity", "both"].includes(metric) ? Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank)) : 4,
+        label: metric === "area" ? `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank))}% of the image` : metric === "granularity" ? `use mosaic density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank))}/12` : `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank))}% at density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank))}/12`
+    };
+}
+
+async function saveImageDraftCensorResult(item, result) {
     const draft = state.imageDraft;
     const record = (state.structure.settings.draftHistory || []).find((entry) => entry.id === draft.historyId);
     if (!record) return;
     record.censorResults ||= [];
     record.censorResults = record.censorResults.filter((result) => photoRefKey(result.ref) !== photoRefKey(item.ref));
-    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, requiredRegions: item.rank, regionCount, at: new Date().toISOString() });
+    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, ...result, at: new Date().toISOString() });
     if (record.censorResults.length >= record.items.length) record.censorCompletedAt = new Date().toISOString();
     await saveStructure(state.structure);
 }
 
-async function completeImageDraftCensorStep(item, regionCount) {
+async function completeImageDraftCensorStep(item, result) {
     const draft = state.imageDraft;
-    await saveImageDraftCensorResult(item, regionCount);
-    draft.censor.results.push({ ref: item.ref, rank: item.rank, regionCount });
+    await saveImageDraftCensorResult(item, result);
+    draft.censor.results.push({ ref: item.ref, rank: item.rank, ...result });
     draft.censor.index += 1;
     if (draft.censor.index >= draft.censor.sequence.length) {
         draft.stage = "result";
@@ -5627,7 +5907,8 @@ function renderImageDraftCensorChallenge() {
     page.className = "imageDraft imageDraftCensor";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
-    intro.innerHTML = `<h3>Censor draft</h3><p>Challenge ${challenge.index + 1} of ${challenge.sequence.length}. This image was drafted in spot #${item.rank}, so it needs ${item.rank} separate censor region${item.rank === 1 ? "" : "s"}.</p>`;
+    const requirement = getImageDraftCensorRequirement(item);
+    intro.innerHTML = `<h3>Censor draft</h3><p>Challenge ${challenge.index + 1} of ${challenge.sequence.length}. This image was drafted in spot #${item.rank}: ${requirement.label}.</p>`;
     const attachment = findAttachment(item.ref);
     const media = attachment ? renderAdventurePlayerMedia(item.ref, "Blur the required regions, then save the local copy") : emptyPanel("This source image is no longer available.");
     const actions = document.createElement("div");
@@ -5635,14 +5916,16 @@ function renderImageDraftCensorChallenge() {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "adventurePrimary";
-    edit.textContent = `Blur ${item.rank} region${item.rank === 1 ? "" : "s"} and save`;
+    edit.textContent = "Censor and save";
     edit.disabled = !attachment;
     edit.addEventListener("click", () => openCensorEditor({
         attachment,
         channelId: item.ref.channelId,
         sourceRef: item.ref,
-        requiredRegions: item.rank,
-        onSaved: ({ regionCount }) => completeImageDraftCensorStep(item, regionCount).catch(reportImageDraftSaveError)
+        requiredRegions: 1,
+        requiredAreaPercent: requirement.areaPercent,
+        mosaicDensity: requirement.mosaicDensity,
+        onSaved: (result) => completeImageDraftCensorStep(item, result).catch(reportImageDraftSaveError)
     }));
     const end = document.createElement("button");
     end.type = "button";
@@ -6757,6 +7040,11 @@ function renderSettingsPage() {
     const server = getActiveServer();
     const page = document.createElement("section");
     page.className = "settingsPage";
+
+    const build = document.createElement("p");
+    build.className = "settingsBuildVersion";
+    build.textContent = `Build ${APP_BUILD_VERSION} · local-only`;
+    page.appendChild(build);
 
     const intro = document.createElement("div");
     intro.className = "settingsIntro";
@@ -10391,6 +10679,13 @@ function renderMessage(message, sourceChannelId = state.activeChannelId) {
         moveButton.textContent = "Move";
         moveButton.addEventListener("click", () => moveInboxMessage(message.id, sourceChannelId));
         actions.append(pinButton, reactButton, moveButton, deleteButton);
+    } else if (getChannelCategory(sourceChannelId)?.isCensorFolder && message.censoredFrom) {
+        const sortButton = document.createElement("button");
+        sortButton.className = "iconButton";
+        sortButton.type = "button";
+        sortButton.textContent = "Sort";
+        sortButton.addEventListener("click", () => sortCensoredMessage(message.id, sourceChannelId));
+        actions.append(pinButton, reactButton, sortButton, deleteButton);
     } else {
         actions.append(pinButton, reactButton, deleteButton);
     }
@@ -10616,7 +10911,7 @@ function renderAttachments(attachments, message, channelId) {
 function renderComposer() {
     const hasChannel = Boolean(state.activeChannelId);
     const channel = getActiveChannel();
-    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isThisOrThatChannel || channel?.isHolisticRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
+    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isThisOrThatChannel || channel?.isThisOrThatRankingsChannel || channel?.isHolisticRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
     const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel" && !isGalleryChannel;
     const canCompose = enabled && !state.pendingMessageSave;
     els.noteInput.disabled = !canCompose;
@@ -11374,6 +11669,36 @@ async function moveInboxMessage(messageId, inboxChannelId) {
     state.messagesByChannel.set(inboxChannelId, nextInbox);
     state.messagesByChannel.set(destination.id, nextDestination);
     await deleteChannelMessage(inboxChannelId, messageId);
+    await saveChannelMessage(destination.id, message);
+    render();
+}
+
+async function sortCensoredMessage(messageId, sourceChannelId) {
+    const category = getChannelCategory(sourceChannelId);
+    const server = getChannelServer(sourceChannelId);
+    if (!category?.isCensorFolder || !server) return;
+    const available = category.channels.filter((channel) => channel.id !== sourceChannelId);
+    const answer = prompt(`Move censored copy to a channel in Censoring.\n${available.map((channel, index) => `${index + 1}. #${channel.name}`).join("\n")}\n\nChoose a number, or type a new channel name.`);
+    if (!answer?.trim()) return;
+    const index = Number.parseInt(answer, 10) - 1;
+    let destination = available[index];
+    if (!destination) {
+        const name = normalizeChannelName(answer);
+        if (!name) return;
+        destination = category.channels.find((channel) => normalizeChannelName(channel.name) === name);
+        if (!destination) {
+            destination = { id: uniqueId("channel", name), name };
+            category.channels.push(destination);
+            await saveStructure(state.structure);
+        }
+    }
+    const sourceMessages = state.messagesByChannel.get(sourceChannelId) || [];
+    const message = sourceMessages.find((item) => item.id === messageId);
+    if (!message) return;
+    const destinationMessages = state.messagesByChannel.get(destination.id) || normalizeMessages(await getChannelMessages(destination.id));
+    state.messagesByChannel.set(sourceChannelId, sourceMessages.filter((item) => item.id !== messageId));
+    state.messagesByChannel.set(destination.id, [...destinationMessages, message]);
+    await deleteChannelMessage(sourceChannelId, messageId);
     await saveChannelMessage(destination.id, message);
     render();
 }
