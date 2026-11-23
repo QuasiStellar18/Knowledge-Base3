@@ -1002,6 +1002,19 @@ select:focus-visible {
     width: min(900px, 100%);
 }
 
+.settingsBuildVersion {
+    justify-self: start;
+    margin: 0;
+    padding: 5px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--panel-bg);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .02em;
+}
+
 .statsPage {
     display: grid;
     gap: 14px;
@@ -1433,7 +1446,8 @@ select:focus-visible {
     display: block;
     width: 100%;
     height: 128px;
-    object-fit: cover;
+    object-fit: contain;
+    background: #0c0f14;
 }
 
 .imageDraftCandidateDetail {
@@ -6075,10 +6089,13 @@ button:disabled {
 .hallOfFameFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .hallOfFameFacts > div { display: grid; gap: 3px; padding: 9px; border-radius: 10px; background: color-mix(in srgb, var(--panel-bg) 65%, transparent); }
 .hallOfFameFacts strong { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-.hallOfFameCuratorNote { display: grid; gap: 8px; padding: 13px; border-radius: 12px; border-left: 3px solid #d9af57; background: color-mix(in srgb, #d9af57 10%, var(--panel-bg)); }
-.hallOfFameCuratorNote h5, .hallOfFameCuratorNote p { margin: 0; }
-.hallOfFameCuratorNote p { color: var(--muted); font-size: 13px; line-height: 1.4; }
-.hallOfFameCuratorNote textarea { min-height: 150px; resize: vertical; }
+.hallOfFameCuratorNote { display: grid; gap: 10px; padding: 13px; border: 8px double #896e3d; border-radius: 4px; background: linear-gradient(135deg, #dec487, #b89555 48%, #e7d097); box-shadow: inset 0 0 0 2px rgba(58, 41, 19, .52), 0 4px 14px rgba(0, 0, 0, .25); color: #281d10; }
+.hallOfFameCuratorNote h5 { margin: 0; color: #493414; font-family: Georgia, "Times New Roman", serif; font-size: 18px; letter-spacing: .04em; text-align: center; text-transform: uppercase; }
+.hallOfFameInscription { margin: 0; min-height: 66px; padding: 12px 14px; border: 1px solid rgba(64, 43, 13, .66); background: rgba(255, 245, 211, .32); box-shadow: inset 0 1px 2px rgba(255, 255, 255, .42); color: #2d210f; font-family: Georgia, "Times New Roman", serif; font-size: 16px; font-style: italic; line-height: 1.5; text-align: center; white-space: pre-wrap; }
+.hallOfFameInscriptionEditor { display: grid; gap: 8px; }
+.hallOfFameInscriptionEditor summary { color: #3f2d12; cursor: pointer; font-size: 13px; font-weight: 800; }
+.hallOfFameInscriptionEditor textarea { min-height: 150px; resize: vertical; border-color: rgba(62, 43, 16, .7); background: rgba(255, 252, 238, .86); color: #21180c; }
+.hallOfFameInscriptionEditor button { justify-self: start; min-height: 36px; border-color: #62461d; background: #3e2d14; color: #fff0c7; }
 .hallOfFameRail { display: flex; gap: 8px; overflow-x: auto; padding: 3px 1px 10px; scroll-snap-type: x proximity; }
 .hallOfFameRail button { flex: 0 0 72px; height: 72px; padding: 0; overflow: hidden; border-radius: 10px; border: 2px solid transparent; background: var(--panel-bg); scroll-snap-align: start; }
 .hallOfFameRail button.active { border-color: #e6c472; box-shadow: 0 0 0 2px color-mix(in srgb, #e6c472 20%, transparent); }
@@ -6097,6 +6114,10 @@ button:disabled {
 .imageDraftStatsCard small { color: var(--muted); }
 
 .thisOrThatChannel { display: grid; gap: 14px; width: min(1080px, 100%); margin: 0 auto; }
+.thisOrThatModes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.thisOrThatModes button { display: grid; gap: 5px; min-height: 112px; padding: 14px; text-align: left; border: 1px solid var(--border); border-radius: 14px; background: var(--panel-bg); color: var(--text); cursor: pointer; }
+.thisOrThatModes button.active { border-color: color-mix(in srgb, var(--accent) 70%, white); background: color-mix(in srgb, var(--accent) 17%, var(--panel-bg)); }
+.thisOrThatModes small, .thisOrThatModes span { color: var(--muted); line-height: 1.35; }
 .thisOrThatMatchup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .thisOrThatCard { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 15px; background: var(--panel-bg); }
 .thisOrThatCard > img { width: 100%; max-height: min(58dvh, 680px); object-fit: contain; background: #0c0f14; border-radius: 10px; cursor: zoom-in; }
@@ -6150,6 +6171,7 @@ button:disabled {
     .draftRankingItem { grid-template-columns: 38px minmax(0, 1fr); }
     .draftRankingActions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 7px; }
     .thisOrThatMatchup { grid-template-columns: 1fr; }
+    .thisOrThatModes { grid-template-columns: 1fr; }
     .exhibitMapSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .museum3dHeader { grid-template-columns: 1fr; padding: 13px; }
     .museum3dModes { justify-content: flex-start; }
