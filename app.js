@@ -64,7 +64,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "112";
+const APP_BUILD_VERSION = "115";
 
 function hasUnlockSession() {
     try {
@@ -108,6 +108,8 @@ const state = {
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
     imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    draftRankingLimit: 25,
+    holisticRankingLimit: 25,
     thisOrThat: { current: null, mode: "fresh", layout: "horizontal", screen: "setup", rounds: 0, lastWinner: null, rankingLimit: 25, rankingMinimumGames: 0, prioritizeUnranked: true, sessionChanges: {}, lastSessionSummary: null },
     isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
@@ -1852,7 +1854,7 @@ function openPhotoActionSheet({ message, attachment, channelId, viewerItems, vie
     document.body.appendChild(modal);
 }
 
-function getOrCreateCensoredChannel(sourceChannelId) {
+async function getOrCreateCensoredChannel(sourceChannelId) {
     const server = getChannelServer(sourceChannelId);
     if (!server) return null;
 
@@ -1868,15 +1870,31 @@ function getOrCreateCensoredChannel(sourceChannelId) {
         };
         server.categories.push(category);
     }
-    const existing = category.channels.find((channel) => normalizeChannelName(channel.name) === "censored");
-    if (existing) return { server, channel: existing, created: false };
-
-    const channel = {
-        id: uniqueId("channel", "censored"),
-        name: "censored"
-    };
-    category.channels.push(channel);
-    return { server, channel, created: true };
+    let channel = category.channels.find((item) => normalizeChannelName(item.name) === "censored");
+    let changed = Boolean(category.isCensorFolder && !category.channels.includes(channel));
+    if (!channel) {
+        channel = { id: uniqueId("channel", "censored"), name: "censored", isCensorFolderChannel: true };
+        category.channels.push(channel);
+        changed = true;
+    }
+    const duplicates = server.categories.filter((item) => item.id !== category.id).flatMap((item) => item.channels
+        .filter((candidate) => normalizeChannelName(candidate.name) === "censored")
+        .map((candidate) => ({ category: item, channel: candidate })));
+    for (const duplicate of duplicates) {
+        const messages = state.messagesByChannel.get(duplicate.channel.id) || normalizeMessages(await getChannelMessages(duplicate.channel.id));
+        const targetMessages = state.messagesByChannel.get(channel.id) || normalizeMessages(await getChannelMessages(channel.id));
+        const existingIds = new Set(targetMessages.map((message) => message.id));
+        const moving = messages.filter((message) => !existingIds.has(message.id));
+        for (const message of moving) await saveChannelMessage(channel.id, message);
+        for (const message of messages) await deleteChannelMessage(duplicate.channel.id, message.id);
+        state.messagesByChannel.set(channel.id, [...targetMessages, ...moving]);
+        state.channelMessageCounts.set(channel.id, targetMessages.length + moving.length);
+        state.messagesByChannel.delete(duplicate.channel.id);
+        state.channelMessageCounts.delete(duplicate.channel.id);
+        duplicate.category.channels = duplicate.category.channels.filter((item) => item.id !== duplicate.channel.id);
+        changed = true;
+    }
+    return { server, channel, created: changed };
 }
 
 function censorCopyName(name) {
@@ -1889,6 +1907,8 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     const requiredCount = Math.max(1, Number.parseInt(requiredRegions, 10) || 1);
     const requiredArea = Math.min(95, Math.max(0, Number(requiredAreaPercent) || 0));
     let density = Math.min(12, Math.max(1, Number(mosaicDensity) || 4));
+    let censorStyle = "blur";
+    let selectionShape = "rectangle";
 
     const modal = document.createElement("div");
     modal.className = "censorEditor";
@@ -1927,6 +1947,15 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     };
     updateDensityLabel();
     tuning.append(tuningLabel, densityInput, densityValue);
+    const treatment = document.createElement("label");
+    treatment.className = "censorEditorTuning";
+    const treatmentLabel = document.createElement("span");
+    treatmentLabel.textContent = "Censor treatment";
+    const styleSelect = document.createElement("select");
+    styleSelect.innerHTML = "<option value=\"blur\">Mosaic blur</option><option value=\"black\">Solid black box</option>";
+    const shapeSelect = document.createElement("select");
+    shapeSelect.innerHTML = "<option value=\"rectangle\">Rectangle selection</option><option value=\"circle\">Circle selection</option>";
+    treatment.append(treatmentLabel, styleSelect, shapeSelect);
     const persist = document.createElement("label");
     persist.className = "censorEditorPersist";
     const persistInput = document.createElement("input");
@@ -1952,7 +1981,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     save.textContent = temporary ? "Complete temporary censor" : "Save to #censored";
     save.disabled = true;
     controls.append(undo, clear, cancel, save);
-    card.append(heading, help, canvasWrap, status, tuning, persist, controls);
+    card.append(heading, help, canvasWrap, status, tuning, treatment, persist, controls);
     modal.appendChild(card);
     document.body.appendChild(modal);
 
@@ -1985,20 +2014,26 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             // Canvas filter support has been inconsistent in iOS standalone apps.
             // A small source canvas scaled without smoothing creates a durable mosaic blur
             // in both the preview and the saved PNG.
-            const blockSize = Math.max(3, Math.round(Math.min(region.width, region.height) / (4 + density * 2)));
-            const preview = document.createElement("canvas");
-            preview.width = Math.max(1, Math.round(region.width / blockSize));
-            preview.height = Math.max(1, Math.round(region.height / blockSize));
-            const previewContext = preview.getContext("2d");
-            previewContext?.drawImage(sourceCanvas, region.x, region.y, region.width, region.height, 0, 0, preview.width, preview.height);
             context.save();
             context.beginPath();
-            context.rect(region.x, region.y, region.width, region.height);
+            if (region.shape === "circle") context.ellipse(region.x + region.width / 2, region.y + region.height / 2, region.width / 2, region.height / 2, 0, 0, Math.PI * 2);
+            else context.rect(region.x, region.y, region.width, region.height);
             context.clip();
-            context.imageSmoothingEnabled = false;
-            context.drawImage(preview, 0, 0, preview.width, preview.height, region.x, region.y, region.width, region.height);
-            context.fillStyle = "rgba(0, 0, 0, .13)";
-            context.fillRect(region.x, region.y, region.width, region.height);
+            if (region.style === "black") {
+                context.fillStyle = "#000000";
+                context.fillRect(region.x, region.y, region.width, region.height);
+            } else {
+                const blockSize = Math.max(3, Math.round(Math.min(region.width, region.height) / (4 + density * 2)));
+                const preview = document.createElement("canvas");
+                preview.width = Math.max(1, Math.round(region.width / blockSize));
+                preview.height = Math.max(1, Math.round(region.height / blockSize));
+                const previewContext = preview.getContext("2d");
+                previewContext?.drawImage(sourceCanvas, region.x, region.y, region.width, region.height, 0, 0, preview.width, preview.height);
+                context.imageSmoothingEnabled = false;
+                context.drawImage(preview, 0, 0, preview.width, preview.height, region.x, region.y, region.width, region.height);
+                context.fillStyle = "rgba(0, 0, 0, .13)";
+                context.fillRect(region.x, region.y, region.width, region.height);
+            }
             context.restore();
         });
         if (draft && draft.width > 1 && draft.height > 1) {
@@ -2017,6 +2052,8 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
         updateDensityLabel();
         draw();
     });
+    styleSelect.addEventListener("change", () => { censorStyle = styleSelect.value; draw(); });
+    shapeSelect.addEventListener("change", () => { selectionShape = shapeSelect.value; draw(); });
     persistInput.addEventListener("change", updateControls);
     const pointFor = (event) => {
         const rect = canvas.getBoundingClientRect();
@@ -2052,7 +2089,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
         startPoint = null;
         draft = null;
         if (region.width >= Math.max(8, canvas.width / 100) && region.height >= Math.max(8, canvas.height / 100)) {
-            regions.push(region);
+            regions.push({ ...region, style: censorStyle, shape: selectionShape });
         }
         draw();
         updateControls();
@@ -2101,7 +2138,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
                 updateControls();
                 return;
             }
-            const destination = getOrCreateCensoredChannel(channelId);
+            const destination = await getOrCreateCensoredChannel(channelId);
             if (!destination) throw new Error("The source server is no longer available.");
             if (destination.created) await saveStructure(state.structure);
             if (!state.messagesByChannel.has(destination.channel.id)) {
@@ -2490,6 +2527,34 @@ function getCensoredVariants(sourceRef) {
     ));
 }
 
+function createRankingLimitControl(stateKey, onChange) {
+    const control = document.createElement("label");
+    control.className = "thisOrThatRankingControls";
+    const text = document.createElement("span");
+    text.textContent = "Show top";
+    const select = document.createElement("select");
+    [[10, "10 + bottom 5"], [25, "25 + bottom 5"], [50, "50 + bottom 5"], [100, "100 + bottom 5"], [0, "All ranked photos"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = label;
+        option.selected = Number(value) === state[stateKey];
+        select.appendChild(option);
+    });
+    select.addEventListener("change", () => { state[stateKey] = Number(select.value); onChange(); });
+    control.append(text, select);
+    return control;
+}
+
+function getRankedDisplayItems(items, limit) {
+    const maximum = Math.max(0, Number(limit) || 0);
+    if (maximum === 0 || items.length <= maximum + 5) return items.map((item, index) => ({ item, index }));
+    return [
+        ...items.slice(0, maximum).map((item, index) => ({ item, index })),
+        { divider: `${items.length - maximum - 5} middle-ranked photo${items.length - maximum - 5 === 1 ? "" : "s"} hidden` },
+        ...items.slice(-5).map((item, offset) => ({ item, index: items.length - 5 + offset }))
+    ];
+}
+
 function renderDraftRankingsChannel() {
     const insights = getImageDraftInsights();
     const page = document.createElement("section");
@@ -2505,9 +2570,12 @@ function renderDraftRankingsChannel() {
         els.messages.appendChild(page);
         return;
     }
+    const controls = createRankingLimitControl("draftRankingLimit", () => renderMessages());
+    page.appendChild(controls);
     const list = document.createElement("section");
     list.className = "draftRankingsList";
-    rankedImages.forEach((item, index) => {
+    getRankedDisplayItems(rankedImages, state.draftRankingLimit).forEach(({ item, index, divider }) => {
+        if (divider) { const gap = document.createElement("p"); gap.className = "thisOrThatRankingDivider"; gap.textContent = divider; list.appendChild(gap); return; }
         const row = document.createElement("article");
         row.className = "draftRankingItem";
         const position = document.createElement("strong");
@@ -2656,9 +2724,17 @@ async function openPhotoSource(ref) {
     state.visibleMessageLimit = Math.max(state.visibleMessageLimit, state.messagesByChannel.get(channel.id)?.length || 0);
     render();
     requestAnimationFrame(() => {
-        const article = [...els.messages.querySelectorAll(".message")]
+        const figure = [...els.messages.querySelectorAll("[data-photo-ref]")]
+            .find((element) => element.dataset.photoRef === photoRefKey(ref));
+        const article = figure?.closest(".message") || [...els.messages.querySelectorAll(".message")]
             .find((element) => element.dataset.messageId === ref.messageId);
         article?.scrollIntoView({ block: "center", behavior: "smooth" });
+        figure?.classList.add("isSourceTarget");
+        window.setTimeout(() => figure?.classList.remove("isSourceTarget"), 1800);
+        const attachment = findAttachment(ref);
+        if (attachment?.type?.startsWith("image/")) {
+            window.setTimeout(() => openImageViewer(attachment, attachment.note || attachment.name || "Source image"), 260);
+        }
     });
 }
 
@@ -2873,7 +2949,12 @@ function renderThisOrThatRankingsChannel() {
         open.type = "button";
         open.textContent = "Open source";
         open.addEventListener("click", () => { void openPhotoSource(item.ref); });
-        row.append(position, detail, open);
+        const nominate = document.createElement("button");
+        nominate.type = "button";
+        nominate.textContent = isHallOfFameRef(item.ref) ? "In Hall of Fame" : "Nominate";
+        nominate.disabled = isHallOfFameRef(item.ref);
+        nominate.addEventListener("click", () => toggleHallOfFameNomination(item.ref));
+        row.append(position, detail, open, nominate);
         list.appendChild(row);
     });
     page.appendChild(list);
@@ -2905,9 +2986,11 @@ function renderHolisticRankingsChannel() {
         els.messages.appendChild(page);
         return;
     }
+    page.appendChild(createRankingLimitControl("holisticRankingLimit", () => renderMessages()));
     const list = document.createElement("section");
     list.className = "draftRankingsList";
-    ranked.forEach((item, index) => {
+    getRankedDisplayItems(ranked, state.holisticRankingLimit).forEach(({ item, index, divider }) => {
+        if (divider) { const gap = document.createElement("p"); gap.className = "thisOrThatRankingDivider"; gap.textContent = divider; list.appendChild(gap); return; }
         const row = document.createElement("article");
         row.className = "draftRankingItem";
         const position = document.createElement("strong");
@@ -5826,6 +5909,7 @@ function resetImageDraft() {
     state.imageDraft.historyId = null;
     state.imageDraft.play = null;
     state.imageDraft.censor = null;
+    state.imageDraft.censorCompleted = false;
     state.imageDraft.censorResolvedReverse = null;
     state.imageDraft.wheel = null;
     renderMessages();
@@ -5914,9 +5998,9 @@ function renderImageDraftResult() {
     const play = document.createElement("button");
     play.type = "button";
     play.className = "adventurePrimary";
-    play.textContent = draft.censorMode ? "Start censor challenge" : "Start draft slideshow";
+    play.textContent = draft.censorMode ? (draft.censorCompleted ? "Start censored slideshow" : "Start censor challenge") : "Start draft slideshow";
     play.addEventListener("click", () => {
-        if (draft.censorMode) startImageDraftCensorChallenge();
+        if (draft.censorMode && !draft.censorCompleted) startImageDraftCensorChallenge();
         else startImageDraftSlideshow();
     });
     const newDraft = document.createElement("button");
@@ -5994,7 +6078,15 @@ function renderImageDraftPlayback() {
     const heading = document.createElement("section");
     heading.className = "focusSessionIntro";
     heading.innerHTML = `<h3>Draft slideshow</h3><p>Slide ${draft.play.index + 1} of ${draft.play.sequence.length} · draft spot #${current.item.rank}</p>`;
-    const media = renderAdventurePlayerMedia(current.item.ref);
+    const override = draft.censor?.results?.find((result) => photoRefKey(result.ref) === photoRefKey(current.item.ref))?.temporaryBlob;
+    const media = override ? (() => {
+        const frame = document.createElement("figure");
+        const image = document.createElement("img");
+        setRenderedImageSource(image, { blob: override, type: "image/png", name: "Temporary censored draft image" });
+        image.alt = "Temporary censored draft image";
+        frame.appendChild(image);
+        return frame;
+    })() : renderAdventurePlayerMedia(current.item.ref);
     media.className = "imageDraftPlaybackFrame";
     const caption = document.createElement("figcaption");
     caption.textContent = `Draft spot #${current.item.rank} · ${current.values.durationSeconds} seconds · ${current.values.bpm} BPM`;
@@ -6231,7 +6323,15 @@ function renderImageDraftWheel() {
     page.appendChild(actions);
     if (wheel.result && !wheel.spinning) {
         const attachment = findAttachment(wheel.result.ref);
-        const result = attachment
+        const temporary = draft.censor?.results?.find((entry) => photoRefKey(entry.ref) === photoRefKey(wheel.result.ref))?.temporaryBlob;
+        const result = temporary ? (() => {
+            const frame = document.createElement("figure");
+            const image = document.createElement("img");
+            setRenderedImageSource(image, { blob: temporary, type: "image/png", name: "Temporary censored wheel result" });
+            image.alt = `Wheel result · draft spot #${wheel.result.rank}`;
+            frame.appendChild(image);
+            return frame;
+        })() : attachment
             ? renderAdventurePlayerMedia(wheel.result.ref, `Wheel result · draft spot #${wheel.result.rank}`)
             : emptyPanel("The selected local image is no longer available.");
         result.classList.add("imageDraftWheelResult");
@@ -6247,6 +6347,7 @@ function startImageDraftCensorChallenge() {
         state.imageDraft.censorResolvedReverse = Math.random() < .5;
         alert(`Secret censor direction revealed: ${state.imageDraft.censorResolvedReverse ? "descending — first draft pick is most censored" : "ascending — later draft picks are more censored"}.`);
     } else state.imageDraft.censorResolvedReverse = state.imageDraft.censorReverse;
+    state.imageDraft.censorCompleted = false;
     state.imageDraft.censor = { sequence, index: 0, results: [] };
     state.imageDraft.stage = "censor";
     renderMessages();
@@ -6284,7 +6385,8 @@ async function completeImageDraftCensorStep(item, result) {
     draft.censor.index += 1;
     if (draft.censor.index >= draft.censor.sequence.length) {
         draft.stage = "result";
-        alert("Censor challenge complete. Copies were temporary unless you selected the save-to-#censored option; results were added to local draft statistics.");
+        draft.censorCompleted = true;
+        alert("Censor challenge complete. The slideshow and wheel will now use your censored versions. Copies were temporary unless you selected the save-to-#censored option.");
     }
     renderMessages();
 }
