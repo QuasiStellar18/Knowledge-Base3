@@ -52,6 +52,7 @@ const DEFAULT_STRUCTURE = {
         thisOrThatHistory: [],
         censorPresets: [],
         museumQuietMode: false,
+        museumLowPowerMode: false,
         channelQuizSettings: {},
         channelQuizHighScores: {},
         channelQuizPresets: {}
@@ -63,7 +64,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "99";
+const APP_BUILD_VERSION = "112";
 
 function hasUnlockSession() {
     try {
@@ -106,8 +107,8 @@ const state = {
     randomZoomPreset: "normal",
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
-    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
-    thisOrThat: { current: null, mode: "fresh", screen: "setup", rounds: 0, lastWinner: null },
+    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    thisOrThat: { current: null, mode: "fresh", layout: "horizontal", screen: "setup", rounds: 0, lastWinner: null, rankingLimit: 25, rankingMinimumGames: 0, prioritizeUnranked: true, sessionChanges: {}, lastSessionSummary: null },
     isUnlocked: hasUnlockSession(),
     loadingChannelId: null,
     selectedPhotoRefs: [],
@@ -122,8 +123,8 @@ const state = {
     museumCollectionFilter: "",
     museumTagFilter: "",
     museumTour: null,
-    museumWalk: { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true },
-    museum3d: { x: 0, z: 0, yaw: 0, movement: { x: 0, y: 0 } },
+    museumWalk: { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true, movement: { x: 0, y: 0 } },
+    museum3d: { exhibitId: null, x: 0, z: 0, yaw: 0, movement: { x: 0, y: 0 } },
     pendingMessageSave: false,
     lastSaveError: "",
     renderObjectUrls: new Set(),
@@ -144,6 +145,7 @@ let adventureAutoAdvanceStartedMetronome = false;
 let channelQuizPunishmentTimer;
 let channelQuizAdvanceTimer;
 let museum3dMovementFrame;
+let museumWalkJoystickFrame;
 let randomZoomSlideshowTimer;
 let rouletteSlideshowTimer;
 let imageDraftSlideshowTimer;
@@ -1154,6 +1156,7 @@ async function openView(type, id) {
     if (type !== "imageDraft") clearImageDraftWheelTimer();
     if (type !== "imageDraft") stopImageDraftWinnerStay({ render: false });
     if (type !== "museum3d") stopMuseum3dMovement();
+    if (type !== "museumWalk") stopMuseumWalkJoystick();
     if (["channelQuiz", "zoomQuiz"].includes(type) && state.activeView.type !== type) {
         window.clearTimeout(channelQuizPunishmentTimer);
         window.clearTimeout(channelQuizAdvanceTimer);
@@ -1881,11 +1884,11 @@ function censorCopyName(name) {
     return `${base}-censored.png`;
 }
 
-function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, requiredAreaPercent = 0, mosaicDensity = 4, onSaved = null }) {
+function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, requiredAreaPercent = 0, mosaicDensity = 4, temporary = false, onSaved = null }) {
     if (!attachment?.type?.startsWith("image/")) return;
     const requiredCount = Math.max(1, Number.parseInt(requiredRegions, 10) || 1);
     const requiredArea = Math.min(95, Math.max(0, Number(requiredAreaPercent) || 0));
-    const density = Math.min(12, Math.max(1, Number(mosaicDensity) || 4));
+    let density = Math.min(12, Math.max(1, Number(mosaicDensity) || 4));
 
     const modal = document.createElement("div");
     modal.className = "censorEditor";
@@ -1907,6 +1910,31 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     canvasWrap.appendChild(canvas);
     const status = document.createElement("p");
     status.className = "censorEditorStatus";
+    const tuning = document.createElement("label");
+    tuning.className = "censorEditorTuning";
+    const tuningLabel = document.createElement("span");
+    const densityInput = document.createElement("input");
+    densityInput.type = "range";
+    densityInput.min = "1";
+    densityInput.max = "12";
+    densityInput.step = "1";
+    densityInput.value = String(density);
+    const densityValue = document.createElement("output");
+    const updateDensityLabel = () => {
+        densityValue.textContent = `${density}/12`;
+        tuningLabel.textContent = density <= 3 ? "Granularity · large mosaic blocks" : density <= 7 ? "Granularity · medium mosaic blocks" : "Granularity · fine mosaic blocks";
+        help.textContent = `Drag on the image to mosaic-censor it. The original stays unchanged; the copy is saved in this server’s Censoring folder. ${tuningLabel.textContent}: ${density}/12.`;
+    };
+    updateDensityLabel();
+    tuning.append(tuningLabel, densityInput, densityValue);
+    const persist = document.createElement("label");
+    persist.className = "censorEditorPersist";
+    const persistInput = document.createElement("input");
+    persistInput.type = "checkbox";
+    persistInput.checked = !temporary;
+    const persistText = document.createElement("span");
+    persistText.textContent = "Save a permanent copy in #censored";
+    persist.append(persistInput, persistText);
     const controls = document.createElement("div");
     controls.className = "censorEditorControls";
     const undo = document.createElement("button");
@@ -1921,10 +1949,10 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     const save = document.createElement("button");
     save.type = "button";
     save.className = "adventurePrimary";
-    save.textContent = "Save to #censored";
+    save.textContent = temporary ? "Complete temporary censor" : "Save to #censored";
     save.disabled = true;
     controls.append(undo, clear, cancel, save);
-    card.append(heading, help, canvasWrap, status, controls);
+    card.append(heading, help, canvasWrap, status, tuning, persist, controls);
     modal.appendChild(card);
     document.body.appendChild(modal);
 
@@ -1947,6 +1975,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
         status.textContent = requiredArea
             ? `${covered.toFixed(1)}% of ${requiredArea}% required area selected · ${count} region${count === 1 ? "" : "s"}.`
             : `${count} mosaic region${count === 1 ? "" : "s"} selected. The saved copy is an optimized PNG.`;
+        if (!saving) save.textContent = persistInput.checked ? "Save to #censored" : "Complete temporary censor";
     };
     const draw = () => {
         if (!sourceCanvas || !context) return;
@@ -1983,6 +2012,12 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             context.restore();
         }
     };
+    densityInput.addEventListener("input", () => {
+        density = Math.min(12, Math.max(1, Number.parseInt(densityInput.value, 10) || 4));
+        updateDensityLabel();
+        draw();
+    });
+    persistInput.addEventListener("change", updateControls);
     const pointFor = (event) => {
         const rect = canvas.getBoundingClientRect();
         return {
@@ -2054,6 +2089,11 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
                 ? await new Promise((resolve) => canvas.toBlob(resolve, "image/png"))
                 : await fetch(canvas.toDataURL("image/png")).then((response) => response.blob());
             if (!blob) throw new Error("The edited image could not be created.");
+            if (!persistInput.checked) {
+                close();
+                if (onSaved) await onSaved({ regionCount: regions.length, areaPercent: covered, mosaicDensity: density, temporary: true, temporaryBlob: blob });
+                return;
+            }
             const file = new File([blob], censorCopyName(attachment.name), { type: "image/png" });
             if (!(await hasSpaceForLocalFiles([file]))) {
                 saving = false;
@@ -2424,6 +2464,15 @@ async function saveHallOfFameBlurb(entryId, value) {
     await saveStructure(state.structure);
 }
 
+async function saveHallOfFamePresentation(entryId, frameStyle, plaqueStyle) {
+    const entry = (state.structure.settings.hallOfFame || []).find((item) => item.id === entryId);
+    if (!entry) return;
+    entry.frameStyle = ["classic", "silver", "neon"].includes(frameStyle) ? frameStyle : "classic";
+    entry.plaqueStyle = ["brass", "marble", "midnight"].includes(plaqueStyle) ? plaqueStyle : "brass";
+    entry.updatedAt = new Date().toISOString();
+    await saveStructure(state.structure);
+}
+
 function getDraftImageStat(ref, insights = getImageDraftInsights()) {
     return insights.images.find((item) => photoRefKey(item.ref) === photoRefKey(ref)) || null;
 }
@@ -2488,7 +2537,7 @@ function renderDraftRankingsChannel() {
         const open = document.createElement("button");
         open.type = "button";
         open.textContent = "Open source";
-        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        open.addEventListener("click", () => { void openPhotoSource(item.ref); });
         const nominate = document.createElement("button");
         nominate.type = "button";
         nominate.textContent = isHallOfFameRef(item.ref) ? "In Hall of Fame" : "Nominate";
@@ -2510,15 +2559,29 @@ function getThisOrThatCandidates() {
 function chooseThisOrThatPair(winnerStays = null) {
     const candidates = getThisOrThatCandidates();
     if (candidates.length < 2) return null;
+    const gamesByPhoto = new Map(getThisOrThatInsights().images.map((item) => [photoRefKey(item.ref), item.games]));
+    const drawCandidate = (pool) => {
+        if (!state.thisOrThat.prioritizeUnranked) return pool[Math.floor(Math.random() * pool.length)];
+        const weights = pool.map((item) => 1 / (1 + (gamesByPhoto.get(photoRefKey(item.ref)) || 0)));
+        let roll = Math.random() * weights.reduce((total, weight) => total + weight, 0);
+        return pool[weights.findIndex((weight) => (roll -= weight) <= 0)] || pool[pool.length - 1];
+    };
     if (winnerStays) {
         const challengerPool = candidates.filter((item) => photoRefKey(item.ref) !== photoRefKey(winnerStays.ref));
         if (!challengerPool.length) return null;
-        return [winnerStays, challengerPool[Math.floor(Math.random() * challengerPool.length)]];
+        return [winnerStays, drawCandidate(challengerPool)];
     }
-    const firstIndex = Math.floor(Math.random() * candidates.length);
-    let secondIndex = Math.floor(Math.random() * (candidates.length - 1));
-    if (secondIndex >= firstIndex) secondIndex += 1;
-    return [candidates[firstIndex], candidates[secondIndex]];
+    if (state.thisOrThat.mode === "rematch") {
+        const ranked = candidates.map((candidate) => ({ candidate, ...(getThisOrThatInsights().images.find((item) => photoRefKey(item.ref) === photoRefKey(candidate.ref)) || { games: 0, score: 0, winRate: .5 }) }))
+            .filter((item) => item.games > 0)
+            .sort((a, b) => b.score - a.score || b.winRate - a.winRate);
+        if (ranked.length >= 2) {
+            const index = Math.floor(Math.random() * (ranked.length - 1));
+            return [ranked[index].candidate, ranked[index + 1].candidate];
+        }
+    }
+    const first = drawCandidate(candidates);
+    return [first, drawCandidate(candidates.filter((item) => photoRefKey(item.ref) !== photoRefKey(first.ref)))];
 }
 
 function getThisOrThatInsights() {
@@ -2552,10 +2615,51 @@ async function chooseThisOrThatWinner(winner, loser) {
         { id: crypto.randomUUID(), serverId: getActiveServer()?.id, winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }
     ].slice(-2000);
     state.thisOrThat.rounds += 1;
+    [
+        [winner, "wins"],
+        [loser, "losses"]
+    ].forEach(([candidate, field]) => {
+        const key = photoRefKey(candidate.ref);
+        const record = state.thisOrThat.sessionChanges[key] || { ref: structuredClone(candidate.ref), wins: 0, losses: 0, games: 0 };
+        record[field] += 1;
+        record.games += 1;
+        state.thisOrThat.sessionChanges[key] = record;
+    });
     state.thisOrThat.lastWinner = winner;
     state.thisOrThat.current = chooseThisOrThatPair(state.thisOrThat.mode === "winner-stays" ? winner : null);
     await saveStructure(state.structure);
     renderMessages();
+}
+
+function finishThisOrThatSession() {
+    const changes = Object.values(state.thisOrThat.sessionChanges || {});
+    const label = (item) => findAttachment(item.ref)?.note || findAttachment(item.ref)?.name || `# ${getChannelById(item.ref.channelId)?.name || "local image"}`;
+    state.thisOrThat.lastSessionSummary = {
+        rounds: state.thisOrThat.rounds,
+        promoted: [...changes].sort((a, b) => (b.wins - b.losses) - (a.wins - a.losses))[0],
+        demoted: [...changes].sort((a, b) => (a.wins - a.losses) - (b.wins - b.losses))[0],
+        contested: [...changes].sort((a, b) => b.games - a.games || Math.abs(a.wins - a.losses) - Math.abs(b.wins - b.losses))[0],
+        label
+    };
+    state.thisOrThat.screen = "setup";
+    state.thisOrThat.current = null;
+    state.thisOrThat.lastWinner = null;
+}
+
+async function openPhotoSource(ref) {
+    const channel = getChannelById(ref?.channelId);
+    if (!channel) {
+        alert("The original channel for this local image is no longer available.");
+        return;
+    }
+    await openView("channel", channel.id);
+    state.visibleMessageLimit = Math.max(state.visibleMessageLimit, state.messagesByChannel.get(channel.id)?.length || 0);
+    render();
+    requestAnimationFrame(() => {
+        const article = [...els.messages.querySelectorAll(".message")]
+            .find((element) => element.dataset.messageId === ref.messageId);
+        article?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
 }
 
 function renderThisOrThatGame() {
@@ -2568,7 +2672,7 @@ function renderThisOrThatGame() {
         intro.innerHTML = "<h3>This or That</h3><p>Two random local photos from this server face off. Your choices are saved locally and appear in #this-or-that-rankings.</p>";
         const modes = document.createElement("section");
         modes.className = "thisOrThatModes";
-        [["fresh", "Fresh pair every round", "Every answer draws two new random images."], ["winner-stays", "Winner stays", "Your selected image remains and faces one new challenger."]].forEach(([value, title, detail]) => {
+        [["fresh", "Fresh pair every round", "Every answer draws two new random images."], ["winner-stays", "Winner stays", "Your selected image remains and faces one new challenger."], ["rematch", "Close-rank rematches", "Pits neighboring ranked images against each other to improve confidence."]].forEach(([value, title, detail]) => {
             const choice = document.createElement("button");
             choice.type = "button";
             choice.className = game.mode === value ? "active" : "";
@@ -2588,10 +2692,48 @@ function renderThisOrThatGame() {
             game.current = chooseThisOrThatPair();
             game.rounds = 0;
             game.lastWinner = null;
+            game.sessionChanges = {};
+            game.lastSessionSummary = null;
             game.screen = "play";
             renderMessages();
         });
-        page.append(intro, modes, start);
+        const priority = document.createElement("label");
+        priority.className = "viewToggle";
+        const priorityInput = document.createElement("input");
+        priorityInput.type = "checkbox";
+        priorityInput.checked = game.prioritizeUnranked;
+        priorityInput.addEventListener("change", () => { game.prioritizeUnranked = priorityInput.checked; });
+        const priorityText = document.createElement("span");
+        priorityText.textContent = "Prioritize unranked photos";
+        priority.append(priorityInput, priorityText);
+        const layout = document.createElement("label");
+        layout.className = "thisOrThatLayout";
+        const layoutText = document.createElement("span");
+        layoutText.textContent = "Comparison layout";
+        const layoutSelect = document.createElement("select");
+        [["horizontal", "Horizontal — side by side"], ["vertical", "Vertical — stacked"]].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = value === game.layout;
+            layoutSelect.appendChild(option);
+        });
+        layoutSelect.addEventListener("change", () => { game.layout = layoutSelect.value; });
+        layout.append(layoutText, layoutSelect);
+        page.append(intro, modes, priority, layout, start);
+        const summary = game.lastSessionSummary;
+        if (summary?.rounds) {
+            const card = document.createElement("section");
+            card.className = "thisOrThatSessionSummary";
+            card.innerHTML = `<h4>Best of this session</h4><p>${summary.rounds} round${summary.rounds === 1 ? "" : "s"} saved locally.</p>`;
+            [["Newly promoted", summary.promoted], ["Most demoted", summary.demoted], ["Most contested", summary.contested]].forEach(([title, item]) => {
+                if (!item) return;
+                const line = document.createElement("p");
+                line.innerHTML = `<strong>${title}:</strong> ${escapeHTML(summary.label(item))} <span>${item.wins}–${item.losses}</span>`;
+                card.appendChild(line);
+            });
+            page.appendChild(card);
+        }
         els.messages.appendChild(page);
         return;
     }
@@ -2612,7 +2754,7 @@ function renderThisOrThatGame() {
         return;
     }
     const matchup = document.createElement("section");
-    matchup.className = "thisOrThatMatchup";
+    matchup.className = `thisOrThatMatchup${game.layout === "vertical" ? " isVertical" : " isHorizontal"}`;
     pair.forEach((candidate, index) => {
         const other = pair[index === 0 ? 1 : 0];
         const card = document.createElement("article");
@@ -2636,7 +2778,7 @@ function renderThisOrThatGame() {
         const sourceButton = document.createElement("button");
         sourceButton.type = "button";
         sourceButton.textContent = "Open source";
-        sourceButton.addEventListener("click", () => openView("channel", candidate.ref.channelId));
+        sourceButton.addEventListener("click", () => { void openPhotoSource(candidate.ref); });
         actions.append(open, sourceButton);
         card.append(image, source, choose, actions);
         matchup.appendChild(card);
@@ -2649,7 +2791,7 @@ function renderThisOrThatGame() {
     const end = document.createElement("button");
     end.type = "button";
     end.textContent = "End game";
-    end.addEventListener("click", () => { game.screen = "setup"; game.current = null; game.lastWinner = null; renderMessages(); });
+    end.addEventListener("click", () => { finishThisOrThatSession(); renderMessages(); });
     page.append(matchup, skip, end);
     els.messages.appendChild(page);
 }
@@ -2667,9 +2809,45 @@ function renderThisOrThatRankingsChannel() {
         els.messages.appendChild(page);
         return;
     }
+    const controls = document.createElement("label");
+    controls.className = "thisOrThatRankingControls";
+    const controlText = document.createElement("span");
+    controlText.textContent = "Show top";
+    const size = document.createElement("select");
+    [[10, "10 + bottom 5"], [25, "25 + bottom 5"], [50, "50 + bottom 5"], [100, "100 + bottom 5"], [0, "All ranked photos"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = label;
+        option.selected = Number(value) === state.thisOrThat.rankingLimit;
+        size.appendChild(option);
+    });
+    size.addEventListener("change", () => { state.thisOrThat.rankingLimit = Number(size.value); renderMessages(); });
+    const confidenceText = document.createElement("span");
+    confidenceText.textContent = "Minimum comparisons";
+    const confidenceFilter = document.createElement("select");
+    [[0, "Any"], [2, "2+"], [5, "5+"], [10, "10+"]].forEach(([value, label]) => {
+        const option = document.createElement("option"); option.value = String(value); option.textContent = label; option.selected = Number(value) === state.thisOrThat.rankingMinimumGames; confidenceFilter.appendChild(option);
+    });
+    confidenceFilter.addEventListener("change", () => { state.thisOrThat.rankingMinimumGames = Number(confidenceFilter.value); renderMessages(); });
+    controls.append(controlText, size, confidenceText, confidenceFilter);
+    page.appendChild(controls);
     const list = document.createElement("section");
     list.className = "draftRankingsList";
-    insights.images.forEach((item, index) => {
+    const filteredImages = insights.images.filter((item) => item.games >= (Number(state.thisOrThat.rankingMinimumGames) || 0));
+    if (!filteredImages.length) { page.appendChild(emptyPanel("No photos meet this minimum-comparison filter yet.")); els.messages.appendChild(page); return; }
+    const limit = Math.max(0, Number(state.thisOrThat.rankingLimit) || 0);
+    const showBottom = limit > 0 && filteredImages.length > limit + 5;
+    const visibleItems = limit === 0 ? filteredImages.map((item, index) => ({ item, index })) : [
+        ...filteredImages.slice(0, limit).map((item, index) => ({ item, index })),
+        ...(showBottom ? filteredImages.slice(-5).map((item, offset) => ({ item, index: filteredImages.length - 5 + offset, bottom: true })) : [])
+    ];
+    visibleItems.forEach(({ item, index, bottom }, visibleIndex) => {
+        if (bottom && visibleIndex === limit) {
+            const divider = document.createElement("p");
+            divider.className = "thisOrThatRankingDivider";
+            divider.textContent = `${filteredImages.length - limit - 5} middle-ranked photo${filteredImages.length - limit - 5 === 1 ? "" : "s"} hidden`;
+            list.appendChild(divider);
+        }
         const row = document.createElement("article");
         row.className = "draftRankingItem";
         const position = document.createElement("strong");
@@ -2694,7 +2872,7 @@ function renderThisOrThatRankingsChannel() {
         const open = document.createElement("button");
         open.type = "button";
         open.textContent = "Open source";
-        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        open.addEventListener("click", () => { void openPhotoSource(item.ref); });
         row.append(position, detail, open);
         list.appendChild(row);
     });
@@ -2753,7 +2931,7 @@ function renderHolisticRankingsChannel() {
         const open = document.createElement("button");
         open.type = "button";
         open.textContent = "Open source";
-        open.addEventListener("click", () => openView("channel", item.ref.channelId));
+        open.addEventListener("click", () => { void openPhotoSource(item.ref); });
         row.append(position, detail, open);
         list.appendChild(row);
     });
@@ -2797,7 +2975,7 @@ function renderHallOfFameChannel() {
     const exhibit = document.createElement("article");
     exhibit.className = "hallOfFameFeature";
     const media = document.createElement("section");
-    media.className = "hallOfFameFeatureMedia";
+    media.className = `hallOfFameFeatureMedia frame-${entry.frameStyle || "classic"}`;
     if (attachment) {
         const image = document.createElement("img");
         image.alt = attachment.note || attachment.name || "Hall of Fame image";
@@ -2827,7 +3005,7 @@ function renderHallOfFameChannel() {
         facts.appendChild(fact);
     });
     const curator = document.createElement("section");
-    curator.className = "hallOfFameCuratorNote";
+    curator.className = `hallOfFameCuratorNote plaque-${entry.plaqueStyle || "brass"}`;
     const curatorTitle = document.createElement("h5");
     curatorTitle.textContent = "Inscription";
     const inscription = document.createElement("blockquote");
@@ -2859,7 +3037,19 @@ function renderHallOfFameChannel() {
         }
     });
     editor.append(editorSummary, blurb, save);
-    curator.append(curatorTitle, inscription, editor);
+    const presentation = document.createElement("div");
+    presentation.className = "hallOfFamePresentation";
+    const frameSelect = document.createElement("select");
+    [["classic", "Classic wood frame"], ["silver", "Silver frame"], ["neon", "Neon frame"]].forEach(([value, label]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; option.selected = value === (entry.frameStyle || "classic"); frameSelect.appendChild(option);
+    });
+    const plaqueSelect = document.createElement("select");
+    [["brass", "Brass inscription"], ["marble", "Marble inscription"], ["midnight", "Midnight inscription"]].forEach(([value, label]) => {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; option.selected = value === (entry.plaqueStyle || "brass"); plaqueSelect.appendChild(option);
+    });
+    [frameSelect, plaqueSelect].forEach((select) => select.addEventListener("change", async () => { await saveHallOfFamePresentation(entry.id, frameSelect.value, plaqueSelect.value); renderMessages(); }));
+    presentation.append(frameSelect, plaqueSelect);
+    curator.append(curatorTitle, inscription, presentation, editor);
     const variants = getCensoredVariants(entry.ref);
     const variantSection = document.createElement("section");
     variantSection.className = "hallOfFameVariants";
@@ -2898,7 +3088,7 @@ function renderHallOfFameChannel() {
     remove.textContent = "Remove nomination";
     remove.addEventListener("click", () => toggleHallOfFameNomination(entry.ref));
     actions.append(openImage, source, remove);
-    detail.append(title, facts, curator, variantSection, actions);
+    detail.append(title, curator, facts, variantSection, actions);
     exhibit.append(media, detail);
     const rail = document.createElement("div");
     rail.className = "hallOfFameRail";
@@ -3822,7 +4012,7 @@ function renderMuseumGuidedTour(exhibit) {
 }
 
 function createMuseumWalkState() {
-    return { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true };
+    return { x: 680, y: 150, panX: 0, panY: 0, scale: 0.7, showMap: true, inspected: null, tour: null, needsCenter: true, movement: { x: 0, y: 0 } };
 }
 
 function openMuseumWalk() {
@@ -3856,8 +4046,8 @@ function openMuseum1dTour(exhibitId = null) {
 
 function createMuseum3dState(exhibitId = null) {
     const exhibits = getMuseumExhibits();
-    const index = Math.max(0, exhibits.findIndex((item) => item.id === exhibitId));
-    return { x: 0, z: index * -860, yaw: 0, movement: { x: 0, y: 0 } };
+    const selected = exhibits.find((item) => item.id === exhibitId) || exhibits[0] || null;
+    return { exhibitId: selected?.id || null, x: 0, z: 80, yaw: 0, movement: { x: 0, y: 0 } };
 }
 
 function stopMuseum3dMovement() {
@@ -3877,6 +4067,11 @@ function openMuseum3d(exhibitId = null) {
     void openView("museum3d", getActiveServer()?.id || "museum");
 }
 
+function selectMuseum3dRoom(exhibitId) {
+    state.museum3d = createMuseum3dState(exhibitId);
+    renderMessages();
+}
+
 function applyMuseum3dCamera(viewport = els.messages.querySelector(".museum3dViewport")) {
     const camera = viewport?.querySelector(".museum3dCamera");
     if (!camera) return;
@@ -3886,7 +4081,7 @@ function applyMuseum3dCamera(viewport = els.messages.querySelector(".museum3dVie
     if (position) position.textContent = `Position ${Math.round(view.x)}, ${Math.round(view.z)} · facing ${Math.round((view.yaw % 360 + 360) % 360)}°`;
 }
 
-function bindMuseum3dJoystick(joystick, viewport, roomCount) {
+function bindMuseum3dJoystick(joystick, viewport) {
     const stick = joystick.querySelector(".museum3dStick");
     const limit = 38;
     let pointerId = null;
@@ -3937,8 +4132,8 @@ function bindMuseum3dJoystick(joystick, viewport, roomCount) {
             state.museum3d.yaw += movement.x * 1.8;
             const radians = state.museum3d.yaw * Math.PI / 180;
             const distance = movement.y * 4.2;
-            state.museum3d.x = Math.max(-560, Math.min(560, state.museum3d.x + Math.sin(radians) * distance));
-            state.museum3d.z = Math.max(-(Math.max(1, roomCount) - 1) * 860 - 380, Math.min(380, state.museum3d.z + Math.cos(radians) * distance));
+            state.museum3d.x = Math.max(-230, Math.min(230, state.museum3d.x + Math.sin(radians) * distance));
+            state.museum3d.z = Math.max(-110, Math.min(150, state.museum3d.z + Math.cos(radians) * distance));
             applyMuseum3dCamera(viewport);
         }
         museum3dMovementFrame = window.requestAnimationFrame(tick);
@@ -3950,11 +4145,14 @@ function bindMuseum3dJoystick(joystick, viewport, roomCount) {
 function renderMuseum3d() {
     const exhibits = getMuseumExhibits();
     if (!exhibits.length) return exitMuseumWalk();
+    const exhibit = exhibits.find((item) => item.id === state.museum3d.exhibitId) || exhibits[0];
+    if (state.museum3d.exhibitId !== exhibit.id) state.museum3d = createMuseum3dState(exhibit.id);
+    const lowPower = Boolean(state.structure.settings.museumLowPowerMode);
     const page = document.createElement("section");
-    page.className = "museum3d";
+    page.className = `museum3d${lowPower ? " isLowPower" : ""}`;
     const header = document.createElement("section");
     header.className = "museum3dHeader";
-    header.innerHTML = "<div><p>LOCAL VECTOR GALLERY</p><h3>3D Museum</h3><span>Use the joystick to walk and turn, or drag the gallery to look around. Tap a frame to open its full local image.</span></div>";
+    header.innerHTML = "<div><p>LOCAL VECTOR GALLERY</p><h3>3D Museum</h3><span>Walk through one rendered exhibit room at a time. Use the joystick to move and turn, drag to look, and tap a separated frame to open its full local image.</span></div>";
     const modes = document.createElement("div");
     modes.className = "museum3dModes";
     const one = document.createElement("button");
@@ -3975,6 +4173,37 @@ function renderMuseum3d() {
     exit.addEventListener("click", () => exitMuseumWalk());
     modes.append(one, two, three, exit);
     header.appendChild(modes);
+    const roomPicker = document.createElement("div");
+    roomPicker.className = "museum3dRoomPicker";
+    const roomLabel = document.createElement("span");
+    roomLabel.textContent = `Room ${exhibits.findIndex((item) => item.id === exhibit.id) + 1} of ${exhibits.length}`;
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = "Previous room";
+    previous.disabled = exhibits.length < 2;
+    previous.addEventListener("click", () => {
+        const index = exhibits.findIndex((item) => item.id === exhibit.id);
+        selectMuseum3dRoom(exhibits[(index - 1 + exhibits.length) % exhibits.length].id);
+    });
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", "Choose exhibit room");
+    exhibits.forEach((item) => {
+        const option = document.createElement("option");
+        option.value = item.id;
+        option.textContent = item.title;
+        option.selected = item.id === exhibit.id;
+        select.appendChild(option);
+    });
+    select.addEventListener("change", () => selectMuseum3dRoom(select.value));
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = "Next room";
+    next.disabled = exhibits.length < 2;
+    next.addEventListener("click", () => {
+        const index = exhibits.findIndex((item) => item.id === exhibit.id);
+        selectMuseum3dRoom(exhibits[(index + 1) % exhibits.length].id);
+    });
+    roomPicker.append(roomLabel, previous, select, next);
     const viewport = document.createElement("div");
     viewport.className = "museum3dViewport";
     const world = document.createElement("div");
@@ -3983,34 +4212,55 @@ function renderMuseum3d() {
     camera.className = "museum3dCamera";
     const floor = document.createElement("div");
     floor.className = "museum3dFloor";
-    camera.appendChild(floor);
-    exhibits.forEach((exhibit, index) => {
-        const room = document.createElement("article");
-        room.className = `museum3dRoom roomAmbience-${getMuseumRoomLayout(exhibit).ambience}`;
-        room.style.transform = `translate3d(${index % 2 ? 270 : -270}px, 0px, ${-index * 860}px) rotateY(${index % 2 ? -16 : 16}deg)`;
-        const sign = document.createElement("h4");
-        sign.textContent = exhibit.title;
-        const wall = document.createElement("div");
-        wall.className = "museum3dWall";
-        getExhibitPhotoRefs(exhibit).slice(0, 4).forEach((ref) => {
-            const attachment = findAttachment(ref);
-            if (!attachment) return;
-            const frame = document.createElement("button");
-            frame.type = "button";
-            frame.className = "museum3dFrame";
-            const image = document.createElement("img");
-            setRenderedImageSource(image, attachment);
-            image.alt = attachment.note || attachment.name || "Exhibit image";
-            frame.appendChild(image);
-            frame.title = getExhibitPlaque(exhibit, ref) || image.alt;
-            frame.addEventListener("click", () => openImageViewer(attachment, image.alt));
-            wall.appendChild(frame);
-        });
-        const plaque = document.createElement("p");
-        plaque.textContent = exhibit.curatorNote || exhibit.subtitle || `${getExhibitPhotoRefs(exhibit).length} local photos`;
-        room.append(sign, wall, plaque);
-        camera.appendChild(room);
+    const room = document.createElement("article");
+    room.className = `museum3dRoom roomAmbience-${getMuseumRoomLayout(exhibit).ambience} museum3dTheme-${getMuseum3dTheme(exhibit)}`;
+    const roomSign = document.createElement("div");
+    roomSign.className = "museum3dRoomSign";
+    roomSign.innerHTML = `<span>EXHIBIT ROOM</span><h4>${escapeHTML(exhibit.title)}</h4>`;
+    const roomMeta = document.createElement("p");
+    roomMeta.textContent = exhibit.curatorNote || exhibit.subtitle || `${getExhibitPhotoRefs(exhibit).length} local photos`;
+    const backWall = document.createElement("div");
+    backWall.className = "museum3dBackWall";
+    const leftWall = document.createElement("div");
+    leftWall.className = "museum3dSideWall museum3dLeftWall";
+    const rightWall = document.createElement("div");
+    rightWall.className = "museum3dSideWall museum3dRightWall";
+    const ceilingLight = document.createElement("div");
+    ceilingLight.className = "museum3dCeilingLight";
+    const bench = document.createElement("div");
+    bench.className = "museum3dBench";
+    const pedestal = document.createElement("div");
+    pedestal.className = "museum3dPedestal";
+    const door = document.createElement("button");
+    door.type = "button";
+    door.className = "museum3dDoor";
+    door.textContent = exhibits.length > 1 ? "Random gallery door" : "Only gallery room";
+    door.disabled = exhibits.length < 2;
+    door.addEventListener("click", () => {
+        const choices = exhibits.filter((item) => item.id !== exhibit.id);
+        selectMuseum3dRoom(choices[Math.floor(Math.random() * choices.length)].id);
     });
+    const framePositions = [[7, 13, 20], [37, 8, -10], [69, 16, 12], [17, 57, -8], [51, 55, 8], [78, 53, -14]];
+    getExhibitPhotoRefs(exhibit).slice(0, 6).forEach((ref, index) => {
+        const attachment = findAttachment(ref);
+        if (!attachment) return;
+        const frame = document.createElement("button");
+        frame.type = "button";
+        frame.className = "museum3dFrame";
+        const [left, top, angle] = framePositions[index];
+        frame.style.setProperty("--frame-left", `${left}%`);
+        frame.style.setProperty("--frame-top", `${top}%`);
+        frame.style.setProperty("--frame-angle", `${angle}deg`);
+        const image = document.createElement("img");
+        setRenderedImageSource(image, attachment);
+        image.alt = attachment.note || attachment.name || "Exhibit image";
+        frame.appendChild(image);
+        frame.title = getExhibitPlaque(exhibit, ref) || image.alt;
+        frame.addEventListener("click", () => openImageViewer(attachment, image.alt));
+        backWall.appendChild(frame);
+    });
+    room.append(roomSign, roomMeta, backWall, leftWall, rightWall, ceilingLight, bench, pedestal, door);
+    camera.append(floor, room);
     world.appendChild(camera);
     viewport.appendChild(world);
     const hud = document.createElement("div");
@@ -4020,16 +4270,20 @@ function renderMuseum3d() {
     const reset = document.createElement("button");
     reset.type = "button";
     reset.textContent = "Reset view";
-    reset.addEventListener("click", () => { state.museum3d = createMuseum3dState(); applyMuseum3dCamera(viewport); });
-    hud.append(position, reset);
+    reset.addEventListener("click", () => { state.museum3d = createMuseum3dState(exhibit.id); applyMuseum3dCamera(viewport); });
+    const power = document.createElement("button");
+    power.type = "button";
+    power.textContent = lowPower ? "Standard effects" : "Low-power mode";
+    power.addEventListener("click", toggleMuseumLowPowerMode);
+    hud.append(position, reset, power);
     const joystick = document.createElement("div");
     joystick.className = "museum3dJoystick";
     joystick.setAttribute("aria-label", "Walk and turn joystick");
     joystick.innerHTML = "<span class=\"museum3dStick\"></span>";
-    page.append(header, viewport, hud, joystick);
+    page.append(header, roomPicker, viewport, hud, joystick);
     els.messages.appendChild(page);
     applyMuseum3dCamera(viewport);
-    bindMuseum3dJoystick(joystick, viewport, exhibits.length);
+    bindMuseum3dJoystick(joystick, viewport);
 }
 
 function startMuseumWalkTour(exhibitId) {
@@ -4128,6 +4382,18 @@ async function toggleMuseumQuietMode() {
     if (enabled && metronomeTimer) stopMetronome();
     await saveStructure(state.structure);
     renderMessages();
+}
+
+async function toggleMuseumLowPowerMode() {
+    state.structure.settings.museumLowPowerMode = !state.structure.settings.museumLowPowerMode;
+    await saveStructure(state.structure);
+    renderMessages();
+}
+
+function getMuseum3dTheme(exhibit) {
+    const themes = ["gallery", "velvet", "night"];
+    const total = [...String(exhibit?.id || exhibit?.title || "museum")].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+    return themes[total % themes.length];
 }
 
 function getMuseumWalkLayout(exhibits) {
@@ -4267,6 +4533,50 @@ function bindMuseumWalkGestures(viewport) {
     };
     viewport.addEventListener("pointerup", releasePointer);
     viewport.addEventListener("pointercancel", releasePointer);
+}
+
+function stopMuseumWalkJoystick() {
+    if (museumWalkJoystickFrame) window.cancelAnimationFrame(museumWalkJoystickFrame);
+    museumWalkJoystickFrame = undefined;
+    if (state.museumWalk?.movement) state.museumWalk.movement = { x: 0, y: 0 };
+}
+
+function bindMuseumWalkJoystick(joystick, layout) {
+    const stick = joystick.querySelector(".museumWalkStick");
+    const limit = 36;
+    let pointerId = null;
+    const update = (event) => {
+        const rect = joystick.getBoundingClientRect();
+        const rawX = event.clientX - (rect.left + rect.width / 2);
+        const rawY = event.clientY - (rect.top + rect.height / 2);
+        const distance = Math.hypot(rawX, rawY) || 1;
+        const factor = Math.min(1, limit / distance);
+        const x = rawX * factor;
+        const y = rawY * factor;
+        stick.style.transform = `translate(${x}px, ${y}px)`;
+        state.museumWalk.movement = { x: x / limit, y: y / limit };
+    };
+    const release = () => {
+        pointerId = null;
+        stick.style.transform = "translate(0, 0)";
+        state.museumWalk.movement = { x: 0, y: 0 };
+    };
+    joystick.addEventListener("pointerdown", (event) => {
+        pointerId = event.pointerId;
+        joystick.setPointerCapture?.(pointerId);
+        update(event);
+    });
+    joystick.addEventListener("pointermove", (event) => { if (event.pointerId === pointerId) update(event); });
+    joystick.addEventListener("pointerup", release);
+    joystick.addEventListener("pointercancel", release);
+    const tick = () => {
+        if (state.activeView.type !== "museumWalk") return;
+        const movement = state.museumWalk.movement || { x: 0, y: 0 };
+        if (Math.abs(movement.x) > .02 || Math.abs(movement.y) > .02) moveMuseumWalker(movement.x * 4, movement.y * 4, layout);
+        museumWalkJoystickFrame = window.requestAnimationFrame(tick);
+    };
+    stopMuseumWalkJoystick();
+    museumWalkJoystickFrame = window.requestAnimationFrame(tick);
 }
 
 function renderMuseumWalkRoutes(layout) {
@@ -4493,12 +4803,16 @@ function renderMuseumWalk() {
         frames.className = "museumWalkFrames";
         const visibleRefs = roomRefs.slice(0, Math.min(6, thumbnailBudget));
         thumbnailBudget -= visibleRefs.length;
-        visibleRefs.forEach((ref) => {
+        visibleRefs.forEach((ref, index) => {
             const attachment = findAttachment(ref);
             const frame = document.createElement("button");
             frame.type = "button";
             const isTourStop = isTourRoom && state.museumWalk.tour?.index === roomRefs.findIndex((item) => photoRefKey(item) === photoRefKey(ref));
             frame.className = `museumWalkFrame${isTourStop ? " isTourStop" : ""}`;
+            const [left, top, turn] = [[4, 7, -2], [38, 5, 1], [70, 12, 2], [12, 53, 2], [47, 57, -1], [74, 49, 1]][index];
+            frame.style.setProperty("--frame-left", `${left}%`);
+            frame.style.setProperty("--frame-top", `${top}%`);
+            frame.style.setProperty("--frame-turn", `${turn}deg`);
             frame.title = attachment?.note || attachment?.name || "Inspect exhibit frame";
             if (attachment) {
                 const image = document.createElement("img");
@@ -4580,8 +4894,14 @@ function renderMuseumWalk() {
         walkPad.appendChild(button);
     });
     page.append(viewport, walkPad);
+    const joystick = document.createElement("div");
+    joystick.className = "museumWalkJoystick";
+    joystick.setAttribute("aria-label", "Move around the museum floor");
+    joystick.innerHTML = "<span class=\"museumWalkStick\"></span>";
+    page.appendChild(joystick);
     els.messages.appendChild(page);
     bindMuseumWalkGestures(viewport);
+    bindMuseumWalkJoystick(joystick, layout);
     requestAnimationFrame(() => {
         if (state.museumWalk.needsCenter) {
             state.museumWalk.needsCenter = false;
@@ -4993,7 +5313,10 @@ function getImageDraftSourceChannels() {
 }
 
 async function getImageDraftCandidates() {
-    const channels = getImageDraftSourceChannels();
+    return getImageDraftCandidatesForChannels(getImageDraftSourceChannels());
+}
+
+async function getImageDraftCandidatesForChannels(channels) {
     for (const channel of channels) {
         if (!state.messagesByChannel.has(channel.id)) {
             state.messagesByChannel.set(channel.id, normalizeMessages(await getChannelMessages(channel.id)));
@@ -5160,6 +5483,30 @@ function renderImageDraftSetup() {
     const censorMetricField = imageDraftField("Censor challenge", censorMetric);
     const censorAreaField = imageDraftField("Area increase per draft spot (%)", censorArea);
     const censorGranularityField = imageDraftField("Granularity increase per spot", censorGranularity);
+    const censorReverse = document.createElement("input");
+    censorReverse.type = "checkbox";
+    censorReverse.checked = draft.censorReverse;
+    const censorReverseLabel = document.createElement("label");
+    censorReverseLabel.className = "imageDraftToggle";
+    censorReverseLabel.append(censorReverse, document.createTextNode(" Reverse censor order — first draft pick is the most censored"));
+    const censorMystery = document.createElement("input");
+    censorMystery.type = "checkbox";
+    censorMystery.checked = draft.censorMysteryDirection;
+    const censorMysteryLabel = document.createElement("label");
+    censorMysteryLabel.className = "imageDraftToggle";
+    censorMysteryLabel.append(censorMystery, document.createTextNode(" Secret direction — reveal ascending or descending only after the draft"));
+    const punishmentWeighted = document.createElement("input");
+    punishmentWeighted.type = "checkbox";
+    punishmentWeighted.checked = draft.punishmentWeighted;
+    const punishmentWeightedLabel = document.createElement("label");
+    punishmentWeightedLabel.className = "imageDraftToggle";
+    punishmentWeightedLabel.append(punishmentWeighted, document.createTextNode(" Punishment-weighted — mix a random number of #punishment images into this draft (not ranked in stats)"));
+    const censoredWeighted = document.createElement("input");
+    censoredWeighted.type = "checkbox";
+    censoredWeighted.checked = draft.censoredWeighted;
+    const censoredWeightedLabel = document.createElement("label");
+    censoredWeightedLabel.className = "imageDraftToggle";
+    censoredWeightedLabel.append(censoredWeighted, document.createTextNode(" Censored-weighted — mix a random number of #censored images into this draft (not ranked in stats)"));
     const censorPreset = document.createElement("select");
     censorPreset.innerHTML = "<option value=\"\">Censor presets</option>";
     getCensorPresets().forEach((item) => {
@@ -5219,6 +5566,8 @@ function renderImageDraftSetup() {
             censorAreaField.hidden = !["area", "both"].includes(draft.censorMetric);
             censorGranularityField.hidden = !["granularity", "both"].includes(draft.censorMetric);
             censorPresetField.hidden = false;
+            censorReverseLabel.hidden = false;
+            censorMysteryLabel.hidden = false;
             const area = Math.min(95, Math.max(0, (Number(draft.censorAreaStep) || 8) * previewCount));
             const density = Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * previewCount));
             preview.textContent = `${draft.censorMetric === "granularity" ? `Mosaic density grows to ${density}/12 at #${previewCount}.` : draft.censorMetric === "area" ? `Censored area grows to ${area}% at #${previewCount}.` : `At #${previewCount}: censor ${area}% with mosaic density ${density}/12.`}`;
@@ -5236,6 +5585,8 @@ function renderImageDraftSetup() {
             censorAreaField.hidden = true;
             censorGranularityField.hidden = true;
             censorPresetField.hidden = true;
+            censorReverseLabel.hidden = true;
+            censorMysteryLabel.hidden = true;
         }
     };
     count.addEventListener("input", () => refreshPreview(false));
@@ -5245,6 +5596,10 @@ function renderImageDraftSetup() {
     censor.addEventListener("change", () => { draft.censorMode = censor.checked; refreshPreview(); });
     censorArea.addEventListener("input", () => { draft.censorAreaStep = Math.min(40, Math.max(1, Number.parseInt(censorArea.value, 10) || 8)); refreshPreview(); });
     censorGranularity.addEventListener("input", () => { draft.censorGranularityStep = Math.min(6, Math.max(1, Number.parseInt(censorGranularity.value, 10) || 2)); refreshPreview(); });
+    censorReverse.addEventListener("change", () => { draft.censorReverse = censorReverse.checked; refreshPreview(); });
+    censorMystery.addEventListener("change", () => { draft.censorMysteryDirection = censorMystery.checked; if (censorMystery.checked) censorReverse.checked = false; refreshPreview(); });
+    punishmentWeighted.addEventListener("change", () => { draft.punishmentWeighted = punishmentWeighted.checked; });
+    censoredWeighted.addEventListener("change", () => { draft.censoredWeighted = censoredWeighted.checked; });
     winnerStays.addEventListener("change", () => { draft.wheelWinnerStays = winnerStays.checked; refreshPreview(); });
     winnerTimer.addEventListener("input", () => {
         draft.wheelWinnerTimerSeconds = Math.min(7200, Math.max(0, Number.parseInt(winnerTimer.value, 10) || 0));
@@ -5264,6 +5619,10 @@ function renderImageDraftSetup() {
         censorAreaField,
         censorGranularityField,
         censorPresetField,
+        censorReverseLabel,
+        censorMysteryLabel,
+        punishmentWeightedLabel,
+        censoredWeightedLabel,
         preview
     );
     const start = document.createElement("button");
@@ -5288,11 +5647,34 @@ async function beginImageDraft() {
     const candidates = await getImageDraftCandidates();
     const count = Math.min(20, Math.max(2, Number.parseInt(draft.count, 10) || 6));
     draft.count = count;
-    if (candidates.length < count) {
+    if (candidates.length < count && !draft.punishmentWeighted && !draft.censoredWeighted) {
         alert(`The selected source has ${candidates.length} available local image${candidates.length === 1 ? "" : "s"}. Choose ${Math.max(2, Math.min(count, candidates.length))} or fewer, or select another source.`);
         return;
     }
-    draft.candidates = shuffledCopy(candidates).slice(0, count);
+    const weightedSources = [
+        draft.punishmentWeighted && { name: "punishment", channel: allChannels(getActiveServer()).find((channel) => channel.name.trim().toLowerCase() === "punishment") },
+        draft.censoredWeighted && { name: "censored", channel: allChannels(getActiveServer()).find((channel) => channel.name.trim().toLowerCase() === "censored") }
+    ].filter(Boolean);
+    if (weightedSources.length) {
+        if (count < weightedSources.length + 1 || weightedSources.some((source) => !source.channel)) {
+            alert("Weighted drafts need the selected special channels plus at least one ordinary draft spot.");
+            return;
+        }
+        const weightedCandidates = await getImageDraftCandidatesForChannels(weightedSources.map((source) => source.channel));
+        const chosenWeighted = [];
+        let remainingSlots = count - 1;
+        for (const source of weightedSources) {
+            const pool = weightedCandidates.filter((item) => item.ref.channelId === source.channel.id);
+            const amount = Math.min(pool.length, remainingSlots - (weightedSources.length - chosenWeighted.length - 1), 1 + Math.floor(Math.random() * Math.min(3, remainingSlots)));
+            if (amount < 1) { alert(`#${source.name} needs at least one local image for this weighted draft.`); return; }
+            chosenWeighted.push(...shuffledCopy(pool).slice(0, amount).map((item) => ({ ...item, isWeighted: true, weightedSource: source.name })));
+            remainingSlots -= amount;
+        }
+        const weightedChannelIds = new Set(weightedSources.map((source) => source.channel.id));
+        const ordinaryCandidates = candidates.filter((item) => !weightedChannelIds.has(item.ref.channelId));
+        if (ordinaryCandidates.length < count - chosenWeighted.length) { alert("There are not enough non-weighted images to complete this draft."); return; }
+        draft.candidates = shuffledCopy([...chosenWeighted, ...shuffledCopy(ordinaryCandidates).slice(0, count - chosenWeighted.length)]);
+    } else draft.candidates = shuffledCopy(candidates).slice(0, count);
     draft.ranked = draft.mode === "blind" ? Array(count).fill(null) : [];
     draft.blindIndex = 0;
     draft.historyId = null;
@@ -5321,7 +5703,7 @@ function renderImageDraftCandidate(item, rank = null, blind = false) {
     detail.appendChild(title);
     if (!blind) {
         const channel = document.createElement("small");
-        channel.textContent = `# ${item.channelName}`;
+        channel.textContent = item.isWeighted ? `# ${item.weightedSource} · excluded from draft statistics` : `# ${item.channelName}`;
         detail.appendChild(channel);
     }
     button.appendChild(detail);
@@ -5444,6 +5826,7 @@ function resetImageDraft() {
     state.imageDraft.historyId = null;
     state.imageDraft.play = null;
     state.imageDraft.censor = null;
+    state.imageDraft.censorResolvedReverse = null;
     state.imageDraft.wheel = null;
     renderMessages();
 }
@@ -5474,9 +5857,13 @@ async function finalizeImageDraft() {
         censorMetric: draft.censorMetric,
         censorAreaStep: draft.censorAreaStep,
         censorGranularityStep: draft.censorGranularityStep,
-        items: rankedItems.map((item, index) => ({
+        punishmentWeighted: Boolean(draft.punishmentWeighted),
+        censoredWeighted: Boolean(draft.censoredWeighted),
+        punishmentCount: rankedItems.filter((item) => item.weightedSource === "punishment").length,
+        censoredCount: rankedItems.filter((item) => item.weightedSource === "censored").length,
+        items: rankedItems.filter((item) => !item.isWeighted).map((item) => ({
             ref: structuredClone(item.ref),
-            rank: index + 1,
+            rank: item.rank,
             label: item.label,
             channelName: item.channelName
         })),
@@ -5516,7 +5903,7 @@ function renderImageDraftResult() {
         label.textContent = `#${item.rank} · ${item.label}`;
         const meta = document.createElement("span");
         meta.textContent = draft.censorMode
-            ? `# ${item.channelName} · ${getImageDraftCensorRequirement(item).label}`
+            ? (draft.censorMysteryDirection && draft.censorResolvedReverse === null ? `# ${item.channelName} · censor direction remains secret until challenge start` : `# ${item.channelName} · ${getImageDraftCensorRequirement(item).label}`)
             : `# ${item.channelName} · ${values.durationSeconds}s · ${values.bpm} BPM`;
         detail.append(label, meta);
         row.appendChild(detail);
@@ -5856,6 +6243,10 @@ function renderImageDraftWheel() {
 function startImageDraftCensorChallenge() {
     const sequence = getImageDraftPresentationSequence();
     if (!sequence.length) return;
+    if (state.imageDraft.censorMysteryDirection) {
+        state.imageDraft.censorResolvedReverse = Math.random() < .5;
+        alert(`Secret censor direction revealed: ${state.imageDraft.censorResolvedReverse ? "descending — first draft pick is most censored" : "ascending — later draft picks are more censored"}.`);
+    } else state.imageDraft.censorResolvedReverse = state.imageDraft.censorReverse;
     state.imageDraft.censor = { sequence, index: 0, results: [] };
     state.imageDraft.stage = "censor";
     renderMessages();
@@ -5864,11 +6255,13 @@ function startImageDraftCensorChallenge() {
 function getImageDraftCensorRequirement(item) {
     const draft = state.imageDraft;
     const metric = ["area", "granularity", "both"].includes(draft.censorMetric) ? draft.censorMetric : "area";
+    const isReverse = draft.censorResolvedReverse ?? draft.censorReverse;
+    const scaleRank = isReverse ? Math.max(1, (draft.ranked?.length || draft.candidates?.length || item.rank) - item.rank + 1) : item.rank;
     return {
         metric,
-        areaPercent: ["area", "both"].includes(metric) ? Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank)) : 0,
-        mosaicDensity: ["granularity", "both"].includes(metric) ? Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank)) : 4,
-        label: metric === "area" ? `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank))}% of the image` : metric === "granularity" ? `use mosaic density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank))}/12` : `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * item.rank))}% at density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * item.rank))}/12`
+        areaPercent: ["area", "both"].includes(metric) ? Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * scaleRank)) : 0,
+        mosaicDensity: ["granularity", "both"].includes(metric) ? Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * scaleRank)) : 4,
+        label: metric === "area" ? `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * scaleRank))}% of the image` : metric === "granularity" ? `use mosaic density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * scaleRank))}/12` : `censor ${Math.min(95, Math.max(1, (Number(draft.censorAreaStep) || 8) * scaleRank))}% at density ${Math.min(12, Math.max(1, 2 + (Number(draft.censorGranularityStep) || 2) * scaleRank))}/12`
     };
 }
 
@@ -5878,7 +6271,8 @@ async function saveImageDraftCensorResult(item, result) {
     if (!record) return;
     record.censorResults ||= [];
     record.censorResults = record.censorResults.filter((result) => photoRefKey(result.ref) !== photoRefKey(item.ref));
-    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, ...result, at: new Date().toISOString() });
+    const { temporaryBlob, ...savedResult } = result;
+    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, ...savedResult, at: new Date().toISOString() });
     if (record.censorResults.length >= record.items.length) record.censorCompletedAt = new Date().toISOString();
     await saveStructure(state.structure);
 }
@@ -5890,7 +6284,7 @@ async function completeImageDraftCensorStep(item, result) {
     draft.censor.index += 1;
     if (draft.censor.index >= draft.censor.sequence.length) {
         draft.stage = "result";
-        alert("Censor challenge complete. The blurred copies are in #censored and the results were added to local draft statistics.");
+        alert("Censor challenge complete. Copies were temporary unless you selected the save-to-#censored option; results were added to local draft statistics.");
     }
     renderMessages();
 }
@@ -5925,6 +6319,7 @@ function renderImageDraftCensorChallenge() {
         requiredRegions: 1,
         requiredAreaPercent: requirement.areaPercent,
         mosaicDensity: requirement.mosaicDensity,
+        temporary: true,
         onSaved: (result) => completeImageDraftCensorStep(item, result).catch(reportImageDraftSaveError)
     }));
     const end = document.createElement("button");
