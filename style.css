@@ -2376,10 +2376,10 @@ select:focus-visible {
 }
 
 .museumWalkRoom.roomStyle-hallway { border-radius: 22px; }
-.museumWalkRoom.roomStyle-hallway .museumWalkFrames { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.museumWalkRoom.roomStyle-hallway .museumWalkFrames { min-height: 0; }
 .museumWalkRoom.roomStyle-hallway .museumWalkFrame { min-height: 46px; border-width: 3px; }
 .museumWalkRoom.roomStyle-intimate { border-color: #7e6754; border-radius: 18px; box-shadow: 0 8px 0 rgba(0, 0, 0, .28), inset 0 0 38px rgba(0, 0, 0, .32); }
-.museumWalkRoom.roomStyle-intimate .museumWalkFrames { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 72%; margin: 0 auto; }
+.museumWalkRoom.roomStyle-intimate .museumWalkFrames { width: 82%; margin: 0 auto; }
 .museumWalkRoom.roomStyle-grand { border-width: 7px; border-color: #b9934c; box-shadow: 0 10px 0 rgba(0, 0, 0, .28), inset 0 0 0 2px rgba(255, 239, 180, .26); }
 .museumWalkRoom.roomStyle-grand .museumWalkRoomSign { text-align: center; }
 .museumWalkRoom.roomStyle-grand .museumWalkRoomSign h4 { font-size: 22px; }
@@ -2409,23 +2409,26 @@ select:focus-visible {
 .museumWalkRoomSign span { color: #dcccae; font-size: 12px; }
 
 .museumWalkFrames {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    align-content: center;
-    gap: 8px;
+    position: relative;
     min-height: 0;
 }
 
 .museumWalkFrame {
+    position: absolute;
     display: grid;
+    left: var(--frame-left);
+    top: var(--frame-top);
+    width: 25%;
+    height: 38%;
     min-width: 0;
-    min-height: 58px;
+    min-height: 44px;
     padding: 4px;
     border: 4px solid #b48946;
     border-radius: 3px;
     background: #191312;
     box-shadow: 0 2px 5px rgba(0, 0, 0, .4);
     cursor: pointer;
+    transform: rotate(var(--frame-turn));
 }
 
 .museumWalkFrame img,
@@ -2435,7 +2438,7 @@ select:focus-visible {
     height: 100%;
     min-height: 50px;
     background: #08090b;
-    object-fit: cover;
+    object-fit: contain;
 }
 
 .museumWalkFrame:focus-visible,
@@ -2451,6 +2454,9 @@ select:focus-visible {
 }
 
 .museumWalkMoreFrames {
+    position: absolute;
+    right: 4%;
+    bottom: 4%;
     display: grid;
     place-items: center;
     min-height: 58px;
@@ -2609,6 +2615,45 @@ select:focus-visible {
 .museumWalkMoveWest { grid-area: west; }
 .museumWalkMoveEast { grid-area: east; }
 .museumWalkMoveSouth { grid-area: south; }
+
+.museumWalkJoystick {
+    position: relative;
+    width: 104px;
+    height: 104px;
+    justify-self: center;
+    margin: 2px 0 16px;
+    border: 2px solid rgba(255, 229, 165, .62);
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, rgba(255, 239, 187, .3), rgba(98, 62, 30, .45));
+    box-shadow: inset 0 0 22px rgba(0, 0, 0, .35), 0 6px 18px rgba(0, 0, 0, .28);
+    touch-action: none;
+    cursor: grab;
+}
+
+.museumWalkJoystick::after {
+    position: absolute;
+    left: 50%;
+    bottom: -20px;
+    color: #dcccae;
+    content: "move around";
+    font-size: 11px;
+    white-space: nowrap;
+    transform: translateX(-50%);
+}
+
+.museumWalkStick {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 44px;
+    height: 44px;
+    margin: -22px;
+    border: 1px solid #fff4ce;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 28%, #fff6d7, #cf9450 66%, #70411f);
+    box-shadow: 0 3px 9px rgba(0, 0, 0, .45);
+    pointer-events: none;
+}
 
 .museumWalk.isQuiet .museumWalkViewport {
     background: #191a22;
@@ -5069,6 +5114,27 @@ video.embed {
     line-height: 1.4;
 }
 
+.censorEditorTuning {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(100px, 2fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--panel-bg);
+    font-size: 13px;
+    font-weight: 750;
+}
+
+.censorEditorTuning input { width: 100%; accent-color: var(--accent); }
+.censorEditorTuning output { min-width: 38px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.censorEditorTuning select { min-width: 0; min-height: 36px; border-radius: 7px; background: var(--panel-hover); color: var(--text); font: inherit; }
+.censorEditorPersist { display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 13px; font-weight: 750; }
+.censorEditorPersist input { width: 18px; height: 18px; accent-color: var(--accent); }
+.imageAttachment.isSourceTarget { outline: 4px solid var(--accent); outline-offset: 4px; animation: sourceTargetPulse .6s ease-in-out 3; }
+@keyframes sourceTargetPulse { 50% { outline-color: #ffffff; } }
+
 .censorCanvasWrap {
     display: grid;
     place-items: center;
@@ -6078,6 +6144,141 @@ button:disabled {
     .adventureSceneHeading p { font-size: 12px; }
 }
 
+.museum3dTheme-gallery .museum3dBackWall { background: linear-gradient(135deg, #d7dde0, #8495a0 58%, #485762); border-color: #76634b; }
+.museum3dTheme-velvet .museum3dBackWall { background: linear-gradient(135deg, #54243c, #2a1024 58%, #160c19); border-color: #9c7041; }
+.museum3dTheme-night .museum3dBackWall { background: linear-gradient(135deg, #173d52, #102131 58%, #080f19); border-color: #587988; }
+.museum3d.isLowPower .museum3dViewport { background: #111923; perspective: 820px; }
+.museum3d.isLowPower .museum3dBackWall,
+.museum3d.isLowPower .museum3dFloor,
+.museum3d.isLowPower .museum3dFrame,
+.museum3d.isLowPower .museum3dBench,
+.museum3d.isLowPower .museum3dPedestal { box-shadow: none; }
+.museum3d.isLowPower .museum3dCeilingLight { display: none; }
+.museum3d.isLowPower .museum3dRoom,
+.museum3d.isLowPower .museum3dFrame,
+.museum3d.isLowPower .museum3dSideWall { filter: none; }
+.thisOrThatSessionSummary { display: grid; gap: 7px; padding: 13px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 9%, var(--panel-bg)); }
+.thisOrThatSessionSummary h4, .thisOrThatSessionSummary p { margin: 0; }
+.thisOrThatSessionSummary p { color: var(--muted); font-size: 13px; }
+.thisOrThatSessionSummary strong { color: var(--text); }
+.thisOrThatSessionSummary span { color: var(--accent); font-weight: 800; }
+.thisOrThatLayout { display: grid; gap: 6px; width: min(360px, 100%); font-size: 13px; font-weight: 750; }
+.thisOrThatLayout select { min-height: 42px; border-radius: 8px; background: var(--panel-bg); color: var(--text); font: inherit; }
+.hallOfFameFeatureMedia.frame-classic { border: 9px solid #75512b; box-shadow: inset 0 0 0 2px #b58b4f; }
+.hallOfFameFeatureMedia.frame-silver { border: 9px solid #a8b2ba; box-shadow: inset 0 0 0 2px #e7eef2; }
+.hallOfFameFeatureMedia.frame-neon { border: 6px solid #d86ef2; box-shadow: 0 0 18px rgba(216, 110, 242, .62), inset 0 0 12px rgba(92, 240, 255, .55); }
+.hallOfFameCuratorNote.plaque-marble { border-color: #d7d8dd; background: linear-gradient(135deg, #fbfbfd, #b8bdc8 52%, #eef0f4); color: #20232a; }
+.hallOfFameCuratorNote.plaque-midnight { border-color: #4e6b8d; background: linear-gradient(135deg, #182437, #0a111c 55%, #233b58); color: #dcecff; }
+.hallOfFameCuratorNote.plaque-midnight h5 { color: #b9dcff; }
+.hallOfFamePresentation { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.hallOfFamePresentation select { min-height: 36px; min-width: 0; border-radius: 6px; background: rgba(255,255,255,.17); color: inherit; font: inherit; font-size: 12px; }
+.thisOrThatMatchup.isVertical { grid-template-columns: 1fr; max-width: 720px; margin: 0 auto; }
+.thisOrThatMatchup.isHorizontal .thisOrThatCard > img { height: min(48dvh, 560px); max-height: none; object-fit: contain; }
+body .thisOrThatMatchup.isHorizontal { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; align-items: start; }
+body .thisOrThatMatchup.isHorizontal .thisOrThatCard { min-width: 0; }
+body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height: min(48dvh, 560px); max-height: none; object-fit: contain; }
+.museum3dDoor { position: absolute; z-index: 5; right: 4%; bottom: 7%; width: 116px; min-height: 126px; padding: 7px; border: 6px solid #5b3b22; border-radius: 5px 5px 1px 1px; background: linear-gradient(90deg, #4c2f1c, #8c5b31 52%, #3d2619); box-shadow: 5px 8px 12px rgba(0, 0, 0, .46); color: #f6e4bb; cursor: pointer; font: 800 11px/1.2 inherit; transform: translateZ(36px); }
+.museum3dDoor:disabled { cursor: default; opacity: .52; }
+.museum3d.isLowPower .museum3dDoor { box-shadow: none; }
+
+/* Final museum overrides kept last so the room renderer remains isolated from the legacy gallery styles. */
+.museum3dViewport { perspective: 1050px; perspective-origin: 50% 57%; background: radial-gradient(ellipse at 50% 5%, #3d5776 0%, #172334 43%, #070a10 100%); }
+.museum3dWorld, .museum3dCamera { transform-style: preserve-3d; }
+.museum3dCamera { transform-origin: 50% 60%; }
+.museum3dFloor { left: calc(50% - 800px); top: 57%; width: 1600px; height: 1400px; transform: rotateX(84deg) translateZ(-55px); background: repeating-linear-gradient(90deg, rgba(134, 218, 255, .1) 0 1px, transparent 1px 68px), repeating-linear-gradient(0deg, rgba(134, 218, 255, .07) 0 1px, transparent 1px 68px), #101723; }
+.museum3dRoom { left: 50%; top: 55%; width: min(760px, calc(100vw - 74px)); height: 430px; min-height: 0; padding: 0; overflow: visible; border: 0; background: none; box-shadow: none; transform: translate3d(-50%, -50%, -520px); }
+.museum3dBackWall { position: absolute; inset: 0; overflow: hidden; border: 9px solid #4a3423; background: linear-gradient(135deg, #2f4258, #182231 58%, #111923); box-shadow: inset 0 0 80px rgba(0, 0, 0, .48), 0 20px 40px rgba(0, 0, 0, .5); transform: translateZ(-16px); }
+.museum3dSideWall { position: absolute; top: 0; width: 250px; height: 100%; border: 8px solid #3b2a1d; background: linear-gradient(120deg, #152334, #0b111b); opacity: .96; }
+.museum3dLeftWall { left: 0; transform: rotateY(72deg) translateZ(-12px); transform-origin: left center; }
+.museum3dRightWall { right: 0; transform: rotateY(-72deg) translateZ(-12px); transform-origin: right center; }
+.museum3dRoomSign { position: absolute; z-index: 2; top: 22px; left: 50%; width: min(76%, 480px); padding: 8px 14px; border: 1px solid rgba(239, 226, 178, .45); background: rgba(17, 20, 25, .78); color: #f2e8ca; text-align: center; transform: translateX(-50%) translateZ(18px); }
+.museum3dRoomSign span { color: #a9d8ef; font-size: 10px; font-weight: 900; letter-spacing: .14em; }
+.museum3dRoomSign h4 { margin: 3px 0 0; color: #f7edcf; font: 700 clamp(18px, 3vw, 28px) Georgia, serif; }
+.museum3dRoom > p { position: absolute; z-index: 2; right: 22px; bottom: 13px; left: 22px; margin: 0; padding: 8px 10px; color: #e1e7ed; background: rgba(8, 12, 18, .75); transform: translateZ(16px); }
+.museum3dFrame { position: absolute; z-index: 3; left: var(--frame-left); top: var(--frame-top); width: 20%; height: 29%; min-height: 0; padding: 6px; border: 6px solid #805d32; background: #070a0e; box-shadow: 0 7px 14px rgba(0, 0, 0, .75); cursor: zoom-in; transform: translateZ(25px) rotateZ(var(--frame-angle)); }
+.museum3dFrame img { display: block; width: 100%; height: 100%; object-fit: contain; background: #020305; }
+.museum3dCeilingLight { position: absolute; z-index: 4; left: 50%; top: -12px; width: 150px; height: 80px; border-radius: 0 0 50% 50%; background: radial-gradient(ellipse at 50% 0%, rgba(255, 242, 189, .9), rgba(255, 219, 132, .25) 32%, transparent 70%); pointer-events: none; transform: translateX(-50%) translateZ(44px); }
+.museum3dBench { position: absolute; z-index: 4; left: 50%; bottom: 47px; width: 180px; height: 32px; border: 5px solid #513923; border-radius: 7px 7px 3px 3px; background: linear-gradient(#9a7044, #5e3f27); box-shadow: 0 12px 12px rgba(0, 0, 0, .48); pointer-events: none; transform: translateX(-50%) translateZ(58px); }
+.museum3dPedestal { position: absolute; z-index: 4; right: 9%; bottom: 48px; width: 52px; height: 88px; border: 3px solid #8e9aa6; border-radius: 4px 4px 1px 1px; background: linear-gradient(90deg, #c5d0d7, #607180 52%, #aebdc5); box-shadow: 0 10px 13px rgba(0, 0, 0, .45); pointer-events: none; transform: translateZ(46px); }
+.thisOrThatRankingControls { display: flex; align-items: center; gap: 8px; width: fit-content; font-size: 13px; font-weight: 750; }
+.thisOrThatRankingControls select { min-height: 38px; border-radius: 8px; background: var(--panel-bg); color: var(--text); font: inherit; }
+.thisOrThatRankingDivider { margin: 3px 0; padding: 9px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; text-align: center; }
+
+@media (max-width: 700px) {
+    .museum3dRoom { width: calc(100vw - 48px); height: 350px; transform: translate3d(-50%, -50%, -430px); }
+    .museum3dFrame { width: 22%; height: 27%; border-width: 4px; }
+    .museum3dRoomSign { top: 12px; }
+    .museum3dBench { width: 120px; bottom: 38px; }
+    .museum3dPedestal { right: 5%; bottom: 38px; transform: scale(.72) translateZ(46px); transform-origin: bottom right; }
+}
+
+/* One-room 3D museum: only the selected exhibit's frames are mounted at once. */
+.museum3dRoomPicker {
+    display: grid;
+    grid-template-columns: auto auto minmax(140px, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 9px 11px;
+    border: 1px solid rgba(126, 209, 255, .3);
+    border-radius: 11px;
+    background: rgba(13, 21, 32, .8);
+}
+
+.museum3dRoomPicker span { color: #b9ddec; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.museum3dRoomPicker button,
+.museum3dRoomPicker select { min-height: 38px; border: 1px solid rgba(130, 215, 255, .3); border-radius: 8px; background: #182639; color: var(--text); font: inherit; font-size: 13px; }
+.museum3dRoomPicker button { padding: 0 10px; cursor: pointer; }
+.museum3dRoomPicker select { min-width: 0; padding: 0 9px; }
+
+.museum3dViewport { perspective: 1050px; perspective-origin: 50% 57%; background: radial-gradient(ellipse at 50% 5%, #3d5776 0%, #172334 43%, #070a10 100%); }
+.museum3dWorld, .museum3dCamera { transform-style: preserve-3d; }
+.museum3dCamera { transform-origin: 50% 60%; }
+.museum3dFloor { left: calc(50% - 800px); top: 57%; width: 1600px; height: 1400px; transform: rotateX(84deg) translateZ(-55px); background: repeating-linear-gradient(90deg, rgba(134, 218, 255, .1) 0 1px, transparent 1px 68px), repeating-linear-gradient(0deg, rgba(134, 218, 255, .07) 0 1px, transparent 1px 68px), #101723; }
+.museum3dRoom {
+    left: 50%;
+    top: 55%;
+    width: min(760px, calc(100vw - 74px));
+    height: 430px;
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    background: none;
+    box-shadow: none;
+    transform: translate3d(-50%, -50%, -520px);
+}
+.museum3dBackWall {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border: 9px solid #4a3423;
+    background: linear-gradient(135deg, #2f4258, #182231 58%, #111923);
+    box-shadow: inset 0 0 80px rgba(0, 0, 0, .48), 0 20px 40px rgba(0, 0, 0, .5);
+    transform: translateZ(-16px);
+}
+.museum3dSideWall { position: absolute; top: 0; width: 250px; height: 100%; border: 8px solid #3b2a1d; background: linear-gradient(120deg, #152334, #0b111b); opacity: .96; }
+.museum3dLeftWall { left: 0; transform: rotateY(72deg) translateZ(-12px); transform-origin: left center; }
+.museum3dRightWall { right: 0; transform: rotateY(-72deg) translateZ(-12px); transform-origin: right center; }
+.museum3dRoomSign { position: absolute; z-index: 2; top: 22px; left: 50%; width: min(76%, 480px); padding: 8px 14px; border: 1px solid rgba(239, 226, 178, .45); background: rgba(17, 20, 25, .78); color: #f2e8ca; text-align: center; transform: translateX(-50%) translateZ(18px); }
+.museum3dRoomSign span { color: #a9d8ef; font-size: 10px; font-weight: 900; letter-spacing: .14em; }
+.museum3dRoomSign h4 { margin: 3px 0 0; color: #f7edcf; font: 700 clamp(18px, 3vw, 28px) Georgia, serif; }
+.museum3dRoom > p { position: absolute; z-index: 2; right: 22px; bottom: 13px; left: 22px; margin: 0; padding: 8px 10px; color: #e1e7ed; background: rgba(8, 12, 18, .75); transform: translateZ(16px); }
+.museum3dFrame { position: absolute; z-index: 3; left: var(--frame-left); top: var(--frame-top); width: 20%; height: 29%; min-height: 0; padding: 6px; border: 6px solid #805d32; background: #070a0e; box-shadow: 0 7px 14px rgba(0, 0, 0, .75); cursor: zoom-in; transform: translateZ(25px) rotateZ(var(--frame-angle)); }
+.museum3dFrame img { width: 100%; height: 100%; object-fit: contain; background: #020305; }
+.museum3dCeilingLight { position: absolute; z-index: 4; left: 50%; top: -12px; width: 150px; height: 80px; border-radius: 0 0 50% 50%; background: radial-gradient(ellipse at 50% 0%, rgba(255, 242, 189, .9), rgba(255, 219, 132, .25) 32%, transparent 70%); filter: blur(.2px); pointer-events: none; transform: translateX(-50%) translateZ(44px); }
+.museum3dBench { position: absolute; z-index: 4; left: 50%; bottom: 47px; width: 180px; height: 32px; border: 5px solid #513923; border-radius: 7px 7px 3px 3px; background: linear-gradient(#9a7044, #5e3f27); box-shadow: 0 12px 12px rgba(0, 0, 0, .48); pointer-events: none; transform: translateX(-50%) translateZ(58px); }
+.museum3dPedestal { position: absolute; z-index: 4; right: 9%; bottom: 48px; width: 52px; height: 88px; border: 3px solid #8e9aa6; border-radius: 4px 4px 1px 1px; background: linear-gradient(90deg, #c5d0d7, #607180 52%, #aebdc5); box-shadow: 0 10px 13px rgba(0, 0, 0, .45); pointer-events: none; transform: translateZ(46px); }
+
+@media (max-width: 700px) {
+    .museum3dRoomPicker { grid-template-columns: 1fr 1fr; }
+    .museum3dRoomPicker span, .museum3dRoomPicker select { grid-column: 1 / -1; }
+    .museum3dRoom { width: calc(100vw - 48px); height: 350px; transform: translate3d(-50%, -50%, -430px); }
+    .museum3dFrame { width: 22%; height: 27%; border-width: 4px; }
+    .museum3dRoomSign { top: 12px; }
+    .museum3dBench { width: 120px; bottom: 38px; }
+    .museum3dPedestal { right: 5%; bottom: 38px; transform: scale(.72) translateZ(46px); transform-origin: bottom right; }
+}
+
 /* Local gallery, comparison, and smart-exhibit refinements */
 .hallOfFameFeature { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 16px; padding: 16px; border: 1px solid color-mix(in srgb, #f3d997 35%, var(--border)); border-radius: 18px; background: linear-gradient(135deg, color-mix(in srgb, #2a221b 92%, var(--panel-bg)), var(--panel-bg)); }
 .hallOfFameFeatureMedia { display: grid; place-items: center; min-height: 280px; border-radius: 14px; overflow: hidden; background: #0d0b0a; }
@@ -6114,6 +6315,43 @@ button:disabled {
 .imageDraftStatsCard small { color: var(--muted); }
 
 .thisOrThatChannel { display: grid; gap: 14px; width: min(1080px, 100%); margin: 0 auto; }
+.blindAuction { display: grid; gap: 12px; width: min(760px, 100%); margin: 0 auto; }
+.blindAuctionSetup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.blindAuctionSetup label, .blindAuctionControls label { display: grid; gap: 6px; font-size: 14px; font-weight: 700; }
+.blindAuctionSetup input, .blindAuctionControls input { min-width: 0; width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); color: var(--text); font: inherit; }
+.gameWeightedOptions { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.gameWeightedOptions label { display: flex; align-items: center; gap: 9px; line-height: 1.4; }
+.gameWeightedOptions input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+.gameWeightedOptions small, .gameWeightedHelp { margin: 0; color: var(--muted); line-height: 1.4; }
+.blindAuctionPhoto { display: grid; place-items: center; min-height: 200px; margin: 0; overflow: hidden; border-radius: 12px; background: #101114; }
+.blindAuctionPhoto img { display: block; width: 100%; max-height: min(53dvh, 600px); object-fit: contain; cursor: zoom-in; }
+.blindAuctionControls { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.blindAuctionActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.blindAuctionActions button { min-height: 44px; }
+.blindAuctionResults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.blindAuctionResult { display: grid; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.blindAuctionResult img { width: 100%; height: min(28dvh, 240px); object-fit: contain; background: #111; cursor: zoom-in; }
+.tournamentPicker { display: grid; grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 8px; }
+.tournamentPicker button { min-width: 0; padding: 5px; border: 2px solid var(--border); border-radius: 9px; background: var(--panel-bg); color: var(--text); cursor: pointer; }
+.tournamentPicker button.isSelected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.tournamentPicker img { display: block; width: 100%; height: 110px; object-fit: contain; background: #111; }
+.tournamentPicker span { display: block; overflow: hidden; padding: 5px 2px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.tournamentMatchup .thisOrThatCard > img { height: min(48dvh, 480px); width: 100%; object-fit: contain; }
+.tournamentSeed { display: flex; align-items: center; gap: 9px; line-height: 1.4; }
+.tournamentSeed input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
+.tournamentTabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tournamentTabs button { min-height: 42px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-bg); color: var(--text); }
+.tournamentTabs button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--panel-bg)); }
+.tournamentHistoryCard { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
+.tournamentHistoryCard h4, .tournamentHistoryCard p { margin: 0; overflow-wrap: anywhere; }
+.tournamentHistoryCard details { display: grid; line-height: 1.5; }
+.tournamentHistoryCard details p { margin: 8px 0; }
+.tournamentHistoryCard summary { cursor: pointer; font-weight: 700; }
+.tournamentHistoryChampion { width: 100%; max-height: 240px; object-fit: contain; background: #111; border-radius: 8px; cursor: zoom-in; }
+.tournamentChampions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.tournamentChampionCard { display: grid; align-content: start; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); overflow-wrap: anywhere; }
+.tournamentChampionCard img { width: 100%; height: min(30dvh, 240px); object-fit: contain; background: #111; border-radius: 8px; cursor: zoom-in; }
+.tournamentChampionCard span { color: var(--muted); font-size: 13px; }
 .thisOrThatModes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .thisOrThatModes button { display: grid; gap: 5px; min-height: 112px; padding: 14px; text-align: left; border: 1px solid var(--border); border-radius: 14px; background: var(--panel-bg); color: var(--text); cursor: pointer; }
 .thisOrThatModes button.active { border-color: color-mix(in srgb, var(--accent) 70%, white); background: color-mix(in srgb, var(--accent) 17%, var(--panel-bg)); }
@@ -6170,7 +6408,10 @@ button:disabled {
     .hallOfFameFacts { grid-template-columns: 1fr 1fr; }
     .draftRankingItem { grid-template-columns: 38px minmax(0, 1fr); }
     .draftRankingActions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 7px; }
-    .thisOrThatMatchup { grid-template-columns: 1fr; }
+    .thisOrThatMatchup { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .thisOrThatCard { padding: 7px; gap: 7px; }
+    .thisOrThatCard > img { max-height: min(48dvh, 480px); }
+    .thisOrThatCard > div { display: grid; grid-template-columns: 1fr; }
     .thisOrThatModes { grid-template-columns: 1fr; }
     .exhibitMapSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .museum3dHeader { grid-template-columns: 1fr; padding: 13px; }
