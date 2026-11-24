@@ -65,7 +65,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "120";
+const APP_BUILD_VERSION = "124";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64];
 
 function hasUnlockSession() {
@@ -94,6 +94,7 @@ const state = {
     activeView: { type: "channel", id: "ideas" },
     messagesByChannel: new Map(),
     channelMessageCounts: new Map(),
+    relocatedMessages: new Map(),
     channelLoadLimits: new Map(),
     search: "",
     draftAttachments: [],
@@ -103,13 +104,14 @@ const state = {
     randomText: "",
     error: "",
     visibleMessageLimit: 100,
+    sourceFocus: null,
     randomPhotoArray: [],
     randomZoom: null,
     randomZoomSize: 60,
     randomZoomPreset: "normal",
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
-    imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    imageDraft: { stage: "setup", mode: "blind", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
     tournament: { screen: "setup", size: 4, selected: [], visibleLimit: 10, serverId: null, round: [], nextRound: [], matchIndex: 0, wins: {}, matches: [], seeded: true, thirdPlaceEnabled: false, saving: false },
     blindAuction: { screen: "setup", serverId: null, count: 10, budget: 100, punishmentWeighted: false, censoredWeighted: false, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10 },
     tournamentRankingsTab: "rankings",
@@ -155,6 +157,7 @@ let adventureAutoAdvanceStartedMetronome = false;
 let channelQuizPunishmentTimer;
 let channelQuizAdvanceTimer;
 let museum3dMovementFrame;
+let museum3dGameCleanup;
 let museumWalkJoystickFrame;
 let randomZoomSlideshowTimer;
 let rouletteSlideshowTimer;
@@ -263,7 +266,13 @@ async function initApp() {
         selectInitialChannel();
         hydrateSettingsControls();
         state.ready = true;
-        if (createdInbox || createdAdventureServer || createdDraftGallery || createdMuseum) await saveStructure(state.structure);
+        if (createdInbox || createdAdventureServer || createdDraftGallery || createdMuseum) {
+            try { await saveStructure(state.structure); }
+            catch (error) {
+                console.error("Could not save generated workspace channels:", error);
+                state.lastSaveError = "Could not save workspace changes locally. Existing notes are still available; check storage before making changes.";
+            }
+        }
         if (state.isUnlocked) {
             // Never leave a saved, already-unlocked session trapped behind the
             // lock screen while a large channel is still being read.
@@ -316,6 +325,7 @@ function bindEvents() {
 
     els.searchInput.addEventListener("input", () => {
         state.search = els.searchInput.value.trim().toLowerCase();
+        state.sourceFocus = null;
         renderMessages();
     });
 
@@ -403,6 +413,7 @@ function lockWorkspace() {
     state.isUnlocked = false;
     saveUnlockSession(false);
     state.messagesByChannel.clear();
+    state.relocatedMessages.clear();
     state.randomPhotoArray = [];
     state.search = "";
     els.searchInput.value = "";
@@ -668,6 +679,7 @@ function normalizeMessages(messages) {
             id: message.id || crypto.randomUUID(),
             text: message.text || "",
             createdAt: message.createdAt || new Date().toISOString(),
+            arrayOrder: Number.isFinite(message.arrayOrder) ? message.arrayOrder : null,
             pinned: Boolean(message.pinned),
             reactions: Array.isArray(message.reactions) ? [...new Set(message.reactions)] : [],
             reactionEvents: Array.isArray(message.reactionEvents)
@@ -729,7 +741,9 @@ async function ensureServerMessagesLoaded(server = getActiveServer()) {
     // reload. Keep ordinary views scoped to their current server and load one
     // channel at a time, preserving the existing in-memory cache.
     for (const channel of allChannels(server)) {
-        if (state.messagesByChannel.has(channel.id)) continue;
+        const cached = state.messagesByChannel.get(channel.id);
+        const total = state.channelMessageCounts.get(channel.id);
+        if (cached && (total === undefined || cached.length >= total)) continue;
         const rawMessages = await getChannelMessages(channel.id);
         const messages = normalizeMessages(rawMessages);
         state.messagesByChannel.set(channel.id, messages);
@@ -750,6 +764,16 @@ async function ensurePhotoReferencesLoaded(refs) {
         const messages = normalizeMessages(await getChannelMessages(channelId));
         state.messagesByChannel.set(channelId, messages);
         state.channelMessageCounts.set(channelId, messages.length);
+    }
+    for (const ref of refs || []) {
+        if (!ref?.messageId || !ref.channelId || state.relocatedMessages.has(ref.messageId)) continue;
+        if ((state.messagesByChannel.get(ref.channelId) || []).some((message) => message.id === ref.messageId)) continue;
+        try {
+            const location = await getMessageLocation(ref.messageId, ref.channelId);
+            if (location?.channelId !== ref.channelId && location?.message && getChannelById(location.channelId)) {
+                state.relocatedMessages.set(ref.messageId, { channelId: location.channelId, message: normalizeMessages([location.message])[0] });
+            }
+        } catch (error) { console.warn("Could not check a relocated photo reference:", error); }
     }
 }
 
@@ -823,6 +847,7 @@ function renderChannels() {
     }
 
     els.channels.appendChild(renderSpecialViews());
+    if (!server.isAdventureServer) els.channels.appendChild(renderGamesViews());
 
     if (allChannels(server).length === 0 && !server.isAdventureServer) {
         els.channels.appendChild(emptyPanel("No channels yet"));
@@ -1030,7 +1055,32 @@ function renderSpecialViews() {
         prefix: "◉",
         title: "Timer, metronome, and collection slideshow"
     }));
-    if (!getActiveServer()?.isAdventureServer) {
+    if (state.randomPhotoArray.length > 0) {
+        group.appendChild(renderSmartChannelRow({
+            id: "random-photo-array",
+            type: "randomArray",
+            label: "random photo array",
+            prefix: "~",
+            title: "Temporary random photo array"
+        }));
+    }
+    return group;
+}
+
+function renderGamesViews() {
+    const group = document.createElement("section");
+    group.className = "category";
+    const header = document.createElement("button");
+    header.className = "categoryHeader";
+    header.type = "button";
+    header.setAttribute("aria-expanded", String(!state.gamesFolderCollapsed));
+    header.innerHTML = `<span>${state.gamesFolderCollapsed ? ">" : "v"}</span><strong>Games</strong>`;
+    header.addEventListener("click", () => {
+        state.gamesFolderCollapsed = !state.gamesFolderCollapsed;
+        renderChannels();
+    });
+    group.appendChild(header);
+    if (!state.gamesFolderCollapsed) {
         group.appendChild(renderSmartChannelRow({
             id: "roulette-slideshow",
             type: "rouletteSlideshow",
@@ -1074,15 +1124,6 @@ function renderSpecialViews() {
             label: "random zoom",
             prefix: "⌕",
             title: "Reveal a random detail from a local image"
-        }));
-    }
-    if (state.randomPhotoArray.length > 0) {
-        group.appendChild(renderSmartChannelRow({
-            id: "random-photo-array",
-            type: "randomArray",
-            label: "random photo array",
-            prefix: "~",
-            title: "Temporary random photo array"
         }));
     }
     return group;
@@ -1165,6 +1206,7 @@ function renderChannelRow(channel) {
 }
 
 async function openView(type, id) {
+    state.sourceFocus = null;
     if (type !== "randomZoom") stopRandomZoomSlideshow();
     if (type !== "rouletteSlideshow") stopRouletteSlideshow({ render: false });
     if (type !== "imageDraft") stopImageDraftSlideshow({ render: false });
@@ -1210,6 +1252,10 @@ async function openView(type, id) {
                 .filter((tournament) => tournament.serverId === getActiveServer()?.id)
                 .flatMap((tournament) => tournament.entrants || tournament.entries || []).map((item) => item.ref));
         }
+    } else if (type === "museum3d") {
+        await ensureServerMessagesLoaded();
+        const exhibit = getMuseumExhibit(state.museum3d?.exhibitId);
+        if (exhibit) await ensurePhotoReferencesLoaded(getExhibitPhotoRefs(exhibit));
     } else if (type === "tournament" || type === "blindAuction") {
         for (const channel of allChannels(getActiveServer())) {
             const messages = normalizeMessages(await getChannelMessages(channel.id));
@@ -1531,7 +1577,7 @@ function renderMessages() {
     }
 
     if (state.activeView.type === "museum3d") {
-        renderMuseum3d();
+        renderMuseum3dGame();
         return;
     }
 
@@ -1604,7 +1650,18 @@ function renderMessages() {
     }
 
     const allMessages = getVisibleMessages();
-    const messages = allMessages.slice(-state.visibleMessageLimit);
+    const focus = state.activeView.type === "channel" && state.sourceFocus?.channelId === state.activeChannelId ? state.sourceFocus : null;
+    const messages = focus ? allMessages.filter((entry) => (entry.message || entry).id === focus.messageId) : allMessages.slice(-state.visibleMessageLimit);
+    if (focus) {
+        const back = document.createElement("button"); back.type = "button"; back.className = "focusModeButton"; back.textContent = "Return to latest notes";
+        back.addEventListener("click", async () => {
+            const channelId = state.activeChannelId;
+            state.sourceFocus = null;
+            await loadActiveChannelMessages(channelId);
+            if (state.activeView.type === "channel" && state.activeChannelId === channelId) render();
+        });
+        els.messages.appendChild(back);
+    }
     const slideshowItems = getSlideshowItems(messages);
     if (slideshowItems.length > 1) {
         const slideshow = document.createElement("button");
@@ -1635,7 +1692,7 @@ function renderMessages() {
         : allMessages.length;
     const unloadedCount = Math.max(0, channelTotal - allMessages.length);
     const olderCount = Math.max(unloadedCount, allMessages.length - messages.length);
-    if (olderCount > 0) {
+    if (olderCount > 0 && !focus) {
         const older = document.createElement("button");
         older.className = "loadOlder";
         older.type = "button";
@@ -1911,6 +1968,7 @@ async function getOrCreateCensoredChannel(sourceChannelId) {
     if (!server) return null;
 
     let category = server.categories.find((item) => item.isCensorFolder);
+    let changed = false;
     if (!category) {
         category = {
             id: uniqueId("category", "censoring"),
@@ -1921,37 +1979,50 @@ async function getOrCreateCensoredChannel(sourceChannelId) {
             channels: []
         };
         server.categories.push(category);
+        changed = true;
     }
     let channel = category.channels.find((item) => normalizeChannelName(item.name) === "censored");
-    let changed = Boolean(category.isCensorFolder && !category.channels.includes(channel));
     if (!channel) {
         channel = { id: uniqueId("channel", "censored"), name: "censored", isCensorFolderChannel: true };
         category.channels.push(channel);
         changed = true;
     }
-    const duplicates = server.categories.filter((item) => item.id !== category.id).flatMap((item) => item.channels
-        .filter((candidate) => normalizeChannelName(candidate.name) === "censored")
-        .map((candidate) => ({ category: item, channel: candidate })));
-    for (const duplicate of duplicates) {
-        const messages = state.messagesByChannel.get(duplicate.channel.id) || normalizeMessages(await getChannelMessages(duplicate.channel.id));
-        const targetMessages = state.messagesByChannel.get(channel.id) || normalizeMessages(await getChannelMessages(channel.id));
-        const existingIds = new Set(targetMessages.map((message) => message.id));
-        const moving = messages.filter((message) => !existingIds.has(message.id));
-        for (const message of moving) await saveChannelMessage(channel.id, message);
-        for (const message of messages) await deleteChannelMessage(duplicate.channel.id, message.id);
-        state.messagesByChannel.set(channel.id, [...targetMessages, ...moving]);
-        state.channelMessageCounts.set(channel.id, targetMessages.length + moving.length);
-        state.messagesByChannel.delete(duplicate.channel.id);
-        state.channelMessageCounts.delete(duplicate.channel.id);
-        duplicate.category.channels = duplicate.category.channels.filter((item) => item.id !== duplicate.channel.id);
-        changed = true;
-    }
+    // Do not move or delete any same-named channel: photos can be referenced by
+    // their original channel ID in collections, draft history, and exhibits.
     return { server, channel, created: changed };
 }
 
 function censorCopyName(name) {
     const base = (name || "local-image").replace(/\.[^.]+$/, "").trim() || "local-image";
     return `${base}-censored.png`;
+}
+
+function measureCensoredArea(regions, width, height) {
+    if (!width || !height || !regions.length) return 0;
+    // A fixed-size occupancy mask counts overlapping rectangles and ellipses
+    // only once, without reading or copying the user's photo pixels.
+    const side = 256;
+    const mask = new Uint8Array(side * side);
+    let covered = 0;
+    regions.forEach((region) => {
+        if (region.width <= 0 || region.height <= 0) return;
+        const left = Math.max(0, Math.floor(region.x / width * side));
+        const right = Math.min(side, Math.ceil((region.x + region.width) / width * side));
+        const top = Math.max(0, Math.floor(region.y / height * side));
+        const bottom = Math.min(side, Math.ceil((region.y + region.height) / height * side));
+        for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) {
+            const px = (x + .5) * width / side, py = (y + .5) * height / side;
+            if (px < region.x || px > region.x + region.width || py < region.y || py > region.y + region.height) continue;
+            if (region.shape === "circle") {
+                const dx = (px - region.x - region.width / 2) / (region.width / 2);
+                const dy = (py - region.y - region.height / 2) / (region.height / 2);
+                if (dx * dx + dy * dy > 1) continue;
+            }
+            const index = y * side + x;
+            if (!mask[index]) { mask[index] = 1; covered += 1; }
+        }
+    });
+    return covered / (side * side) * 100;
 }
 
 function openCensorEditor({ attachment, channelId, sourceRef = null, requiredRegions = 1, requiredAreaPercent = 0, mosaicDensity = 4, temporary = false, onSaved = null }) {
@@ -1995,7 +2066,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     const updateDensityLabel = () => {
         densityValue.textContent = `${density}/12`;
         tuningLabel.textContent = density <= 3 ? "Granularity · large mosaic blocks" : density <= 7 ? "Granularity · medium mosaic blocks" : "Granularity · fine mosaic blocks";
-        help.textContent = `Drag on the image to mosaic-censor it. The original stays unchanged; the copy is saved in this server’s Censoring folder. ${tuningLabel.textContent}: ${density}/12.`;
+        help.textContent = `Drag on the image to censor it. The original stays unchanged. ${temporary ? "The result stays in this draft unless you choose to save a copy." : "A copy will be saved in this server’s Censoring folder."} ${tuningLabel.textContent}: ${density}/12.`;
     };
     updateDensityLabel();
     tuning.append(tuningLabel, densityInput, densityValue);
@@ -2013,6 +2084,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     const persistInput = document.createElement("input");
     persistInput.type = "checkbox";
     persistInput.checked = !temporary;
+    persist.hidden = !temporary;
     const persistText = document.createElement("span");
     persistText.textContent = "Save a permanent copy in #censored";
     persist.append(persistInput, persistText);
@@ -2049,12 +2121,12 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     };
     const updateControls = () => {
         const count = regions.length;
-        const covered = canvas.width && canvas.height ? Math.min(100, regions.reduce((sum, region) => sum + region.width * region.height, 0) / (canvas.width * canvas.height) * 100) : 0;
+        const covered = measureCensoredArea(regions, canvas.width, canvas.height);
         undo.disabled = count === 0 || saving;
         clear.disabled = count === 0 || saving;
         save.disabled = count < requiredCount || covered < requiredArea || saving;
         status.textContent = requiredArea
-            ? `${covered.toFixed(1)}% of ${requiredArea}% required area selected · ${count} region${count === 1 ? "" : "s"}.`
+            ? `About ${covered.toFixed(1)}% of ${requiredArea}% required area selected · ${count} region${count === 1 ? "" : "s"}.`
             : `${count} mosaic region${count === 1 ? "" : "s"} selected. The saved copy is an optimized PNG.`;
         if (!saving) save.textContent = persistInput.checked ? "Save to #censored" : "Complete temporary censor";
     };
@@ -2168,7 +2240,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
     modal.addEventListener("click", (event) => { if (event.target === modal && !saving) close(); });
 
     save.addEventListener("click", async () => {
-        const covered = canvas.width && canvas.height ? Math.min(100, regions.reduce((sum, region) => sum + region.width * region.height, 0) / (canvas.width * canvas.height) * 100) : 0;
+        const covered = measureCensoredArea(regions, canvas.width, canvas.height);
         if (saving || regions.length < requiredCount || covered < requiredArea) return;
         saving = true;
         updateControls();
@@ -2192,7 +2264,9 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             }
             const destination = await getOrCreateCensoredChannel(channelId);
             if (!destination) throw new Error("The source server is no longer available.");
-            if (destination.created) await saveStructure(state.structure);
+            // Always confirm the destination exists in the persisted structure.
+            // A previous attempt may have created it only in memory before a failed save.
+            await saveStructure(state.structure);
             if (!state.messagesByChannel.has(destination.channel.id)) {
                 state.messagesByChannel.set(destination.channel.id, normalizeMessages(await getChannelMessages(destination.channel.id)));
             }
@@ -2222,7 +2296,7 @@ function openCensorEditor({ attachment, channelId, sourceRef = null, requiredReg
             }
             refreshStorageEstimate();
             close();
-            if (onSaved) await onSaved({ regionCount: regions.length, areaPercent: covered, mosaicDensity: density, copiedMessage, destinationChannelId: destination.channel.id });
+            if (onSaved) await onSaved({ regionCount: regions.length, areaPercent: covered, mosaicDensity: density, temporary: false, temporaryBlob: blob, destinationMessageId: copiedMessage.id, destinationChannelId: destination.channel.id });
             else alert("Saved a blurred copy in #censored. Your original photo was not changed.");
             render();
         } catch (error) {
@@ -2292,7 +2366,7 @@ function getPhotoOrderPosition(ref) {
     }
     const channel = getActiveChannel();
     if (state.activeView.type === "channel" && channel?.isSavedArrayChannel && ref.channelId === channel.id) {
-        const messages = state.messagesByChannel.get(channel.id) || [];
+        const messages = [...(state.messagesByChannel.get(channel.id) || [])].sort(compareSavedArrayMessages);
         const index = messages.findIndex((item) => item.id === ref.messageId);
         return index >= 0 ? { index, length: messages.length } : null;
     }
@@ -2308,10 +2382,26 @@ async function movePhotoInCurrentView(from, offset) {
         await saveStructure(state.structure);
     } else {
         const channel = getActiveChannel();
-        const messages = channel?.isSavedArrayChannel ? state.messagesByChannel.get(channel.id) : null;
-        if (!messages || to < 0 || to >= messages.length) return;
-        [messages[from], messages[to]] = [messages[to], messages[from]];
-        await saveChannelMessages(channel.id, messages);
+        const cached = channel?.isSavedArrayChannel ? state.messagesByChannel.get(channel.id) : null;
+        if (!cached) return;
+        const visible = [...cached].sort(compareSavedArrayMessages);
+        if (to < 0 || to >= visible.length || !visible[from]) return;
+        if (visible[from].pinned !== visible[to].pinned) { alert("Pinned notes stay above unpinned notes. Unpin the note first to move it across that boundary."); return; }
+        const firstId = visible[from].id, secondId = visible[to].id;
+        try {
+            const messages = normalizeMessages(await getChannelMessages(channel.id)).sort(compareSavedArrayMessages);
+            const first = messages.findIndex((message) => message.id === firstId);
+            const second = messages.findIndex((message) => message.id === secondId);
+            if (first < 0 || second < 0) throw new Error("The selected photos could not be found in local storage.");
+            [messages[first], messages[second]] = [messages[second], messages[first]];
+            await saveChannelMessageOrder(channel.id, messages.map((message) => message.id));
+            state.messagesByChannel.set(channel.id, messages.map((message, index) => ({ ...message, arrayOrder: index })));
+            state.channelMessageCounts.set(channel.id, messages.length);
+        } catch (error) {
+            console.error("Could not reorder saved array:", error);
+            alert("Could not save the new order. Your photos and their original order were left unchanged.");
+            return;
+        }
     }
     renderMessages();
 }
@@ -2537,20 +2627,20 @@ async function toggleHallOfFameNomination(ref) {
     render();
 }
 
-async function saveHallOfFameBlurb(entryId, value) {
-    const entry = (state.structure.settings.hallOfFame || []).find((item) => item.id === entryId);
-    if (!entry) return;
-    entry.blurb = value.trim().slice(0, 2000);
-    entry.updatedAt = new Date().toISOString();
-    (state.structure.settings.museumExhibits || []).forEach((exhibit) => {
-        const key = photoRefKey(entry.ref);
-        if (getExhibitPhotoRefs(exhibit).some((ref) => photoRefKey(ref) === key) && !String(exhibit.plaques?.[key] || "").trim() && entry.blurb) {
-            exhibit.plaques ||= {};
-            exhibit.plaques[key] = entry.blurb;
-            exhibit.updatedAt = new Date().toISOString();
-        }
-    });
-    await saveStructure(state.structure);
+async function saveHallOfFameBlurb(entry, value) {
+    const entries = state.structure.settings.hallOfFame || [];
+    const index = entries.findIndex((item) => item === entry || (entry.id && item.id === entry.id));
+    if (index < 0) throw new Error("This nomination is no longer available.");
+    const updated = { ...entries[index], blurb: value.trim().slice(0, 2000), updatedAt: new Date().toISOString() };
+    const nextEntries = entries.slice();
+    nextEntries[index] = updated;
+    await saveStructure({ ...state.structure, settings: { ...state.structure.settings, hallOfFame: nextEntries } });
+    const currentIndex = (state.structure.settings.hallOfFame || []).findIndex((item) => item === entry || (entry.id && item.id === entry.id));
+    if (currentIndex >= 0) {
+        state.structure.settings.hallOfFame[currentIndex].blurb = updated.blurb;
+        state.structure.settings.hallOfFame[currentIndex].updatedAt = updated.updatedAt;
+    }
+    return updated.blurb;
 }
 
 async function saveHallOfFamePresentation(entryId, frameStyle, plaqueStyle) {
@@ -2679,7 +2769,9 @@ function getThisOrThatCandidates() {
 function chooseThisOrThatPair(winnerStays = null) {
     const candidates = getThisOrThatCandidates();
     if (candidates.length < 2) return null;
-    const gamesByPhoto = new Map(getThisOrThatInsights().images.map((item) => [photoRefKey(item.ref), item.games]));
+    const insights = getThisOrThatInsights();
+    const byPhoto = new Map(insights.images.map((item) => [photoRefKey(item.ref), item]));
+    const gamesByPhoto = new Map(insights.images.map((item) => [photoRefKey(item.ref), item.games]));
     const drawCandidate = (pool) => {
         if (!state.thisOrThat.prioritizeUnranked) return pool[Math.floor(Math.random() * pool.length)];
         const weights = pool.map((item) => 1 / (1 + (gamesByPhoto.get(photoRefKey(item.ref)) || 0)));
@@ -2692,7 +2784,7 @@ function chooseThisOrThatPair(winnerStays = null) {
         return [winnerStays, drawCandidate(challengerPool)];
     }
     if (state.thisOrThat.mode === "rematch") {
-        const ranked = candidates.map((candidate) => ({ candidate, ...(getThisOrThatInsights().images.find((item) => photoRefKey(item.ref) === photoRefKey(candidate.ref)) || { games: 0, score: 0, winRate: .5 }) }))
+        const ranked = candidates.map((candidate) => ({ candidate, ...(byPhoto.get(photoRefKey(candidate.ref)) || { games: 0, score: 0, winRate: .5 }) }))
             .filter((item) => item.games > 0)
             .sort((a, b) => b.score - a.score || b.winRate - a.winRate);
         if (ranked.length >= 2) {
@@ -2730,25 +2822,47 @@ function getThisOrThatInsights() {
 }
 
 async function chooseThisOrThatWinner(winner, loser) {
-    state.structure.settings.thisOrThatHistory = [
-        ...(state.structure.settings.thisOrThatHistory || []),
-        { id: crypto.randomUUID(), serverId: getActiveServer()?.id, winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }
-    ].slice(-2000);
-    state.thisOrThat.rounds += 1;
-    [
-        [winner, "wins"],
-        [loser, "losses"]
-    ].forEach(([candidate, field]) => {
-        const key = photoRefKey(candidate.ref);
-        const record = state.thisOrThat.sessionChanges[key] || { ref: structuredClone(candidate.ref), wins: 0, losses: 0, games: 0 };
-        record[field] += 1;
-        record.games += 1;
-        state.thisOrThat.sessionChanges[key] = record;
-    });
-    state.thisOrThat.lastWinner = winner;
-    state.thisOrThat.current = chooseThisOrThatPair(state.thisOrThat.mode === "winner-stays" ? winner : null);
-    await saveStructure(state.structure);
+    const game = state.thisOrThat;
+    if (game.saving || game.screen !== "play" || !game.current?.some((item) => photoRefKey(item.ref) === photoRefKey(winner.ref))) return;
+    game.saving = true;
+    game.saveError = "";
     renderMessages();
+    try {
+        const previous = state.structure.settings.thisOrThatHistory || [];
+        const nextHistory = [...previous, { id: newLocalGameRecordId(), serverId: getActiveServer()?.id, winner: structuredClone(winner.ref), loser: structuredClone(loser.ref), at: new Date().toISOString() }].slice(-2000);
+        await saveStructure({ ...state.structure, settings: { ...state.structure.settings, thisOrThatHistory: nextHistory } });
+        state.structure.settings.thisOrThatHistory = nextHistory;
+        game.rounds += 1;
+        [[winner, "wins"], [loser, "losses"]].forEach(([candidate, field]) => {
+            const key = photoRefKey(candidate.ref);
+            const record = game.sessionChanges[key] || { ref: structuredClone(candidate.ref), wins: 0, losses: 0, games: 0 };
+            record[field] += 1; record.games += 1; game.sessionChanges[key] = record;
+        });
+        game.lastWinner = winner;
+        game.current = chooseThisOrThatPair(game.mode === "winner-stays" ? winner : null);
+    } catch (error) {
+        console.error("Could not save This or That choice:", error);
+        game.saveError = localGameSaveError(error);
+    } finally {
+        game.saving = false;
+        renderMessages();
+    }
+}
+
+function localGameSaveError(error) {
+    if (error?.name === "QuotaExceededError") return "Local storage is full. Your choice has not been saved; free device storage or export a backup before retrying.";
+    const name = error?.name && error.name !== "Error" ? ` (${error.name})` : "";
+    const detail = typeof error?.message === "string" && error.message.trim() ? ` ${error.message.trim().slice(0, 160)}` : "";
+    return `Could not save locally${name}.${detail} Your choice is still here; try again. Your photos have not been deleted.`;
+}
+
+function newLocalGameRecordId() {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
+    if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+        const bytes = new Uint8Array(16); globalThis.crypto.getRandomValues(bytes);
+        return `game-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    }
+    return `game-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function finishThisOrThatSession() {
@@ -2767,25 +2881,48 @@ function finishThisOrThatSession() {
 }
 
 async function openPhotoSource(ref) {
-    const channel = getChannelById(ref?.channelId);
+    let location = null;
+    try { if (ref?.messageId) location = await getMessageLocation(ref.messageId, ref.channelId); }
+    catch (error) { console.warn("Could not resolve the current source location:", error); }
+    const channel = getChannelById(location?.channelId || ref?.channelId);
     if (!channel) {
         alert("The original channel for this local image is no longer available.");
         return;
     }
     await openView("channel", channel.id);
-    state.visibleMessageLimit = Math.max(state.visibleMessageLimit, state.messagesByChannel.get(channel.id)?.length || 0);
+    let source = (state.messagesByChannel.get(channel.id) || []).find((message) => message.id === ref.messageId);
+    try {
+        if (!source) source = await getChannelMessage(channel.id, ref.messageId);
+    } catch (error) {
+        console.error("Could not load the source message:", error);
+        alert("Could not load the original message from local storage. Your channel was not changed.");
+        return;
+    }
+    if (state.activeView.type !== "channel" || state.activeChannelId !== channel.id) return;
+    const attachment = source?.attachments?.find((item) => item.id === ref.attachmentId);
+    if (!attachment) { alert("The referenced photo was not found in its original local message. No photos were changed."); return; }
+    if (!(state.messagesByChannel.get(channel.id) || []).some((message) => message.id === source.id)) {
+        const messages = state.messagesByChannel.get(channel.id) || [];
+        state.messagesByChannel.set(channel.id, [...messages, ...normalizeMessages([source])]);
+    }
+    state.search = ""; els.searchInput.value = "";
+    state.sourceFocus = { channelId: channel.id, messageId: source.id };
     render();
     requestAnimationFrame(() => {
+        const actualRef = { ...ref, channelId: channel.id };
         const figure = [...els.messages.querySelectorAll("[data-photo-ref]")]
-            .find((element) => element.dataset.photoRef === photoRefKey(ref));
+            .find((element) => element.dataset.photoRef === photoRefKey(actualRef));
         const article = figure?.closest(".message") || [...els.messages.querySelectorAll(".message")]
             .find((element) => element.dataset.messageId === ref.messageId);
         article?.scrollIntoView({ block: "center", behavior: "smooth" });
         figure?.classList.add("isSourceTarget");
         window.setTimeout(() => figure?.classList.remove("isSourceTarget"), 1800);
-        const attachment = findAttachment(ref);
         if (attachment?.type?.startsWith("image/")) {
-            window.setTimeout(() => openImageViewer(attachment, attachment.note || attachment.name || "Source image"), 260);
+            window.setTimeout(() => {
+                if (state.activeView.type === "channel" && state.activeChannelId === channel.id && state.sourceFocus?.messageId === source.id) {
+                    openImageViewer(attachment, attachment.note || attachment.name || "Source image");
+                }
+            }, 260);
         }
     });
 }
@@ -2822,6 +2959,7 @@ function renderThisOrThatGame() {
             game.lastWinner = null;
             game.sessionChanges = {};
             game.lastSessionSummary = null;
+            game.saveError = "";
             game.screen = "play";
             renderMessages();
         });
@@ -2876,6 +3014,7 @@ function renderThisOrThatGame() {
     const insights = getThisOrThatInsights();
     intro.innerHTML = `<h3>This or That</h3><p>${game.mode === "winner-stays" ? "Winner stays active: your pick faces a new challenger." : "Fresh mode: each answer draws two new random images."} ${game.rounds} round${game.rounds === 1 ? "" : "s"} this run · ${insights.rounds} saved choice${insights.rounds === 1 ? "" : "s"} in this server.</p>`;
     page.appendChild(intro);
+    if (game.saveError) { const error = document.createElement("p"); error.className = "gameSaveError"; error.setAttribute("role", "alert"); error.textContent = game.saveError; page.appendChild(error); }
     if (!pair) {
         page.appendChild(emptyPanel("Add at least two local images or GIFs to this server to start comparing."));
         els.messages.appendChild(page);
@@ -2896,7 +3035,8 @@ function renderThisOrThatGame() {
         const choose = document.createElement("button");
         choose.type = "button";
         choose.className = "adventurePrimary";
-        choose.textContent = "Choose this";
+        choose.textContent = game.saving ? "Saving…" : "Choose this";
+        choose.disabled = Boolean(game.saving);
         choose.addEventListener("click", () => chooseThisOrThatWinner(candidate, other));
         const actions = document.createElement("div");
         const open = document.createElement("button");
@@ -2915,10 +3055,12 @@ function renderThisOrThatGame() {
     skip.type = "button";
     skip.className = "thisOrThatSkip";
     skip.textContent = "Skip this pairing";
-    skip.addEventListener("click", () => { game.current = chooseThisOrThatPair(game.mode === "winner-stays" ? game.lastWinner : null); renderMessages(); });
+    skip.disabled = Boolean(game.saving);
+    skip.addEventListener("click", () => { game.saveError = ""; game.current = chooseThisOrThatPair(game.mode === "winner-stays" ? game.lastWinner : null); renderMessages(); });
     const end = document.createElement("button");
     end.type = "button";
     end.textContent = "End game";
+    end.disabled = Boolean(game.saving);
     end.addEventListener("click", () => { finishThisOrThatSession(); renderMessages(); });
     page.append(matchup, skip, end);
     els.messages.appendChild(page);
@@ -3189,7 +3331,9 @@ function startTournamentBracket(refs, seeded) {
     game.thirdPlacePending = false;
     game.thirdPlacePair = [];
     game.thirdPlaceWinner = null;
-    game.screen = "play";
+    game.pendingRecordId = null;
+    game.saveError = "";
+    game.screen = "bracket";
 }
 
 async function rematchTournament(entry) {
@@ -3209,6 +3353,42 @@ async function rematchTournament(entry) {
     state.tournament.weightedEntries = structuredClone(entry.weightedEntries || []);
     startTournamentBracket(refs, false);
     await openView("tournament", "tournament");
+}
+
+function renderTournamentBracket(game) {
+    const wrapper = document.createElement("section"); wrapper.className = "tournamentBracket";
+    wrapper.setAttribute("aria-label", "Tournament bracket; scroll horizontally to see later rounds");
+    const columns = document.createElement("div"); columns.className = "tournamentBracketColumns";
+    let participants = [...(game.initialBracket || [])];
+    for (let size = participants.length; size >= 2; size /= 2) {
+        const column = document.createElement("section"); column.className = "tournamentBracketRound";
+        const title = document.createElement("h4"); title.textContent = size === 2 ? "Final" : size === 4 ? "Semifinals" : `Round of ${size}`; column.appendChild(title);
+        const matches = document.createElement("div"); matches.className = "tournamentBracketMatches";
+        const completed = (game.matches || []).filter((match) => match.kind !== "third-place" && match.roundSize === size);
+        const winners = [];
+        for (let index = 0; index < size / 2; index += 1) {
+            const result = completed[index];
+            const matchup = document.createElement("div"); matchup.className = "tournamentBracketMatch";
+            [participants[index * 2], participants[index * 2 + 1]].forEach((ref) => {
+                const button = document.createElement("button"); button.type = "button";
+                button.textContent = ref ? tournamentPhotoName(ref) : "To be decided";
+                button.disabled = !ref || !findAttachment(ref);
+                if (ref && result && photoRefKey(result.winner) === photoRefKey(ref)) button.classList.add("isWinner");
+                if (ref) button.addEventListener("click", () => { const attachment = findAttachment(ref); if (attachment) openImageViewer(attachment, tournamentPhotoName(ref)); });
+                matchup.appendChild(button);
+            });
+            matches.appendChild(matchup);
+            winners.push(result?.winner || null);
+        }
+        column.appendChild(matches); columns.appendChild(column); participants = winners;
+    }
+    wrapper.appendChild(columns);
+    if (game.thirdPlacePending || game.thirdPlaceWinner) {
+        const third = document.createElement("p"); third.className = "tournamentBracketThird";
+        third.textContent = `Third-place match: ${(game.thirdPlacePair || []).map(tournamentPhotoName).join(" vs ")}${game.thirdPlaceWinner ? ` · Winner: ${tournamentPhotoName(game.thirdPlaceWinner)}` : ""}`;
+        wrapper.appendChild(third);
+    }
+    return wrapper;
 }
 
 function renderTournament() {
@@ -3274,11 +3454,23 @@ function renderTournament() {
             } catch (error) { alert(error.message); }
         });
         page.append(size, seedLabel, thirdLabel, weighted, weightedHelp, status, gallery, more, random, start);
+    } else if (game.screen === "bracket") {
+        intro.innerHTML = game.matches.length
+            ? "<h3>Tournament bracket</h3><p>Review the results and upcoming matches before continuing.</p>"
+            : "<h3>Tournament bracket</h3><p>Review the opening matchups before you start. Tap a photo name to expand it.</p>";
+        page.appendChild(renderTournamentBracket(game));
+        const next = document.createElement("button"); next.type = "button"; next.className = "adventurePrimary";
+        next.textContent = !game.matches.length ? "Start first round" : game.thirdPlacePending ? "Play third-place match" : game.round.length === 2 ? "Play the final" : "Start next round";
+        next.addEventListener("click", () => { game.screen = "play"; renderMessages(); });
+        const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel tournament";
+        cancel.addEventListener("click", () => { if (confirm("Cancel this tournament? No results will be saved.")) { game.screen = "setup"; renderMessages(); } });
+        page.append(next, cancel);
     } else if (game.screen === "play") {
         const pair = game.thirdPlacePending ? game.thirdPlacePair : game.round.slice(game.matchIndex, game.matchIndex + 2);
         intro.innerHTML = game.thirdPlacePending
             ? "<h3>Third-place match</h3><p>The two semifinal losers compete for third place. The final follows next.</p>"
             : `<h3>${game.round.length === 2 ? "Tournament final" : "Tournament matchup"}</h3><p>${game.round.length} photos remain in this round · Match ${Math.floor(game.matchIndex / 2) + 1} of ${game.round.length / 2}</p>`;
+        if (game.saveError) { const error = document.createElement("p"); error.className = "gameSaveError"; error.setAttribute("role", "alert"); error.textContent = game.saveError; page.appendChild(error); }
         const matchup = document.createElement("div"); matchup.className = "thisOrThatMatchup isHorizontal tournamentMatchup";
         pair.forEach((ref) => {
             const attachment = findAttachment(ref);
@@ -3316,21 +3508,30 @@ async function chooseTournamentWinner(ref) {
         game.matches.push(match);
         game.thirdPlaceWinner = structuredClone(ref);
         game.thirdPlacePending = false;
+        game.screen = "bracket";
         renderMessages();
         return;
     }
     const isFinal = game.round.length === 2;
     if (isFinal) {
         game.saving = true;
-        const wins = { ...game.wins, [photoRefKey(ref)]: (game.wins[photoRefKey(ref)] || 0) + 1 };
-        const weightedKeys = new Set((game.weightedEntries || []).map((item) => photoRefKey(item.ref)));
-        const entrants = game.selected.map((item) => ({ ref: structuredClone(item), wins: wins[photoRefKey(item)] || 0 }));
-        const entry = { id: crypto.randomUUID(), serverId: game.serverId, at: new Date().toISOString(), champion: structuredClone(ref), thirdPlaceEnabled: Boolean(game.thirdPlaceEnabled), thirdPlaceWinner: game.thirdPlaceWinner ? structuredClone(game.thirdPlaceWinner) : null, entrants, entries: entrants.filter((item) => !weightedKeys.has(photoRefKey(item.ref))), weightedEntries: structuredClone(game.weightedEntries || []), seeding: game.bracketSeeding, initialBracket: structuredClone(game.initialBracket), matches: [...game.matches, match] };
-        const previous = state.structure.settings.tournamentHistory || [];
-        state.structure.settings.tournamentHistory = [...previous, entry];
-        try { await saveStructure(state.structure); game.wins = wins; game.round = [ref]; game.screen = "finished"; }
-        catch (error) { state.structure.settings.tournamentHistory = previous; console.error(error); alert("The result could not be saved locally. Please try again."); }
-        finally { game.saving = false; renderMessages(); }
+        game.saveError = "";
+        renderMessages();
+        try {
+            const wins = { ...game.wins, [photoRefKey(ref)]: (game.wins[photoRefKey(ref)] || 0) + 1 };
+            const weightedKeys = new Set((game.weightedEntries || []).map((item) => photoRefKey(item.ref)));
+            const entrants = game.selected.map((item) => ({ ref: structuredClone(item), wins: wins[photoRefKey(item)] || 0 }));
+            game.pendingRecordId ||= newLocalGameRecordId();
+            const entry = { id: game.pendingRecordId, serverId: game.serverId, at: new Date().toISOString(), champion: structuredClone(ref), thirdPlaceEnabled: Boolean(game.thirdPlaceEnabled), thirdPlaceWinner: game.thirdPlaceWinner ? structuredClone(game.thirdPlaceWinner) : null, entrants, entries: entrants.filter((item) => !weightedKeys.has(photoRefKey(item.ref))), weightedEntries: structuredClone(game.weightedEntries || []), seeding: game.bracketSeeding, initialBracket: structuredClone(game.initialBracket), matches: [...game.matches, match] };
+            const previous = state.structure.settings.tournamentHistory || [];
+            const nextHistory = [...previous.filter((item) => item.id !== entry.id), entry];
+            await saveStructure({ ...state.structure, settings: { ...state.structure.settings, tournamentHistory: nextHistory } });
+            state.structure.settings.tournamentHistory = nextHistory;
+            game.wins = wins; game.round = [ref]; game.screen = "finished"; game.saveError = "";
+        } catch (error) {
+            console.error("Could not save tournament result:", error);
+            game.saveError = localGameSaveError(error);
+        } finally { game.saving = false; renderMessages(); }
         return;
     }
     const key = photoRefKey(ref); game.wins[key] = (game.wins[key] || 0) + 1;
@@ -3343,6 +3544,7 @@ async function chooseTournamentWinner(ref) {
             game.thirdPlacePending = game.thirdPlacePair.length === 2 && game.thirdPlacePair.every(Boolean);
         }
         game.round = game.nextRound; game.nextRound = []; game.matchIndex = 0;
+        game.screen = "bracket";
     }
     renderMessages();
 }
@@ -3592,20 +3794,26 @@ function renderHallOfFameChannel() {
     const save = document.createElement("button");
     save.type = "button";
     save.textContent = "Save curator’s note";
+    const saveStatus = document.createElement("p");
+    saveStatus.setAttribute("role", "status");
+    saveStatus.setAttribute("aria-live", "polite");
     save.addEventListener("click", async () => {
         save.disabled = true;
+        saveStatus.textContent = "Saving locally…";
         try {
-            await saveHallOfFameBlurb(entry.id, blurb.value);
-            inscription.textContent = blurb.value.trim() || "No inscription has been written yet.";
-            save.textContent = "Saved locally";
+            const savedBlurb = await saveHallOfFameBlurb(entry, blurb.value);
+            inscription.textContent = savedBlurb || "No inscription has been written yet.";
+            saveStatus.textContent = "Saved on this device.";
         } catch (error) {
             console.error("Could not save Hall of Fame blurb:", error);
-            save.textContent = "Could not save";
+            saveStatus.textContent = error?.name === "QuotaExceededError"
+                ? "Could not save: this device’s browser storage is full. Your typed note is still here; copy it before leaving."
+                : "Could not save to local storage. Your typed note is still here; copy it before leaving and try again.";
         } finally {
-            window.setTimeout(() => { save.disabled = false; save.textContent = "Save curator’s note"; }, 1000);
+            save.disabled = false;
         }
     });
-    editor.append(editorSummary, blurb, save);
+    editor.append(editorSummary, blurb, save, saveStatus);
     const presentation = document.createElement("div");
     presentation.className = "hallOfFamePresentation";
     const frameSelect = document.createElement("select");
@@ -4616,12 +4824,13 @@ function openMuseum1dTour(exhibitId = null) {
 function createMuseum3dState(exhibitId = null) {
     const exhibits = getMuseumExhibits();
     const selected = exhibits.find((item) => item.id === exhibitId) || exhibits[0] || null;
-    return { exhibitId: selected?.id || null, x: 0, z: 80, yaw: 0, movement: { x: 0, y: 0 } };
+    return { exhibitId: selected?.id || null, x: 5, z: 5, yaw: 0, artPage: 0, movement: { x: 0, y: 0 }, showMap: true };
 }
 
 function stopMuseum3dMovement() {
     if (museum3dMovementFrame) window.cancelAnimationFrame(museum3dMovementFrame);
     museum3dMovementFrame = undefined;
+    if (museum3dGameCleanup) { museum3dGameCleanup(); museum3dGameCleanup = null; }
     if (state.museum3d?.movement) state.museum3d.movement = { x: 0, y: 0 };
 }
 
@@ -4853,6 +5062,280 @@ function renderMuseum3d() {
     els.messages.appendChild(page);
     applyMuseum3dCamera(viewport);
     bindMuseum3dJoystick(joystick, viewport);
+}
+
+// The game renderer projects the interior of one room at a time. Coordinates
+// are in a 10-by-10 room; north points toward decreasing z.
+function getMuseumGameDoors(exhibit, exhibits = getMuseumExhibits()) {
+    const index = exhibits.findIndex((item) => item.id === exhibit.id);
+    if (index < 0 || exhibits.length < 2) return {};
+    const layouts = new Map(exhibits.map((item, i) => [item.id, {
+        north: exhibits[(i + 1) % exhibits.length],
+        south: exhibits[(i - 1 + exhibits.length) % exhibits.length]
+    }]));
+    const links = [];
+    exhibits.forEach((item) => (item.doorwayIds || []).forEach((id) => {
+        const target = exhibits.find((other) => other.id === id);
+        if (!target || target.id === item.id) return;
+        const pair = [item.id, target.id].sort();
+        if (!links.some((link) => link[0] === pair[0] && link[1] === pair[1])) links.push(pair);
+    }));
+    links.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+    links.forEach(([firstId, secondId]) => {
+        const first = layouts.get(firstId), second = layouts.get(secondId);
+        const firstExhibit = exhibits.find((item) => item.id === firstId);
+        const secondExhibit = exhibits.find((item) => item.id === secondId);
+        if (first.north.id === secondId || first.south.id === secondId) return;
+        if (!first.east && !second.west) { first.east = secondExhibit; second.west = firstExhibit; }
+        else if (!first.west && !second.east) { first.west = secondExhibit; second.east = firstExhibit; }
+    });
+    return layouts.get(exhibit.id);
+}
+
+function traceMuseumGameRay(x, z, angle) {
+    const dx = Math.sin(angle), dz = -Math.cos(angle);
+    const hits = [];
+    if (dx > 0.00001) hits.push({ distance: (10 - x) / dx, side: "east" });
+    if (dx < -0.00001) hits.push({ distance: -x / dx, side: "west" });
+    if (dz > 0.00001) hits.push({ distance: (10 - z) / dz, side: "south" });
+    if (dz < -0.00001) hits.push({ distance: -z / dz, side: "north" });
+    const hit = hits.filter((item) => item.distance >= 0).sort((a, b) => a.distance - b.distance)[0];
+    if (!hit) return null;
+    hit.along = hit.side === "north" || hit.side === "south" ? x + dx * hit.distance : z + dz * hit.distance;
+    return hit;
+}
+
+async function enterMuseumGameRoom(exhibitId, entrySide = null) {
+    const exhibit = getMuseumExhibit(exhibitId);
+    if (!exhibit || state.activeView.type !== "museum3d" || state.museum3d.changingRoom) return;
+    const origin = state.museum3d;
+    origin.changingRoom = true;
+    try {
+        await ensurePhotoReferencesLoaded(getExhibitPhotoRefs(exhibit));
+        if (state.activeView.type !== "museum3d" || state.museum3d !== origin) return;
+        const next = createMuseum3dState(exhibitId);
+        next.showMap = state.museum3d.showMap;
+        if (entrySide === "north") { next.x = 5; next.z = 9.3; next.yaw = 0; }
+        if (entrySide === "south") { next.x = 5; next.z = .7; next.yaw = Math.PI; }
+        if (entrySide === "east") { next.x = .7; next.z = 5; next.yaw = Math.PI / 2; }
+        if (entrySide === "west") { next.x = 9.3; next.z = 5; next.yaw = -Math.PI / 2; }
+        state.museum3d = next;
+        renderMessages();
+    } catch (error) {
+        console.error("Could not open this local exhibit room:", error);
+        alert("Could not load this exhibit's local photos. Your museum was not changed.");
+    } finally {
+        origin.changingRoom = false;
+    }
+}
+
+function openMuseumGameArtwork(exhibit, ref) {
+    const attachment = findAttachment(ref);
+    if (!attachment) { alert("This original local photo is unavailable."); return; }
+    const modal = document.createElement("section"); modal.className = "museumGameInspect";
+    modal.setAttribute("role", "dialog"); modal.setAttribute("aria-modal", "true"); modal.setAttribute("aria-label", "Exhibit artwork");
+    const card = document.createElement("div"); card.className = "museumGameInspectCard";
+    const title = document.createElement("h3"); title.textContent = attachment.note || attachment.name || "Exhibit photo";
+    const image = document.createElement("img"); image.alt = title.textContent;
+    let objectUrl = "";
+    if (attachment.blob) { objectUrl = URL.createObjectURL(attachment.blob); image.src = objectUrl; }
+    else image.src = attachment.dataUrl || "";
+    image.addEventListener("click", () => openImageViewer(attachment, title.textContent));
+    const plaque = document.createElement("p"); plaque.textContent = getExhibitPlaque(exhibit, ref) || "No plaque text yet.";
+    const expand = document.createElement("button"); expand.type = "button"; expand.textContent = "Expand image"; expand.addEventListener("click", () => openImageViewer(attachment, title.textContent));
+    const close = document.createElement("button"); close.type = "button"; close.textContent = "Close";
+    const dismiss = () => { if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
+    close.addEventListener("click", dismiss); modal.addEventListener("click", (event) => { if (event.target === modal) dismiss(); });
+    card.append(title, image, plaque, expand, close); modal.appendChild(card); document.body.appendChild(modal); close.focus();
+}
+
+function renderMuseum3dGame() {
+    stopMuseum3dMovement();
+    const exhibits = getMuseumExhibits();
+    const exhibit = getMuseumExhibit(state.museum3d?.exhibitId) || exhibits[0];
+    if (!exhibit) { els.messages.appendChild(emptyPanel("Create an exhibit to explore the 3D museum.")); return; }
+    if (state.museum3d.exhibitId !== exhibit.id) state.museum3d = createMuseum3dState(exhibit.id);
+    const view = state.museum3d;
+    const doors = getMuseumGameDoors(exhibit, exhibits);
+    const refs = getExhibitPhotoRefs(exhibit);
+    const pages = Math.max(1, Math.ceil(refs.length / 8));
+    view.artPage = Math.max(0, Math.min(pages - 1, view.artPage || 0));
+    const visibleRefs = refs.slice(view.artPage * 8, view.artPage * 8 + 8);
+    const wallOrder = ["north", "east", "south", "west"];
+    const artFor = (side, along) => {
+        const slot = along >= 1 && along <= 3.65 ? 0 : along >= 6.35 && along <= 9 ? 1 : -1;
+        return slot < 0 ? null : visibleRefs[wallOrder.indexOf(side) * 2 + slot] || null;
+    };
+    const page = document.createElement("section"); page.className = "museumGame";
+    const header = document.createElement("header"); header.className = "museumGameHeader";
+    const heading = document.createElement("div");
+    const kicker = document.createElement("small"); kicker.textContent = "3D MUSEUM · LOCAL EXHIBIT";
+    const title = document.createElement("h3"); title.textContent = exhibit.title;
+    const instructions = document.createElement("p"); instructions.textContent = "Walk with the joystick, drag the view to turn, and walk through a lit doorway. Face a frame and tap Inspect to read its plaque.";
+    heading.append(kicker, title, instructions);
+    const nav = document.createElement("div"); nav.className = "museumGameNav";
+    [["1D tour", () => openMuseum1dTour(exhibit.id)], ["2D walk", () => openMuseumWalk()], ["Exhibits", () => exitMuseumWalk(exhibit.id)]].forEach(([label, handler]) => { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.addEventListener("click", handler); nav.appendChild(button); });
+    header.append(heading, nav);
+    const viewport = document.createElement("div"); viewport.className = "museumGameViewport";
+    const canvas = document.createElement("canvas"); canvas.className = "museumGameCanvas"; canvas.width = 360; canvas.height = 240; canvas.setAttribute("aria-label", "First-person view of the exhibit room"); viewport.appendChild(canvas);
+    const crosshair = document.createElement("span"); crosshair.className = "museumGameCrosshair"; crosshair.setAttribute("aria-hidden", "true"); viewport.appendChild(crosshair);
+    const mini = document.createElement("canvas"); mini.className = "museumGameMinimap"; mini.width = 140; mini.height = 140; mini.setAttribute("aria-label", "Room map showing your position and doorways"); mini.hidden = !view.showMap; viewport.appendChild(mini);
+    const hint = document.createElement("p"); hint.className = "museumGameHint"; hint.setAttribute("aria-live", "polite");
+    const toolbar = document.createElement("div"); toolbar.className = "museumGameToolbar";
+    const inspect = document.createElement("button"); inspect.type = "button"; inspect.textContent = "Inspect artwork"; inspect.disabled = true;
+    const mapToggle = document.createElement("button"); mapToggle.type = "button"; mapToggle.textContent = view.showMap ? "Hide map" : "Show map";
+    const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "Center in room";
+    const power = document.createElement("button"); power.type = "button"; power.textContent = state.structure.settings.museumLowPowerMode ? "Standard detail" : "Low-power mode";
+    power.addEventListener("click", toggleMuseumLowPowerMode);
+    mapToggle.addEventListener("click", () => { view.showMap = !view.showMap; mini.hidden = !view.showMap; roomMap.hidden = !view.showMap; mapToggle.textContent = view.showMap ? "Hide map" : "Show map"; });
+    reset.addEventListener("click", () => { view.x = 5; view.z = 5; view.yaw = 0; });
+    toolbar.append(inspect, mapToggle, reset, power);
+    const roomMap = document.createElement("section"); roomMap.className = "museumGameRoomMap"; roomMap.hidden = !view.showMap;
+    const mapHeading = document.createElement("strong"); mapHeading.textContent = "Doorway map"; roomMap.appendChild(mapHeading);
+    const doorList = document.createElement("div"); doorList.className = "museumGameDoorList";
+    Object.entries(doors).forEach(([side, destination]) => { const button = document.createElement("button"); button.type = "button"; button.textContent = `${side[0].toUpperCase() + side.slice(1)} · ${destination.title}`; button.title = "Move directly to this connected exhibit"; button.addEventListener("click", () => { void enterMuseumGameRoom(destination.id, side); }); doorList.appendChild(button); });
+    if (!Object.keys(doors).length) { const text = document.createElement("span"); text.textContent = "Create another exhibit to open a connecting doorway."; doorList.appendChild(text); }
+    roomMap.appendChild(doorList);
+    const artControls = document.createElement("div"); artControls.className = "museumGameArtControls";
+    const previous = document.createElement("button"); previous.type = "button"; previous.textContent = "Previous artworks"; previous.disabled = view.artPage === 0;
+    previous.addEventListener("click", () => { view.artPage -= 1; renderMessages(); });
+    const artCount = document.createElement("span"); artCount.textContent = `${refs.length ? view.artPage * 8 + 1 : 0}–${Math.min(refs.length, (view.artPage + 1) * 8)} of ${refs.length} artworks`;
+    const next = document.createElement("button"); next.type = "button"; next.textContent = "Next artworks"; next.disabled = view.artPage >= pages - 1;
+    next.addEventListener("click", () => { view.artPage += 1; renderMessages(); }); artControls.append(previous, artCount, next);
+    const controlRow = document.createElement("div"); controlRow.className = "museumGameControls";
+    const joystick = document.createElement("div"); joystick.className = "museumGameJoystick"; joystick.setAttribute("aria-label", "Walk forward, backward, and sideways");
+    const stick = document.createElement("span"); joystick.appendChild(stick);
+    const turnControls = document.createElement("div"); turnControls.className = "museumGameTurn";
+    const turnLeft = document.createElement("button"); turnLeft.type = "button"; turnLeft.textContent = "Turn left";
+    const turnRight = document.createElement("button"); turnRight.type = "button"; turnRight.textContent = "Turn right"; turnControls.append(turnLeft, turnRight);
+    const controlsText = document.createElement("small"); controlsText.textContent = "Joystick: walk · drag view or hold turn: look · keyboard: WASD and arrows";
+    controlRow.append(joystick, turnControls, controlsText);
+    page.append(header, viewport, hint, toolbar, roomMap, artControls, controlRow); els.messages.appendChild(page);
+    const context = canvas.getContext("2d"), mapContext = mini.getContext("2d");
+    if (!context || !mapContext) { hint.textContent = "This browser could not start the museum renderer. Try the 2D walk instead."; return; }
+    const themes = {
+        gallery: { wall: [176, 176, 157], ceiling: "#d4d4c7", floor: "#66594e", trim: "#f2dfb5" },
+        velvet: { wall: [100, 44, 59], ceiling: "#362b38", floor: "#3b2925", trim: "#ddbc78" },
+        night: { wall: [42, 76, 87], ceiling: "#1e303a", floor: "#1e2b31", trim: "#a8cdd0" }
+    };
+    const theme = themes[getMuseum3dTheme(exhibit)] || themes.gallery;
+    const images = new Map(), urls = [];
+    visibleRefs.forEach((ref) => {
+        const attachment = findAttachment(ref);
+        if (!attachment) return;
+        const image = new Image(); image.decoding = "async";
+        if (attachment.blob) { const url = URL.createObjectURL(attachment.blob); urls.push(url); image.src = url; }
+        else if (attachment.dataUrl) image.src = attachment.dataUrl;
+        images.set(photoRefKey(ref), image);
+    });
+    let currentArt = null;
+    inspect.addEventListener("click", () => { if (currentArt) openMuseumGameArtwork(exhibit, currentArt); });
+    function paintScene() {
+        const width = canvas.width, height = canvas.height, horizon = height / 2;
+        const focal = width / (2 * Math.tan(Math.PI / 6));
+        context.fillStyle = theme.ceiling; context.fillRect(0, 0, width, horizon);
+        context.fillStyle = theme.floor; context.fillRect(0, horizon, width, height - horizon);
+        // Draw perspective wall strips and locally sourced artwork as textures.
+        const strip = state.structure.settings.museumLowPowerMode ? 4 : 2;
+        for (let screenX = 0; screenX < width; screenX += strip) {
+            const offset = Math.atan((screenX - width / 2) / focal);
+            const hit = traceMuseumGameRay(view.x, view.z, view.yaw + offset);
+            if (!hit) continue;
+            const distance = Math.max(.15, hit.distance * Math.cos(offset));
+            const top = horizon - focal * 1.35 / distance;
+            const bottom = horizon + focal * 1.65 / distance;
+            const wallHeight = bottom - top;
+            const shade = Math.max(.46, 1 - distance * .035) * ((hit.side === "east" || hit.side === "west") ? .82 : 1);
+            context.fillStyle = `rgb(${theme.wall.map((value) => Math.round(value * shade)).join(",")})`;
+            context.fillRect(screenX, top, strip + 1, wallHeight);
+            context.fillStyle = theme.trim;
+            context.fillRect(screenX, top + wallHeight * .035, strip + 1, Math.max(1, wallHeight * .018));
+            context.fillRect(screenX, bottom - wallHeight * .055, strip + 1, Math.max(1, wallHeight * .035));
+            if (doors[hit.side] && hit.along >= 4.1 && hit.along <= 5.9) {
+                context.fillStyle = "#2c211c"; context.fillRect(screenX, top + wallHeight * .23, strip + 1, wallHeight * .72);
+                if (hit.along >= 4.2 && hit.along <= 5.8) { context.fillStyle = "#79583a"; context.fillRect(screenX, top + wallHeight * .27, strip + 1, wallHeight * .68); }
+                continue;
+            }
+            const ref = artFor(hit.side, hit.along);
+            if (!ref) continue;
+            const start = hit.along <= 3.65 ? 1 : 6.35;
+            const ratio = (hit.along - start) / 2.65;
+            const frameTop = top + wallHeight * .27, frameHeight = wallHeight * .43;
+            context.fillStyle = "#70512c"; context.fillRect(screenX, frameTop, strip + 1, frameHeight);
+            if (ratio > .35 && ratio < .65) { context.fillStyle = theme.trim; context.fillRect(screenX, frameTop + frameHeight + wallHeight * .025, strip + 1, Math.max(2, wallHeight * .035)); }
+            if (ratio > .04 && ratio < .96) {
+                const innerTop = frameTop + frameHeight * .06, innerHeight = frameHeight * .88;
+                context.fillStyle = "#14171a"; context.fillRect(screenX, innerTop, strip + 1, innerHeight);
+                const image = images.get(photoRefKey(ref));
+                if (image?.complete && image.naturalWidth && image.naturalHeight) {
+                    const wallAspect = 2.65 / (3 * .43), imageAspect = image.naturalWidth / image.naturalHeight;
+                    const widthFraction = Math.min(1, imageAspect / wallAspect), heightFraction = Math.min(1, wallAspect / imageAspect);
+                    const imageStart = .5 - widthFraction * .46, imageEnd = .5 + widthFraction * .46;
+                    if (ratio >= imageStart && ratio <= imageEnd) {
+                        const sourceX = Math.min(image.naturalWidth - 1, Math.max(0, Math.floor((ratio - imageStart) / (imageEnd - imageStart) * image.naturalWidth)));
+                        context.drawImage(image, sourceX, 0, 1, image.naturalHeight, screenX, innerTop + innerHeight * (1 - heightFraction) / 2, strip + 1, innerHeight * heightFraction);
+                    }
+                }
+            }
+        }
+        const centerHit = traceMuseumGameRay(view.x, view.z, view.yaw);
+        currentArt = centerHit && centerHit.distance < 4 ? artFor(centerHit.side, centerHit.along) : null;
+        inspect.disabled = !currentArt;
+        const message = currentArt ? "Artwork ahead · tap Inspect to read its plaque" : centerHit && doors[centerHit.side] && centerHit.along >= 4.1 && centerHit.along <= 5.9 ? `Door ahead · ${doors[centerHit.side].title}` : "Walk closer to a frame or doorway";
+        if (hint.textContent !== message) hint.textContent = message;
+        if (view.showMap) {
+            mapContext.fillStyle = "#151a20"; mapContext.fillRect(0, 0, 140, 140);
+            mapContext.fillStyle = "#514638"; mapContext.fillRect(14, 14, 112, 112);
+            mapContext.strokeStyle = "#f2dfb5"; mapContext.lineWidth = 3; mapContext.strokeRect(14, 14, 112, 112);
+            mapContext.strokeStyle = "#76d6bd"; mapContext.lineWidth = 6;
+            Object.keys(doors).forEach((side) => { mapContext.beginPath(); if (side === "north") { mapContext.moveTo(60, 14); mapContext.lineTo(80, 14); } if (side === "south") { mapContext.moveTo(60, 126); mapContext.lineTo(80, 126); } if (side === "east") { mapContext.moveTo(126, 60); mapContext.lineTo(126, 80); } if (side === "west") { mapContext.moveTo(14, 60); mapContext.lineTo(14, 80); } mapContext.stroke(); });
+            const px = 14 + view.x * 11.2, pz = 14 + view.z * 11.2;
+            mapContext.fillStyle = "#ffffff"; mapContext.beginPath(); mapContext.arc(px, pz, 4, 0, Math.PI * 2); mapContext.fill();
+            mapContext.strokeStyle = "#ffffff"; mapContext.lineWidth = 2; mapContext.beginPath(); mapContext.moveTo(px, pz); mapContext.lineTo(px + Math.sin(view.yaw) * 12, pz - Math.cos(view.yaw) * 12); mapContext.stroke();
+        }
+    }
+    const movement = { x: 0, y: 0, turn: 0 }, keys = new Set();
+    let joyPointer = null, lookPointer = null, lastLookX = 0;
+    const moveStick = (event) => { const rect = joystick.getBoundingClientRect(); const limit = Math.max(1, rect.width * .34); let x = event.clientX - rect.left - rect.width / 2, y = event.clientY - rect.top - rect.height / 2; const scale = Math.min(1, limit / (Math.hypot(x, y) || 1)); x *= scale; y *= scale; movement.x = x / limit; movement.y = y / limit; stick.style.transform = `translate(${x}px, ${y}px)`; };
+    const releaseStick = () => { joyPointer = null; movement.x = 0; movement.y = 0; stick.style.transform = ""; };
+    joystick.addEventListener("pointerdown", (event) => { event.preventDefault(); joyPointer = event.pointerId; joystick.setPointerCapture?.(event.pointerId); moveStick(event); });
+    joystick.addEventListener("pointermove", (event) => { if (event.pointerId === joyPointer) moveStick(event); });
+    joystick.addEventListener("pointerup", releaseStick); joystick.addEventListener("pointercancel", releaseStick); joystick.addEventListener("lostpointercapture", releaseStick);
+    canvas.addEventListener("pointerdown", (event) => { event.preventDefault(); lookPointer = event.pointerId; lastLookX = event.clientX; canvas.setPointerCapture?.(event.pointerId); });
+    canvas.addEventListener("pointermove", (event) => { if (event.pointerId === lookPointer) { view.yaw += (event.clientX - lastLookX) * .008; lastLookX = event.clientX; } });
+    const endLook = () => { lookPointer = null; }; canvas.addEventListener("pointerup", endLook); canvas.addEventListener("pointercancel", endLook); canvas.addEventListener("lostpointercapture", endLook);
+    const bindTurn = (button, direction) => { button.addEventListener("pointerdown", (event) => { event.preventDefault(); movement.turn = direction; button.setPointerCapture?.(event.pointerId); }); ["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => button.addEventListener(name, () => { movement.turn = 0; })); };
+    bindTurn(turnLeft, -1); bindTurn(turnRight, 1);
+    const keydown = (event) => { if (state.activeView.type !== "museum3d" || document.querySelector(".museumGameInspect, .imageViewer") || /INPUT|TEXTAREA|SELECT/.test(event.target?.tagName || "")) return; const key = event.key.toLowerCase(); if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(key)) { event.preventDefault(); keys.add(key); } };
+    const keyup = (event) => keys.delete(event.key.toLowerCase());
+    const blur = () => { keys.clear(); movement.x = 0; movement.y = 0; movement.turn = 0; };
+    window.addEventListener("keydown", keydown); window.addEventListener("keyup", keyup); window.addEventListener("blur", blur);
+    let lastTime = 0, lastPaint = 0;
+    const tick = (time) => {
+        if (state.activeView.type !== "museum3d" || state.museum3d !== view || !page.isConnected) return;
+        const dt = lastTime ? Math.min(.05, (time - lastTime) / 1000) : 0; lastTime = time;
+        if (document.querySelector(".museumGameInspect, .imageViewer")) { keys.clear(); movement.x = 0; movement.y = 0; movement.turn = 0; if (time - lastPaint >= 200) { paintScene(); lastPaint = time; } museum3dMovementFrame = window.requestAnimationFrame(tick); return; }
+        const turn = movement.turn + Number(keys.has("arrowright")) - Number(keys.has("arrowleft"));
+        view.yaw += turn * 1.8 * dt;
+        const forward = -movement.y + Number(keys.has("w") || keys.has("arrowup")) - Number(keys.has("s") || keys.has("arrowdown"));
+        const strafe = movement.x + Number(keys.has("d")) - Number(keys.has("a"));
+        const magnitude = Math.max(1, Math.hypot(forward, strafe));
+        const dx = (Math.sin(view.yaw) * forward + Math.cos(view.yaw) * strafe) * 2.4 * dt / magnitude;
+        const dz = (-Math.cos(view.yaw) * forward + Math.sin(view.yaw) * strafe) * 2.4 * dt / magnitude;
+        const nx = view.x + dx, nz = view.z + dz;
+        let exit = null;
+        if (nz < .3 && nx > 4.15 && nx < 5.85 && doors.north) exit = "north";
+        else if (nz > 9.7 && nx > 4.15 && nx < 5.85 && doors.south) exit = "south";
+        else if (nx > 9.7 && nz > 4.15 && nz < 5.85 && doors.east) exit = "east";
+        else if (nx < .3 && nz > 4.15 && nz < 5.85 && doors.west) exit = "west";
+        if (exit && !view.changingRoom) { void enterMuseumGameRoom(doors[exit].id, exit); }
+        view.x = Math.max(.3, Math.min(9.7, nx)); view.z = Math.max(.3, Math.min(9.7, nz));
+        const interval = state.structure.settings.museumLowPowerMode ? 200 : 50;
+        if (time - lastPaint >= interval) { paintScene(); lastPaint = time; }
+        museum3dMovementFrame = window.requestAnimationFrame(tick);
+    };
+    museum3dGameCleanup = () => { window.removeEventListener("keydown", keydown); window.removeEventListener("keyup", keyup); window.removeEventListener("blur", blur); urls.forEach((url) => URL.revokeObjectURL(url)); };
+    paintScene(); museum3dMovementFrame = window.requestAnimationFrame(tick);
 }
 
 function startMuseumWalkTour(exhibitId) {
@@ -5929,6 +6412,7 @@ function renderImageDraft() {
     const stage = state.imageDraft.stage;
     if (stage === "visible") return renderImageDraftVisible();
     if (stage === "blind") return renderImageDraftBlind();
+    if (stage === "savePending" || stage === "saving") return renderImageDraftSavePending();
     if (stage === "result") return renderImageDraftResult();
     if (stage === "play") return renderImageDraftPlayback();
     if (stage === "censor") return renderImageDraftCensorChallenge();
@@ -6220,33 +6704,30 @@ async function beginImageDraft() {
         alert(`The selected source has ${candidates.length} available local image${candidates.length === 1 ? "" : "s"}. Choose ${Math.max(2, Math.min(count, candidates.length))} or fewer, or select another source.`);
         return;
     }
-    const weightedSources = [
-        draft.punishmentWeighted && { name: "punishment", channel: allChannels(getActiveServer()).find((channel) => channel.name.trim().toLowerCase() === "punishment") },
-        draft.censoredWeighted && { name: "censored", channel: allChannels(getActiveServer()).find((channel) => channel.name.trim().toLowerCase() === "censored") }
-    ].filter(Boolean);
-    if (weightedSources.length) {
-        if (count < weightedSources.length + 1 || weightedSources.some((source) => !source.channel)) {
-            alert("Weighted drafts need the selected special channels plus at least one ordinary draft spot.");
-            return;
-        }
-        const weightedCandidates = await getImageDraftCandidatesForChannels(weightedSources.map((source) => source.channel));
-        const chosenWeighted = [];
-        let remainingSlots = count - 1;
-        for (const source of weightedSources) {
-            const pool = weightedCandidates.filter((item) => item.ref.channelId === source.channel.id);
-            const amount = Math.min(pool.length, remainingSlots - (weightedSources.length - chosenWeighted.length - 1), 1 + Math.floor(Math.random() * Math.min(3, remainingSlots)));
-            if (amount < 1) { alert(`#${source.name} needs at least one local image for this weighted draft.`); return; }
-            chosenWeighted.push(...shuffledCopy(pool).slice(0, amount).map((item) => ({ ...item, isWeighted: true, weightedSource: source.name })));
-            remainingSlots -= amount;
-        }
-        const weightedChannelIds = new Set(weightedSources.map((source) => source.channel.id));
-        const ordinaryCandidates = candidates.filter((item) => !weightedChannelIds.has(item.ref.channelId));
-        if (ordinaryCandidates.length < count - chosenWeighted.length) { alert("There are not enough non-weighted images to complete this draft."); return; }
-        draft.candidates = shuffledCopy([...chosenWeighted, ...shuffledCopy(ordinaryCandidates).slice(0, count - chosenWeighted.length)]);
+    if (draft.punishmentWeighted || draft.censoredWeighted) {
+        const enabledNames = new Set([
+            ...(draft.punishmentWeighted ? ["punishment"] : []),
+            ...(draft.censoredWeighted ? ["censored"] : [])
+        ]);
+        const specialChannels = allChannels(getActiveServer()).filter((channel) => enabledNames.has(normalizeChannelName(channel.name)));
+        const extra = await getImageDraftCandidatesForChannels(specialChannels);
+        const byKey = new Map([...candidates, ...extra].map((item) => [photoRefKey(item.ref), item]));
+        try {
+            const selection = buildWeightedGameSelection([...byKey.values()], candidates.map((item) => item.ref), count, draft.punishmentWeighted, draft.censoredWeighted);
+            const weighted = new Map(selection.weightedEntries.map((item) => [photoRefKey(item.ref), item.source]));
+            draft.candidates = selection.refs.map((ref) => {
+                const item = byKey.get(photoRefKey(ref));
+                const source = weighted.get(photoRefKey(ref));
+                return source ? { ...item, isWeighted: true, weightedSource: source } : item;
+            });
+        } catch (error) { alert(error.message); return; }
     } else draft.candidates = shuffledCopy(candidates).slice(0, count);
     draft.ranked = draft.mode === "blind" ? Array(count).fill(null) : [];
     draft.blindIndex = 0;
     draft.historyId = null;
+    draft.pendingRecordId = null;
+    draft.saveError = "";
+    draft.unsaved = false;
     draft.play = null;
     draft.censor = null;
     draft.wheel = null;
@@ -6378,7 +6859,7 @@ function renderImageDraftBlind() {
 async function assignBlindImageDraftSpot(index) {
     const draft = state.imageDraft;
     const candidate = draft.candidates[draft.blindIndex];
-    if (!candidate || draft.ranked[index]) return;
+    if (draft.saving || !candidate || draft.ranked[index]) return;
     draft.ranked[index] = candidate;
     draft.blindIndex += 1;
     if (draft.blindIndex >= draft.candidates.length) await finalizeImageDraft();
@@ -6393,6 +6874,10 @@ function resetImageDraft() {
     state.imageDraft.candidates = [];
     state.imageDraft.ranked = [];
     state.imageDraft.historyId = null;
+    state.imageDraft.pendingRecordId = null;
+    state.imageDraft.saveError = "";
+    state.imageDraft.saving = false;
+    state.imageDraft.unsaved = false;
     state.imageDraft.play = null;
     state.imageDraft.censor = null;
     state.imageDraft.censorCompleted = false;
@@ -6408,13 +6893,19 @@ function reportImageDraftSaveError(error) {
 
 async function finalizeImageDraft() {
     const draft = state.imageDraft;
-    if (imageDraftRankedItems().length !== draft.candidates.length) return;
+    if (draft.saving || imageDraftRankedItems().length !== draft.candidates.length) return;
     const server = getActiveServer();
     if (!server) return;
     const rankedItems = draft.ranked.map((item, index) => ({ ...item, rank: index + 1 }));
     draft.ranked = rankedItems;
+    draft.saving = true;
+    draft.stage = "saving";
+    draft.saveError = "";
+    renderMessages();
+    try {
+    draft.pendingRecordId ||= newLocalGameRecordId();
     const record = {
-        id: crypto.randomUUID(),
+        id: draft.pendingRecordId,
         serverId: server.id,
         createdAt: new Date().toISOString(),
         mode: draft.mode,
@@ -6439,11 +6930,36 @@ async function finalizeImageDraft() {
         })),
         censorResults: []
     };
-    state.structure.settings.draftHistory = [...(state.structure.settings.draftHistory || []), record].slice(-200);
-    await saveStructure(state.structure);
+    const previous = state.structure.settings.draftHistory || [];
+    const nextHistory = [...previous.filter((item) => item.id !== record.id), record].slice(-200);
+    await saveStructure({ ...state.structure, settings: { ...state.structure.settings, draftHistory: nextHistory } });
+    state.structure.settings.draftHistory = nextHistory;
     draft.historyId = record.id;
     draft.stage = "result";
+    } catch (error) {
+        console.error("Could not save image draft statistics:", error);
+        draft.saveError = localGameSaveError(error);
+        draft.stage = "savePending";
+    } finally {
+        draft.saving = false;
+    }
     renderMessages();
+}
+
+function renderImageDraftSavePending() {
+    const draft = state.imageDraft;
+    const page = document.createElement("section"); page.className = "imageDraft";
+    const intro = document.createElement("section"); intro.className = "focusSessionIntro";
+    const heading = document.createElement("h3"); heading.textContent = draft.saving ? "Saving your draft…" : "Your draft is ready";
+    const message = document.createElement("p"); message.textContent = draft.saving ? "Saving the completed positions to local statistics." : draft.saveError;
+    intro.append(heading, message); page.appendChild(intro);
+    if (!draft.saving) {
+        const retry = document.createElement("button"); retry.type = "button"; retry.className = "adventurePrimary"; retry.textContent = "Retry saving draft"; retry.addEventListener("click", () => { void finalizeImageDraft(); });
+        const proceed = document.createElement("button"); proceed.type = "button"; proceed.textContent = "Continue without saving statistics";
+        proceed.addEventListener("click", () => { draft.historyId = null; draft.unsaved = true; draft.stage = "result"; renderMessages(); });
+        page.append(retry, proceed);
+    }
+    els.messages.appendChild(page);
 }
 
 function renderImageDraftResult() {
@@ -6452,7 +6968,9 @@ function renderImageDraftResult() {
     page.className = "imageDraft";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
-    intro.innerHTML = draft.censorMode
+    intro.innerHTML = draft.unsaved
+        ? "<h3>Draft ready</h3><p>This draft was not saved to statistics. You can still continue with the current session.</p>"
+        : draft.censorMode
         ? "<h3>Draft saved</h3><p>The draft positions are now stored in local statistics. Start the censor challenge to make an increasing number of blur regions based on each image’s draft spot.</p>"
         : "<h3>Draft saved</h3><p>The draft positions are now stored in local statistics. Playback uses your selected duration and BPM scaling while locations follow your selected order.</p>";
     const list = document.createElement("section");
@@ -6854,19 +7372,22 @@ function getImageDraftCensorRequirement(item) {
 
 async function saveImageDraftCensorResult(item, result) {
     const draft = state.imageDraft;
-    const record = (state.structure.settings.draftHistory || []).find((entry) => entry.id === draft.historyId);
+    const history = state.structure.settings.draftHistory || [];
+    const record = history.find((entry) => entry.id === draft.historyId);
     if (!record) return;
-    record.censorResults ||= [];
-    record.censorResults = record.censorResults.filter((result) => photoRefKey(result.ref) !== photoRefKey(item.ref));
-    const { temporaryBlob, ...savedResult } = result;
-    record.censorResults.push({ ref: structuredClone(item.ref), rank: item.rank, ...savedResult, at: new Date().toISOString() });
-    if (record.censorResults.length >= record.items.length) record.censorCompletedAt = new Date().toISOString();
-    await saveStructure(state.structure);
+    const { temporaryBlob, copiedMessage, ...savedResult } = result;
+    const censorResults = [...(record.censorResults || []).filter((previous) => photoRefKey(previous.ref) !== photoRefKey(item.ref)), { ref: structuredClone(item.ref), rank: item.rank, ...savedResult, at: new Date().toISOString() }];
+    const updated = { ...record, censorResults };
+    if (censorResults.length >= (draft.censor?.sequence.length || record.items.length)) updated.censorCompletedAt = new Date().toISOString();
+    const nextHistory = history.map((entry) => entry.id === record.id ? updated : entry);
+    await saveStructure({ ...state.structure, settings: { ...state.structure.settings, draftHistory: nextHistory } });
+    state.structure.settings.draftHistory = nextHistory;
 }
 
 async function completeImageDraftCensorStep(item, result) {
     const draft = state.imageDraft;
-    await saveImageDraftCensorResult(item, result);
+    try { await saveImageDraftCensorResult(item, result); }
+    catch (error) { console.error("Could not save censor statistics:", error); alert("The edited image is still available for this draft, but its censor statistics could not be saved locally."); }
     draft.censor.results.push({ ref: item.ref, rank: item.rank, ...result });
     draft.censor.index += 1;
     if (draft.censor.index >= draft.censor.sequence.length) {
@@ -8180,6 +8701,7 @@ async function importLocalBackup(file) {
         await saveStructure(structure);
         state.structure = structure;
         state.messagesByChannel.clear();
+        state.relocatedMessages.clear();
         state.activeAdventureSessionId = null;
         selectInitialChannel();
         await loadActiveChannelMessages();
@@ -11613,7 +12135,14 @@ async function setAdventureRandomImageSources(adventureId, sceneId) {
 }
 
 function findAttachment(ref) {
-    const message = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
+    let message = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
+    if (!message) {
+        for (const [channelId, items] of state.messagesByChannel) {
+            message = items.find((item) => item.id === ref.messageId);
+            if (message) { state.relocatedMessages.set(ref.messageId, { channelId, message }); break; }
+        }
+    }
+    if (!message) message = state.relocatedMessages.get(ref.messageId)?.message;
     return message?.attachments.find((attachment) => attachment.id === ref.attachmentId) || null;
 }
 
@@ -12096,6 +12625,13 @@ function renderUtilityPanel() {
     });
 }
 
+function compareSavedArrayMessages(first, second) {
+    if (first.pinned !== second.pinned) return first.pinned ? -1 : 1;
+    const a = Number.isFinite(first.arrayOrder) ? first.arrayOrder : Infinity;
+    const b = Number.isFinite(second.arrayOrder) ? second.arrayOrder : Infinity;
+    return a - b || new Date(first.createdAt || 0) - new Date(second.createdAt || 0);
+}
+
 function getVisibleMessages() {
     if (state.activeView.type === "collection") {
         return getCollectionEntries(state.activeView.id);
@@ -12123,6 +12659,7 @@ function getVisibleMessages() {
     const messages = getActiveMessages();
     const ordered = [...messages].sort((a, b) => {
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        if (getActiveChannel()?.isSavedArrayChannel) return compareSavedArrayMessages(a, b);
         return new Date(a.createdAt) - new Date(b.createdAt);
     });
 
@@ -12541,6 +13078,7 @@ async function deleteChannel(channelId) {
     }
 
     await deleteChannelMessages(channelId);
+    for (const [messageId, location] of state.relocatedMessages) if (location.channelId === channelId) state.relocatedMessages.delete(messageId);
     await saveStructure(state.structure);
     render();
     refreshStorageEstimate();
@@ -12600,6 +13138,7 @@ async function deleteMessage(messageId, channelId = state.activeChannelId) {
     render();
 
     await deleteChannelMessage(channelId, messageId);
+    state.relocatedMessages.delete(messageId);
     refreshStorageEstimate();
 }
 
@@ -12647,12 +13186,15 @@ async function moveInboxMessage(messageId, inboxChannelId) {
         state.messagesByChannel.set(destination.id, normalizeMessages(existing));
     }
 
+    try { await moveChannelMessage(inboxChannelId, destination.id, messageId); }
+    catch (error) { console.error("Could not sort inbox message:", error); alert("Could not move this note. Its original was left in the inbox."); return; }
     const nextInbox = inboxMessages.filter((item) => item.id !== messageId);
     const nextDestination = [...state.messagesByChannel.get(destination.id), message];
     state.messagesByChannel.set(inboxChannelId, nextInbox);
     state.messagesByChannel.set(destination.id, nextDestination);
-    await deleteChannelMessage(inboxChannelId, messageId);
-    await saveChannelMessage(destination.id, message);
+    state.relocatedMessages.set(messageId, { channelId: destination.id, message });
+    state.channelMessageCounts.set(inboxChannelId, Math.max(0, (state.channelMessageCounts.get(inboxChannelId) ?? inboxMessages.length) - 1));
+    state.channelMessageCounts.set(destination.id, (state.channelMessageCounts.get(destination.id) ?? nextDestination.length - 1) + 1);
     render();
 }
 
@@ -12679,10 +13221,13 @@ async function sortCensoredMessage(messageId, sourceChannelId) {
     const message = sourceMessages.find((item) => item.id === messageId);
     if (!message) return;
     const destinationMessages = state.messagesByChannel.get(destination.id) || normalizeMessages(await getChannelMessages(destination.id));
+    try { await moveChannelMessage(sourceChannelId, destination.id, messageId); }
+    catch (error) { console.error("Could not sort censored message:", error); alert("Could not move this note. Its original was left in its channel."); return; }
     state.messagesByChannel.set(sourceChannelId, sourceMessages.filter((item) => item.id !== messageId));
     state.messagesByChannel.set(destination.id, [...destinationMessages, message]);
-    await deleteChannelMessage(sourceChannelId, messageId);
-    await saveChannelMessage(destination.id, message);
+    state.relocatedMessages.set(messageId, { channelId: destination.id, message });
+    state.channelMessageCounts.set(sourceChannelId, Math.max(0, (state.channelMessageCounts.get(sourceChannelId) ?? sourceMessages.length) - 1));
+    state.channelMessageCounts.set(destination.id, (state.channelMessageCounts.get(destination.id) ?? destinationMessages.length) + 1);
     render();
 }
 
