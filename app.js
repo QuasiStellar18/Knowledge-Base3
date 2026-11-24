@@ -50,6 +50,7 @@ const DEFAULT_STRUCTURE = {
         hallOfFame: [],
         museumExhibits: [],
         thisOrThatHistory: [],
+        tournamentHistory: [],
         censorPresets: [],
         museumQuietMode: false,
         museumLowPowerMode: false,
@@ -64,7 +65,8 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "115";
+const APP_BUILD_VERSION = "120";
+const TOURNAMENT_SIZES = [4, 8, 16, 32, 64];
 
 function hasUnlockSession() {
     try {
@@ -108,6 +110,12 @@ const state = {
     randomZoomSlideshowMs: 5000,
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
     imageDraft: { stage: "setup", mode: "visible", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
+    tournament: { screen: "setup", size: 4, selected: [], visibleLimit: 10, serverId: null, round: [], nextRound: [], matchIndex: 0, wins: {}, matches: [], seeded: true, thirdPlaceEnabled: false, saving: false },
+    blindAuction: { screen: "setup", serverId: null, count: 10, budget: 100, punishmentWeighted: false, censoredWeighted: false, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10 },
+    tournamentRankingsTab: "rankings",
+    tournamentHistoryLimit: 5,
+    tournamentChampionLimit: 10,
+    tournamentRankingLimit: 25,
     draftRankingLimit: 25,
     holisticRankingLimit: 25,
     thisOrThat: { current: null, mode: "fresh", layout: "horizontal", screen: "setup", rounds: 0, lastWinner: null, rankingLimit: 25, rankingMinimumGames: 0, prioritizeUnranked: true, sessionChanges: {}, lastSessionSummary: null },
@@ -440,6 +448,7 @@ function normalizeStructure(savedStructure) {
             hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame.slice(-300) : [],
             museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : [],
             thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : [],
+            tournamentHistory: Array.isArray(base.settings?.tournamentHistory) ? base.settings.tournamentHistory : [],
             censorPresets: Array.isArray(base.settings?.censorPresets) ? base.settings.censorPresets.slice(-12) : []
         }
     };
@@ -489,6 +498,7 @@ function normalizeServer(server, serverIndex) {
                     isDraftRankingsChannel: Boolean(channel.isDraftRankingsChannel),
                     isThisOrThatChannel: Boolean(channel.isThisOrThatChannel),
                     isThisOrThatRankingsChannel: Boolean(channel.isThisOrThatRankingsChannel),
+                    isTournamentRankingsChannel: Boolean(channel.isTournamentRankingsChannel),
                     isHolisticRankingsChannel: Boolean(channel.isHolisticRankingsChannel),
                     isHallOfFameChannel: Boolean(channel.isHallOfFameChannel),
                     isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel),
@@ -560,6 +570,7 @@ function ensureDraftGalleryFolder() {
             changed = true;
         }
         ensureChannel("this-or-that-rankings", "isThisOrThatRankingsChannel");
+        ensureChannel("tournament-rankings", "isTournamentRankingsChannel");
         ensureChannel("holistic-rankings", "isHolisticRankingsChannel");
     });
     return changed;
@@ -1041,6 +1052,8 @@ function renderSpecialViews() {
             prefix: "↔",
             title: "Choose between two local photos round after round"
         }));
+        group.appendChild(renderSmartChannelRow({ id: "tournament", type: "tournament", label: "photo tournament", prefix: "🏆", title: "Run a single-elimination photo tournament" }));
+        group.appendChild(renderSmartChannelRow({ id: "blind-auction", type: "blindAuction", label: "blind auction", prefix: "◈", title: "Allocate a limited points budget to mystery photos" }));
         group.appendChild(renderSmartChannelRow({
             id: "channel-quiz",
             type: "channelQuiz",
@@ -1181,7 +1194,7 @@ async function openView(type, id) {
         await loadActiveChannelMessages();
         if (getActiveChannel()?.isHolisticRankingsChannel) {
             await ensureServerMessagesLoaded();
-        } else if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isThisOrThatChannel || getActiveChannel()?.isThisOrThatRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
+        } else if (getActiveChannel()?.isDraftRankingsChannel || getActiveChannel()?.isThisOrThatChannel || getActiveChannel()?.isThisOrThatRankingsChannel || getActiveChannel()?.isTournamentRankingsChannel || getActiveChannel()?.isHallOfFameChannel || getActiveChannel()?.isMuseumExhibitsChannel) {
             await ensureServerMessagesLoaded();
         }
         if (getActiveChannel()?.isHallOfFameChannel) {
@@ -1191,6 +1204,17 @@ async function openView(type, id) {
             await ensurePhotoReferencesLoaded((state.structure.settings.draftHistory || [])
                 .filter((draft) => draft.serverId === getActiveServer()?.id)
                 .flatMap((draft) => draft.items || []).map((item) => item.ref));
+        }
+        if (getActiveChannel()?.isTournamentRankingsChannel || getActiveChannel()?.isHolisticRankingsChannel) {
+            await ensurePhotoReferencesLoaded((state.structure.settings.tournamentHistory || [])
+                .filter((tournament) => tournament.serverId === getActiveServer()?.id)
+                .flatMap((tournament) => tournament.entrants || tournament.entries || []).map((item) => item.ref));
+        }
+    } else if (type === "tournament" || type === "blindAuction") {
+        for (const channel of allChannels(getActiveServer())) {
+            const messages = normalizeMessages(await getChannelMessages(channel.id));
+            state.messagesByChannel.set(channel.id, messages);
+            state.channelMessageCounts.set(channel.id, messages.length);
         }
     } else if (type === "thisOrThat") {
         await ensureServerMessagesLoaded();
@@ -1365,6 +1389,17 @@ function renderHeader() {
         return;
     }
 
+    if (state.activeView.type === "tournament") {
+        els.activeTitle.textContent = "Photo Tournament";
+        els.activeMeta.textContent = "A local single-elimination bracket for this server";
+        return;
+    }
+    if (state.activeView.type === "blindAuction") {
+        els.activeTitle.textContent = "Blind Auction";
+        els.activeMeta.textContent = "Bid local points on photos one at a time";
+        return;
+    }
+
     const channel = getActiveChannel();
     if (channel?.isDraftRankingsChannel) {
         els.activeTitle.textContent = "Draft Rankings";
@@ -1379,6 +1414,11 @@ function renderHeader() {
     if (channel?.isHolisticRankingsChannel) {
         els.activeTitle.textContent = "Holistic Rankings";
         els.activeMeta.textContent = "A combined local view of draft placements and This or That choices";
+        return;
+    }
+    if (channel?.isTournamentRankingsChannel) {
+        els.activeTitle.textContent = "Tournament Rankings";
+        els.activeMeta.textContent = "Completed photo tournaments in this server";
         return;
     }
     if (channel?.isHallOfFameChannel) {
@@ -1476,6 +1516,14 @@ function renderMessages() {
         renderThisOrThatGame();
         return;
     }
+    if (state.activeView.type === "tournament") {
+        renderTournament();
+        return;
+    }
+    if (state.activeView.type === "blindAuction") {
+        renderBlindAuction();
+        return;
+    }
 
     if (state.activeView.type === "museumWalk") {
         renderMuseumWalk();
@@ -1540,6 +1588,10 @@ function renderMessages() {
     }
     if (state.activeView.type === "channel" && activeChannel?.isHolisticRankingsChannel) {
         renderHolisticRankingsChannel();
+        return;
+    }
+    if (state.activeView.type === "channel" && activeChannel?.isTournamentRankingsChannel) {
+        renderTournamentRankings();
         return;
     }
     if (state.activeView.type === "channel" && activeChannel?.isHallOfFameChannel) {
@@ -2961,6 +3013,436 @@ function renderThisOrThatRankingsChannel() {
     els.messages.appendChild(page);
 }
 
+function getGameSpecialPools(candidates, punishmentWeighted, censoredWeighted) {
+    return [
+        punishmentWeighted && { name: "punishment" },
+        censoredWeighted && { name: "censored" }
+    ].filter(Boolean).map((pool) => ({
+        ...pool,
+        candidates: candidates.filter((item) => normalizeChannelName(getChannelById(item.ref.channelId)?.name || "") === pool.name)
+    }));
+}
+
+function getGameOrdinaryCandidates(candidates, punishmentWeighted, censoredWeighted) {
+    const names = new Set(getGameSpecialPools(candidates, punishmentWeighted, censoredWeighted).map((pool) => pool.name));
+    return candidates.filter((item) => !names.has(normalizeChannelName(getChannelById(item.ref.channelId)?.name || "")));
+}
+
+function buildWeightedGameSelection(candidates, ordinaryRefs, count, punishmentWeighted, censoredWeighted) {
+    const pools = getGameSpecialPools(candidates, punishmentWeighted, censoredWeighted);
+    const poolNames = new Set(pools.map((pool) => pool.name));
+    const eligibleOrdinary = ordinaryRefs.filter((ref) => !poolNames.has(normalizeChannelName(getChannelById(ref.channelId)?.name || "")));
+    if (count < pools.length + 1) throw new Error("Choose enough photos to include each special pool and at least one ordinary photo.");
+    if (pools.some((pool) => !pool.candidates.length)) throw new Error(`Add at least one image to each selected channel: ${pools.map((pool) => `#${pool.name}`).join(" and ")}.`);
+    const chosen = [];
+    for (let index = 0; index < pools.length; index += 1) {
+        const pool = pools[index];
+        const availableSlots = count - 1 - chosen.length - (pools.length - index - 1);
+        const max = Math.min(3, pool.candidates.length, availableSlots);
+        const laterCapacity = pools.slice(index + 1).reduce((total, later) => total + Math.min(3, later.candidates.length), 0);
+        const minimum = Math.max(1, count - eligibleOrdinary.length - chosen.length - laterCapacity);
+        if (minimum > max) throw new Error("There are not enough distinct ordinary and special-channel photos for this game.");
+        const amount = minimum + Math.floor(Math.random() * (max - minimum + 1));
+        chosen.push(...shuffledCopy(pool.candidates).slice(0, amount).map((item) => ({ ref: structuredClone(item.ref), source: pool.name })));
+    }
+    if (eligibleOrdinary.length < count - chosen.length) throw new Error(`Choose at least ${count - chosen.length} ordinary photos outside the selected special channels.`);
+    return {
+        refs: shuffledCopy([...shuffledCopy(eligibleOrdinary).slice(0, count - chosen.length).map((ref) => structuredClone(ref)), ...chosen.map((item) => item.ref)]),
+        weightedEntries: chosen
+    };
+}
+
+function createWeightedGameControls(game, onChange = null) {
+    const container = document.createElement("div"); container.className = "gameWeightedOptions";
+    [["punishmentWeighted", "Include random #punishment photos"], ["censoredWeighted", "Include random #censored photos"]].forEach(([key, label]) => {
+        const field = document.createElement("label");
+        const input = document.createElement("input"); input.type = "checkbox"; input.checked = Boolean(game[key]);
+        input.addEventListener("change", () => { game[key] = input.checked; if (onChange) onChange(); });
+        field.append(input, document.createTextNode(label)); container.appendChild(field);
+    });
+    const help = document.createElement("small"); help.textContent = "Each selected pool contributes 1–3 random photos, leaving at least one ordinary photo. Both can be enabled together.";
+    container.appendChild(help); return container;
+}
+
+function placeBlindAuctionBid(amount, expectedIndex) {
+    const game = state.blindAuction;
+    if (game.screen !== "play" || expectedIndex !== game.index || !Number.isInteger(amount) || amount < 0 || amount > game.remaining) return false;
+    const ref = game.sequence[game.index];
+    if (!ref) return false;
+    game.results.push({ ref: structuredClone(ref), bid: amount });
+    game.remaining -= amount;
+    game.index += 1;
+    if (game.index >= game.sequence.length) game.screen = "results";
+    return true;
+}
+
+function renderBlindAuction() {
+    const game = state.blindAuction;
+    const serverId = getActiveServer()?.id;
+    if (game.serverId !== serverId) Object.assign(game, { screen: "setup", serverId, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10 });
+    const page = document.createElement("section"); page.className = "blindAuction";
+    const intro = document.createElement("section"); intro.className = "focusSessionIntro"; page.appendChild(intro);
+    if (game.screen === "setup") {
+        intro.innerHTML = "<h3>Blind Auction</h3><p>Spend a limited points budget on photos one at a time. Later photos remain a surprise. This is a solo allocation game, not an auction against other bidders.</p>";
+        const options = document.createElement("div"); options.className = "blindAuctionSetup";
+        const countLabel = document.createElement("label"); countLabel.textContent = "Number of photos";
+        const count = document.createElement("input"); count.type = "number"; count.min = "2"; count.max = "100"; count.inputMode = "numeric"; count.value = String(game.count); countLabel.appendChild(count);
+        const budgetLabel = document.createElement("label"); budgetLabel.textContent = "Points budget";
+        const budget = document.createElement("input"); budget.type = "number"; budget.min = "1"; budget.max = "10000"; budget.inputMode = "numeric"; budget.value = String(game.budget); budgetLabel.appendChild(budget);
+        options.append(countLabel, budgetLabel);
+        const weighted = createWeightedGameControls(game);
+        const privacy = document.createElement("p"); privacy.className = "gameWeightedHelp"; privacy.textContent = "Bids and results are temporary, stay on this device, and do not change image rankings or your photo files.";
+        const start = document.createElement("button"); start.type = "button"; start.className = "adventurePrimary"; start.textContent = "Start auction";
+        start.addEventListener("click", () => {
+            const desired = Number(count.value), points = Number(budget.value);
+            if (!Number.isInteger(desired) || desired < 2 || desired > 100 || !Number.isInteger(points) || points < 1 || points > 10000) { alert("Choose 2–100 photos and a budget of 1–10,000 whole points."); return; }
+            const candidates = getThisOrThatCandidates().filter((item) => shouldShowAttachment(item.attachment) && !getChannelById(item.ref.channelId)?.hidden && !getChannelCategory(item.ref.channelId)?.hidden);
+            const ordinary = getGameOrdinaryCandidates(candidates, game.punishmentWeighted, game.censoredWeighted).map((item) => item.ref);
+            try {
+                const selection = buildWeightedGameSelection(candidates, ordinary, desired, game.punishmentWeighted, game.censoredWeighted);
+                Object.assign(game, { count: desired, budget: points, sequence: selection.refs, weightedEntries: selection.weightedEntries, results: [], index: 0, remaining: points, visibleLimit: 10, screen: "play" });
+                renderMessages();
+            } catch (error) { alert(error.message); }
+        });
+        page.append(options, weighted, privacy, start);
+    } else if (game.screen === "play") {
+        const ref = game.sequence[game.index];
+        const attachment = ref && findAttachment(ref);
+        intro.innerHTML = `<h3>Photo ${game.index + 1} of ${game.sequence.length}</h3><p>${game.remaining} of ${game.budget} points left · ${game.sequence.length - game.index - 1} photos still to come</p>`;
+        const figure = document.createElement("figure"); figure.className = "blindAuctionPhoto";
+        if (attachment) {
+            const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = "Current auction photo";
+            image.addEventListener("click", () => openImageViewer(attachment, image.alt)); figure.appendChild(image);
+        } else figure.appendChild(emptyPanel("This photo is no longer available. You can skip it."));
+        const controls = document.createElement("div"); controls.className = "blindAuctionControls";
+        const label = document.createElement("label"); label.textContent = "Your bid in points";
+        const bid = document.createElement("input"); bid.type = "number"; bid.min = "0"; bid.max = String(game.remaining); bid.step = "1"; bid.inputMode = "numeric"; bid.value = "0"; bid.disabled = !attachment || game.remaining === 0; label.appendChild(bid);
+        const actions = document.createElement("div"); actions.className = "blindAuctionActions";
+        const skip = document.createElement("button"); skip.type = "button"; skip.textContent = "Pass (0 points)";
+        const submit = document.createElement("button"); submit.type = "button"; submit.className = "adventurePrimary"; submit.textContent = "Place bid & next"; submit.disabled = !attachment || game.remaining === 0;
+        const currentIndex = game.index;
+        skip.addEventListener("click", () => { if (placeBlindAuctionBid(0, currentIndex)) renderMessages(); });
+        submit.addEventListener("click", () => {
+            const value = Number(bid.value);
+            if (!bid.value.trim() || !Number.isInteger(value) || value < 1 || value > game.remaining) { alert(`Enter a whole-number bid between 1 and ${game.remaining}, or use Pass.`); return; }
+            if (placeBlindAuctionBid(value, currentIndex)) renderMessages();
+        });
+        actions.append(skip, submit); controls.append(label, actions);
+        const end = document.createElement("button"); end.type = "button"; end.textContent = "End auction early";
+        end.addEventListener("click", () => { if (confirm("End this auction and review the photos you have seen?")) { game.screen = "results"; renderMessages(); } });
+        page.append(figure, controls, end);
+    } else {
+        intro.innerHTML = `<h3>Auction results</h3><p>${game.results.length} photos seen · ${game.budget - game.remaining} points spent · ${game.remaining} points unspent. Results last only for this session.</p>`;
+        const results = document.createElement("div"); results.className = "blindAuctionResults";
+        game.results.slice(0, game.visibleLimit).forEach((item, index) => {
+            const card = document.createElement("article"); card.className = "blindAuctionResult";
+            const attachment = findAttachment(item.ref);
+            if (attachment) { const img = document.createElement("img"); setRenderedImageSource(img, attachment); img.alt = attachment.note || attachment.name || "Auction photo"; img.addEventListener("click", () => openImageViewer(attachment, img.alt)); card.appendChild(img); }
+            else card.appendChild(emptyPanel("Photo unavailable"));
+            const text = document.createElement("strong"); text.textContent = `#${index + 1} · ${item.bid ? `${item.bid} points` : "Passed"}`; card.appendChild(text); results.appendChild(card);
+        });
+        const more = document.createElement("button"); more.type = "button"; more.textContent = "Show 10 more"; more.hidden = game.visibleLimit >= game.results.length; more.addEventListener("click", () => { game.visibleLimit += 10; renderMessages(); });
+        const again = document.createElement("button"); again.type = "button"; again.textContent = "New auction"; again.addEventListener("click", () => { game.screen = "setup"; game.sequence = []; game.results = []; renderMessages(); });
+        page.append(results, more, again);
+    }
+    els.messages.appendChild(page);
+}
+
+function getTournamentInsights() {
+    const records = new Map();
+    const history = (state.structure.settings.tournamentHistory || []).filter((entry) => entry.serverId === getActiveServer()?.id);
+    history.forEach((entry) => (entry.entries || []).forEach((item) => {
+        const key = photoRefKey(item.ref);
+        const record = records.get(key) || { ref: item.ref, appearances: 0, wins: 0, championships: 0 };
+        record.appearances += 1;
+        record.wins += Number(item.wins) || 0;
+        if (photoRefKey(entry.champion) === key) record.championships += 1;
+        records.set(key, record);
+    }));
+    return [...records.values()].sort((a, b) => b.championships - a.championships || b.wins - a.wins || b.appearances - a.appearances);
+}
+
+function makeTournamentBracket(refs, seeded) {
+    if (!seeded) return shuffledCopy(refs);
+    const ranks = new Map(getThisOrThatInsights().images.map((item, index) => [photoRefKey(item.ref), index]));
+    // Shuffle first so photos without a This or That rank receive random seeds.
+    const ranked = shuffledCopy(refs).sort((a, b) => (ranks.get(photoRefKey(a)) ?? Infinity) - (ranks.get(photoRefKey(b)) ?? Infinity));
+    let slots = [1, 2];
+    while (slots.length < ranked.length) {
+        const total = slots.length * 2 + 1;
+        slots = slots.flatMap((seed) => [seed, total - seed]);
+    }
+    return slots.map((seed) => ranked[seed - 1]);
+}
+
+function startTournamentBracket(refs, seeded) {
+    const game = state.tournament;
+    game.selected = refs.map((ref) => structuredClone(ref));
+    game.size = refs.length;
+    game.round = makeTournamentBracket(game.selected, seeded);
+    game.initialBracket = structuredClone(game.round);
+    game.bracketSeeding = seeded ? "this-or-that" : "random";
+    game.nextRound = [];
+    game.matchIndex = 0;
+    game.wins = {};
+    game.matches = [];
+    game.thirdPlacePending = false;
+    game.thirdPlacePair = [];
+    game.thirdPlaceWinner = null;
+    game.screen = "play";
+}
+
+async function rematchTournament(entry) {
+    const refs = (entry.entrants || entry.entries || []).map((item) => item.ref).filter(Boolean);
+    if (!TOURNAMENT_SIZES.includes(refs.length) || new Set(refs.map(photoRefKey)).size !== refs.length) {
+        alert(`This tournament needs ${TOURNAMENT_SIZES.join(", ")} distinct photo references for a rematch.`);
+        return;
+    }
+    await ensurePhotoReferencesLoaded(refs);
+    const missing = refs.filter((ref) => getChannelServer(ref.channelId)?.id !== getActiveServer()?.id || !findAttachment(ref));
+    if (missing.length) {
+        alert(`Cannot start this rematch: ${missing.length} original photo${missing.length === 1 ? " is" : "s are"} unavailable. The saved tournament is unchanged.`);
+        return;
+    }
+    state.tournament.serverId = getActiveServer()?.id;
+    state.tournament.thirdPlaceEnabled = Boolean(entry.thirdPlaceEnabled);
+    state.tournament.weightedEntries = structuredClone(entry.weightedEntries || []);
+    startTournamentBracket(refs, false);
+    await openView("tournament", "tournament");
+}
+
+function renderTournament() {
+    const game = state.tournament;
+    const serverId = getActiveServer()?.id;
+    if (game.serverId !== serverId) Object.assign(game, { screen: "setup", selected: [], round: [], nextRound: [], wins: {}, serverId, visibleLimit: 10 });
+    const page = document.createElement("section");
+    page.className = "thisOrThatChannel";
+    const intro = document.createElement("section");
+    intro.className = "focusSessionIntro";
+    page.appendChild(intro);
+    if (game.screen === "setup") {
+        intro.innerHTML = "<h3>Photo Tournament</h3><p>Select 4, 8, 16, 32, or 64 local photos, or draw a random bracket from this server. Choose a winner in each matchup; only a completed tournament affects rankings.</p>";
+        const candidates = getThisOrThatCandidates();
+        const size = document.createElement("select");
+        size.setAttribute("aria-label", "Tournament size");
+        TOURNAMENT_SIZES.forEach((count) => { const option = document.createElement("option"); option.value = String(count); option.textContent = `${count} photos`; option.selected = count === game.size; size.appendChild(option); });
+        size.addEventListener("change", () => { game.size = Number(size.value); game.selected = []; renderMessages(); });
+        const seedLabel = document.createElement("label"); seedLabel.className = "tournamentSeed";
+        const seedInput = document.createElement("input"); seedInput.type = "checkbox"; seedInput.checked = game.seeded;
+        seedInput.addEventListener("change", () => { game.seeded = seedInput.checked; });
+        const seedText = document.createElement("span"); seedText.textContent = "Seed by This or That ranking (unranked photos are placed randomly)"; seedLabel.append(seedInput, seedText);
+        const thirdLabel = document.createElement("label"); thirdLabel.className = "tournamentSeed";
+        const thirdInput = document.createElement("input"); thirdInput.type = "checkbox"; thirdInput.checked = Boolean(game.thirdPlaceEnabled);
+        thirdInput.addEventListener("change", () => { game.thirdPlaceEnabled = thirdInput.checked; });
+        const thirdText = document.createElement("span"); thirdText.textContent = "Play a third-place match between the semifinal losers before the final";
+        thirdLabel.append(thirdInput, thirdText);
+        const weighted = createWeightedGameControls(game, renderMessages);
+        const weightedHelp = document.createElement("p"); weightedHelp.className = "gameWeightedHelp";
+        weightedHelp.textContent = "Special-pool photos replace randomly selected ordinary entrants and do not receive tournament ranking statistics. Their matchup history is still shown.";
+        const status = document.createElement("p");
+        status.textContent = `${game.selected.length} selected · ${candidates.length} photos available. With weighted pools, choose ordinary photos; special photos replace some of them.`;
+        const gallery = document.createElement("div");
+        gallery.className = "tournamentPicker";
+        candidates.slice(0, game.visibleLimit).forEach((candidate) => {
+            const key = photoRefKey(candidate.ref);
+            const selected = game.selected.some((ref) => photoRefKey(ref) === key);
+            const button = document.createElement("button"); button.type = "button";
+            button.className = selected ? "isSelected" : "";
+            button.setAttribute("aria-pressed", String(selected));
+            const img = document.createElement("img"); setRenderedImageSource(img, candidate.attachment); img.alt = candidate.attachment.note || candidate.attachment.name || "Photo";
+            const label = document.createElement("span"); label.textContent = `${selected ? "Selected · " : ""}#${getChannelById(candidate.ref.channelId)?.name || "channel"}`;
+            button.append(img, label);
+            button.addEventListener("click", () => {
+                if (selected) game.selected = game.selected.filter((ref) => photoRefKey(ref) !== key);
+                else if (game.selected.length < game.size) game.selected.push(structuredClone(candidate.ref));
+                else { alert(`Select only ${game.size} photos. Tap a selected photo to remove it.`); return; }
+                renderMessages();
+            });
+            gallery.appendChild(button);
+        });
+        const more = document.createElement("button"); more.type = "button"; more.textContent = "Show 10 more"; more.hidden = game.visibleLimit >= candidates.length;
+        more.addEventListener("click", () => { game.visibleLimit += 10; renderMessages(); });
+        const random = document.createElement("button"); random.type = "button"; random.textContent = "Draw random photos"; random.disabled = candidates.length < game.size;
+        random.addEventListener("click", () => { game.selected = shuffledCopy(getGameOrdinaryCandidates(candidates, game.punishmentWeighted, game.censoredWeighted)).slice(0, game.size).map((item) => structuredClone(item.ref)); renderMessages(); });
+        const minimumSelected = Math.max(1, game.size - 3 * (Number(Boolean(game.punishmentWeighted)) + Number(Boolean(game.censoredWeighted))));
+        const start = document.createElement("button"); start.type = "button"; start.className = "adventurePrimary"; start.textContent = "Start tournament"; start.disabled = game.selected.length < minimumSelected || (!game.punishmentWeighted && !game.censoredWeighted && game.selected.length !== game.size);
+        start.addEventListener("click", () => {
+            try {
+                const selection = buildWeightedGameSelection(candidates, game.selected, game.size, game.punishmentWeighted, game.censoredWeighted);
+                game.weightedEntries = selection.weightedEntries;
+                startTournamentBracket(selection.refs, game.seeded); renderMessages();
+            } catch (error) { alert(error.message); }
+        });
+        page.append(size, seedLabel, thirdLabel, weighted, weightedHelp, status, gallery, more, random, start);
+    } else if (game.screen === "play") {
+        const pair = game.thirdPlacePending ? game.thirdPlacePair : game.round.slice(game.matchIndex, game.matchIndex + 2);
+        intro.innerHTML = game.thirdPlacePending
+            ? "<h3>Third-place match</h3><p>The two semifinal losers compete for third place. The final follows next.</p>"
+            : `<h3>${game.round.length === 2 ? "Tournament final" : "Tournament matchup"}</h3><p>${game.round.length} photos remain in this round · Match ${Math.floor(game.matchIndex / 2) + 1} of ${game.round.length / 2}</p>`;
+        const matchup = document.createElement("div"); matchup.className = "thisOrThatMatchup isHorizontal tournamentMatchup";
+        pair.forEach((ref) => {
+            const attachment = findAttachment(ref);
+            const card = document.createElement("article"); card.className = "thisOrThatCard";
+            if (attachment) { const img = document.createElement("img"); setRenderedImageSource(img, attachment); img.alt = attachment.note || attachment.name || "Tournament photo"; img.addEventListener("click", () => openImageViewer(attachment, img.alt)); card.appendChild(img); }
+            else card.appendChild(emptyPanel("Source photo unavailable"));
+            const weightedEntry = (game.weightedEntries || []).find((item) => photoRefKey(item.ref) === photoRefKey(ref));
+            if (weightedEntry) { const marker = document.createElement("small"); marker.textContent = `#${weightedEntry.source} · excluded from tournament rankings`; card.appendChild(marker); }
+            const choose = document.createElement("button"); choose.type = "button"; choose.className = "adventurePrimary"; choose.textContent = "Choose winner"; choose.disabled = game.saving || !attachment;
+            choose.addEventListener("click", () => { void chooseTournamentWinner(ref); }); card.appendChild(choose); matchup.appendChild(card);
+        });
+        const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel tournament"; cancel.disabled = game.saving;
+        cancel.addEventListener("click", () => { if (confirm("Cancel this tournament? No results will be saved.")) { game.screen = "setup"; renderMessages(); } });
+        page.append(matchup, cancel);
+    } else {
+        intro.innerHTML = "<h3>Tournament champion</h3><p>The completed results were saved locally to Tournament Rankings.</p>";
+        const champion = game.round[0];
+        if (champion && findAttachment(champion)) page.appendChild(renderAdventurePlayerMedia(champion, "Tournament champion"));
+        if (game.thirdPlaceWinner) { const third = document.createElement("p"); third.textContent = `Third place: ${tournamentPhotoName(game.thirdPlaceWinner)}`; page.appendChild(third); }
+        const again = document.createElement("button"); again.type = "button"; again.textContent = "New tournament";
+        again.addEventListener("click", () => { game.screen = "setup"; game.selected = []; renderMessages(); }); page.appendChild(again);
+    }
+    els.messages.appendChild(page);
+}
+
+async function chooseTournamentWinner(ref) {
+    const game = state.tournament;
+    if (game.saving || game.screen !== "play") return;
+    const pair = game.thirdPlacePending ? game.thirdPlacePair : game.round.slice(game.matchIndex, game.matchIndex + 2);
+    if (pair.length !== 2 || !pair.some((item) => photoRefKey(item) === photoRefKey(ref))) return;
+    const match = { kind: game.thirdPlacePending ? "third-place" : "bracket", roundSize: game.thirdPlacePending ? 4 : game.round.length, participants: structuredClone(pair), winner: structuredClone(ref) };
+    if (game.thirdPlacePending) {
+        const key = photoRefKey(ref);
+        game.wins[key] = (game.wins[key] || 0) + 1;
+        game.matches.push(match);
+        game.thirdPlaceWinner = structuredClone(ref);
+        game.thirdPlacePending = false;
+        renderMessages();
+        return;
+    }
+    const isFinal = game.round.length === 2;
+    if (isFinal) {
+        game.saving = true;
+        const wins = { ...game.wins, [photoRefKey(ref)]: (game.wins[photoRefKey(ref)] || 0) + 1 };
+        const weightedKeys = new Set((game.weightedEntries || []).map((item) => photoRefKey(item.ref)));
+        const entrants = game.selected.map((item) => ({ ref: structuredClone(item), wins: wins[photoRefKey(item)] || 0 }));
+        const entry = { id: crypto.randomUUID(), serverId: game.serverId, at: new Date().toISOString(), champion: structuredClone(ref), thirdPlaceEnabled: Boolean(game.thirdPlaceEnabled), thirdPlaceWinner: game.thirdPlaceWinner ? structuredClone(game.thirdPlaceWinner) : null, entrants, entries: entrants.filter((item) => !weightedKeys.has(photoRefKey(item.ref))), weightedEntries: structuredClone(game.weightedEntries || []), seeding: game.bracketSeeding, initialBracket: structuredClone(game.initialBracket), matches: [...game.matches, match] };
+        const previous = state.structure.settings.tournamentHistory || [];
+        state.structure.settings.tournamentHistory = [...previous, entry];
+        try { await saveStructure(state.structure); game.wins = wins; game.round = [ref]; game.screen = "finished"; }
+        catch (error) { state.structure.settings.tournamentHistory = previous; console.error(error); alert("The result could not be saved locally. Please try again."); }
+        finally { game.saving = false; renderMessages(); }
+        return;
+    }
+    const key = photoRefKey(ref); game.wins[key] = (game.wins[key] || 0) + 1;
+    game.matches.push(match);
+    game.nextRound.push(ref); game.matchIndex += 2;
+    if (game.matchIndex >= game.round.length) {
+        if (game.thirdPlaceEnabled && game.round.length === 4) {
+            game.thirdPlacePair = game.matches.filter((item) => item.kind === "bracket" && item.roundSize === 4)
+                .map((item) => item.participants.find((participant) => photoRefKey(participant) !== photoRefKey(item.winner)));
+            game.thirdPlacePending = game.thirdPlacePair.length === 2 && game.thirdPlacePair.every(Boolean);
+        }
+        game.round = game.nextRound; game.nextRound = []; game.matchIndex = 0;
+    }
+    renderMessages();
+}
+
+function renderTournamentRankings() {
+    const items = getTournamentInsights();
+    const page = document.createElement("section"); page.className = "draftRankingsChannel";
+    const intro = document.createElement("section"); intro.className = "focusSessionIntro"; intro.innerHTML = "<h3>Tournament Rankings</h3><p>Ranked by tournament championships, then match wins. Only completed tournaments count.</p>"; page.appendChild(intro);
+    const tabs = document.createElement("nav"); tabs.className = "tournamentTabs"; tabs.setAttribute("aria-label", "Tournament results views");
+    [["rankings", "Rankings"], ["history", "History"], ["champions", "Champions gallery"]].forEach(([value, label]) => {
+        const button = document.createElement("button"); button.type = "button"; button.textContent = label;
+        button.setAttribute("aria-pressed", String(state.tournamentRankingsTab === value));
+        button.addEventListener("click", () => { state.tournamentRankingsTab = value; renderMessages(); }); tabs.appendChild(button);
+    });
+    page.appendChild(tabs);
+    if (state.tournamentRankingsTab === "history") { renderTournamentHistory(page); els.messages.appendChild(page); return; }
+    if (state.tournamentRankingsTab === "champions") { renderTournamentChampions(page, items); els.messages.appendChild(page); return; }
+    if (!items.length) { page.appendChild(emptyPanel("Complete a photo tournament to build this ranking.")); els.messages.appendChild(page); return; }
+    page.appendChild(createRankingLimitControl("tournamentRankingLimit", () => renderMessages()));
+    const list = document.createElement("section"); list.className = "draftRankingsList";
+    getRankedDisplayItems(items, state.tournamentRankingLimit).forEach(({ item, index, divider }) => {
+        if (divider) { const gap = document.createElement("p"); gap.className = "thisOrThatRankingDivider"; gap.textContent = divider; list.appendChild(gap); return; }
+        const row = document.createElement("article"); row.className = "draftRankingItem";
+        const position = document.createElement("strong"); position.textContent = `#${index + 1}`; row.appendChild(position);
+        const attachment = findAttachment(item.ref);
+        if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Ranked photo"; image.addEventListener("click", () => openImageViewer(attachment, image.alt)); row.appendChild(image); }
+        const detail = document.createElement("div"); detail.className = "draftRankingDetail";
+        const name = document.createElement("strong"); name.textContent = attachment?.note || attachment?.name || "Local photo";
+        const stats = document.createElement("span"); stats.textContent = `${item.championships} championships · ${item.wins} match wins · ${item.appearances} tournaments`; detail.append(name, stats);
+        const actions = document.createElement("div"); actions.className = "draftRankingActions";
+        const source = document.createElement("button"); source.type = "button"; source.textContent = "Open source"; source.addEventListener("click", () => { void openPhotoSource(item.ref); });
+        const nominate = document.createElement("button"); nominate.type = "button"; nominate.textContent = isHallOfFameRef(item.ref) ? "In Hall of Fame" : "Nominate"; nominate.disabled = isHallOfFameRef(item.ref); nominate.addEventListener("click", () => toggleHallOfFameNomination(item.ref));
+        actions.append(source, nominate); row.append(detail, actions); list.appendChild(row);
+    });
+    page.appendChild(list); els.messages.appendChild(page);
+}
+
+function tournamentPhotoName(ref) {
+    const attachment = ref && findAttachment(ref);
+    return attachment?.note || attachment?.name || (ref ? `Photo from #${getChannelById(ref.channelId)?.name || "missing channel"}` : "Unknown photo");
+}
+
+function renderTournamentHistory(page) {
+    const history = (state.structure.settings.tournamentHistory || []).filter((entry) => entry.serverId === getActiveServer()?.id).slice().reverse();
+    if (!history.length) { page.appendChild(emptyPanel("Completed tournaments will appear here.")); return; }
+    history.slice(0, state.tournamentHistoryLimit).forEach((entry) => {
+        const card = document.createElement("section"); card.className = "tournamentHistoryCard";
+        const title = document.createElement("h4"); title.textContent = `${formatDate(entry.at)} · ${(entry.entrants || entry.entries || []).length} photos`;
+        const champion = document.createElement("p"); champion.textContent = `Champion: ${tournamentPhotoName(entry.champion)}${entry.thirdPlaceWinner ? ` · Third: ${tournamentPhotoName(entry.thirdPlaceWinner)}` : ""}`;
+        const attachment = entry.champion && findAttachment(entry.champion);
+        if (attachment) { const image = document.createElement("img"); image.className = "tournamentHistoryChampion"; setRenderedImageSource(image, attachment); image.alt = tournamentPhotoName(entry.champion); image.addEventListener("click", () => openImageViewer(attachment, image.alt)); card.appendChild(image); }
+        const detail = document.createElement("details");
+        const summary = document.createElement("summary"); summary.textContent = "View bracket and results"; detail.appendChild(summary);
+        if (Array.isArray(entry.matches) && entry.matches.length) {
+            const seeding = document.createElement("p"); seeding.textContent = entry.seeding === "this-or-that" ? "Seeded using This or That rankings." : "Random bracket."; detail.appendChild(seeding);
+            entry.matches.forEach((match) => {
+                const line = document.createElement("p");
+                const contestants = (match.participants || []).map(tournamentPhotoName).join(" vs ");
+                line.textContent = `${match.kind === "third-place" ? "Third-place match" : match.roundSize === 2 ? "Final" : `Round of ${match.roundSize}`}: ${contestants} — winner: ${tournamentPhotoName(match.winner)}`;
+                detail.appendChild(line);
+            });
+        } else {
+            const note = document.createElement("p"); note.textContent = "This older tournament did not record individual matchups. Participant results are shown below."; detail.appendChild(note);
+            (entry.entries || []).forEach((item) => { const line = document.createElement("p"); line.textContent = `${tournamentPhotoName(item.ref)} · ${Number(item.wins) || 0} match wins`; detail.appendChild(line); });
+        }
+        const rematch = document.createElement("button"); rematch.type = "button"; rematch.textContent = "Rematch with shuffled bracket";
+        rematch.addEventListener("click", async () => {
+            rematch.disabled = true;
+            try { await rematchTournament(entry); } catch (error) { console.error("Could not start tournament rematch:", error); alert("Could not load the original photos for this rematch."); }
+            finally { rematch.disabled = false; }
+        });
+        card.append(title, champion, detail, rematch); page.appendChild(card);
+    });
+    if (history.length > state.tournamentHistoryLimit) {
+        const more = document.createElement("button"); more.type = "button"; more.textContent = `Show 5 more (${history.length - state.tournamentHistoryLimit} remaining)`;
+        more.addEventListener("click", () => { state.tournamentHistoryLimit += 5; renderMessages(); }); page.appendChild(more);
+    }
+}
+
+function renderTournamentChampions(page, items) {
+    const champions = items.filter((item) => item.championships > 0);
+    if (!champions.length) { page.appendChild(emptyPanel("Tournament champions will appear here.")); return; }
+    const gallery = document.createElement("div"); gallery.className = "tournamentChampions";
+    champions.slice(0, state.tournamentChampionLimit).forEach((item) => {
+        const card = document.createElement("article"); card.className = "tournamentChampionCard";
+        const attachment = findAttachment(item.ref);
+        if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = tournamentPhotoName(item.ref); image.addEventListener("click", () => openImageViewer(attachment, image.alt)); card.appendChild(image); }
+        else card.appendChild(emptyPanel("Original photo unavailable"));
+        const title = document.createElement("strong"); title.textContent = tournamentPhotoName(item.ref);
+        const count = document.createElement("span"); count.textContent = `${item.championships} tournament ${item.championships === 1 ? "title" : "titles"} · ${item.wins} match wins`;
+        const source = document.createElement("button"); source.type = "button"; source.textContent = "Open source"; source.addEventListener("click", () => { void openPhotoSource(item.ref); });
+        card.append(title, count, source); gallery.appendChild(card);
+    });
+    page.appendChild(gallery);
+    if (champions.length > state.tournamentChampionLimit) {
+        const more = document.createElement("button"); more.type = "button"; more.textContent = `Show 10 more (${champions.length - state.tournamentChampionLimit} remaining)`;
+        more.addEventListener("click", () => { state.tournamentChampionLimit += 10; renderMessages(); }); page.appendChild(more);
+    }
+}
+
 function renderHolisticRankingsChannel() {
     const draft = getImageDraftInsights().images.filter((item) => item.count >= 2)
         .sort((a, b) => a.average - b.average || a.weightedAverage - b.weightedAverage);
@@ -2971,15 +3453,19 @@ function renderHolisticRankingsChannel() {
         const key = photoRefKey(item.ref);
         records.set(key, { ...(records.get(key) || { ref: item.ref, draftRank: null, draft: null }), choice: item });
     });
+    getTournamentInsights().forEach((item) => {
+        const key = photoRefKey(item.ref);
+        records.set(key, { ...(records.get(key) || { ref: item.ref, draftRank: null, draft: null, choice: null }), tournament: item });
+    });
     const ranked = [...records.values()].map((item) => ({
         ...item,
-        holisticScore: (item.draftRank ? 1 / item.draftRank : 0) + (item.choice ? item.choice.winRate * 1.5 + Math.min(item.choice.games, 10) / 50 : 0)
+        holisticScore: (item.draftRank ? 1 / item.draftRank : 0) + (item.choice ? item.choice.winRate * 1.5 + Math.min(item.choice.games, 10) / 50 : 0) + (item.tournament ? Math.min(item.tournament.championships, 5) * .2 + Math.min(item.tournament.wins, 10) * .02 : 0)
     })).sort((a, b) => b.holisticScore - a.holisticScore);
     const page = document.createElement("section");
     page.className = "draftRankingsChannel";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
-    intro.innerHTML = "<h3>Holistic Rankings</h3><p>A transparent combined list: completed draft rank carries the base score, while This or That win rate adds a smaller comparison signal. Only locally stored outcomes are used.</p>";
+    intro.innerHTML = "<h3>Holistic Rankings</h3><p>Combines draft rank, This or That, and completed tournaments. Tournament contribution: 0.2 per championship (up to 5), plus 0.02 per match win (up to 10).</p>";
     page.appendChild(intro);
     if (!ranked.length) {
         page.appendChild(emptyPanel("Complete an Image Draft at least twice for a photo, or make a This or That choice, to build this ranking."));
@@ -3009,7 +3495,7 @@ function renderHolisticRankingsChannel() {
         const title = document.createElement("strong");
         title.textContent = attachment?.note || attachment?.name || "Local photo";
         const stat = document.createElement("span");
-        stat.textContent = `${item.draft ? `Draft #${item.draftRank} · avg #${item.draft.average.toFixed(1)}` : "No repeat draft rank"}${item.choice ? ` · ${item.choice.wins}–${item.choice.losses} choices` : ""}`;
+        stat.textContent = `${item.draft ? `Draft #${item.draftRank} · avg #${item.draft.average.toFixed(1)}` : "No repeat draft rank"}${item.choice ? ` · ${item.choice.wins}–${item.choice.losses} choices` : ""}${item.tournament ? ` · ${item.tournament.championships} championships · ${item.tournament.wins} tournament wins` : ""}`;
         detail.append(title, stat);
         const open = document.createElement("button");
         open.type = "button";
@@ -11408,7 +11894,7 @@ function renderAttachments(attachments, message, channelId) {
 function renderComposer() {
     const hasChannel = Boolean(state.activeChannelId);
     const channel = getActiveChannel();
-    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isThisOrThatChannel || channel?.isThisOrThatRankingsChannel || channel?.isHolisticRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
+    const isGalleryChannel = Boolean(channel?.isDraftRankingsChannel || channel?.isThisOrThatChannel || channel?.isThisOrThatRankingsChannel || channel?.isTournamentRankingsChannel || channel?.isHolisticRankingsChannel || channel?.isHallOfFameChannel || channel?.isMuseumExhibitsChannel);
     const enabled = state.ready && state.isUnlocked && hasChannel && state.activeView.type === "channel" && !isGalleryChannel;
     const canCompose = enabled && !state.pendingMessageSave;
     els.noteInput.disabled = !canCompose;
