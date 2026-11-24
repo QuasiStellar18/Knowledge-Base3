@@ -1,10 +1,10 @@
-const CACHE_NAME = "knowledge-discord-v120";
+const CACHE_NAME = "knowledge-discord-v124";
 const APP_SHELL = [
     "./",
     "./index.html",
-    "./style.css?v=120",
-    "./db.js?v=86",
-    "./app.js?v=120"
+    "./style.css?v=124",
+    "./db.js?v=124",
+    "./app.js?v=124"
 ];
 
 self.addEventListener("install", (event) => {
@@ -19,7 +19,7 @@ self.addEventListener("activate", (event) => {
     event.waitUntil(
         caches.keys()
             .then((keys) => Promise.all(keys
-                .filter((key) => key !== CACHE_NAME)
+                .filter((key) => key.startsWith("knowledge-discord-") && key !== CACHE_NAME)
                 .map((key) => caches.delete(key))))
             .then(() => self.clients.claim())
     );
