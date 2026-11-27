@@ -5131,8 +5131,9 @@ video.embed {
 .censorEditorTuning output { min-width: 38px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 .censorEditorTuning select { min-width: 0; min-height: 36px; border-radius: 7px; background: var(--panel-hover); color: var(--text); font: inherit; }
 .censorEditorPersist { display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 13px; font-weight: 750; }
+.censorEditorPersist[hidden] { display: none; }
 .censorEditorPersist input { width: 18px; height: 18px; accent-color: var(--accent); }
-.imageAttachment.isSourceTarget { outline: 4px solid var(--accent); outline-offset: 4px; animation: sourceTargetPulse .6s ease-in-out 3; }
+.imageAttachment.isSourceTarget, .photoTile.isSourceTarget { outline: 4px solid var(--accent); outline-offset: 4px; animation: sourceTargetPulse .6s ease-in-out 3; }
 @keyframes sourceTargetPulse { 50% { outline-color: #ffffff; } }
 
 .censorCanvasWrap {
@@ -5391,7 +5392,7 @@ button:disabled {
 
     #mobileStageNav button {
         min-width: 0;
-        min-height: 40px;
+        min-height: 44px;
         border-radius: var(--radius);
         background: transparent;
         color: var(--muted);
@@ -5588,7 +5589,7 @@ button:disabled {
 
     #mobileQuickActions button {
         min-width: 0;
-        min-height: 38px;
+        min-height: 44px;
         padding: 0 6px;
         border: 1px solid var(--border);
         border-radius: 7px;
@@ -6315,6 +6316,42 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .imageDraftStatsCard small { color: var(--muted); }
 
 .thisOrThatChannel { display: grid; gap: 14px; width: min(1080px, 100%); margin: 0 auto; }
+.museumGame { display: grid; gap: 10px; width: min(1000px, 100%); margin: 0 auto; }
+.museumGameHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px; border: 1px solid #b99b67; border-radius: 14px; background: linear-gradient(125deg, #172830, #302337); }
+.museumGameHeader small { color: #d8c293; font-weight: 800; letter-spacing: .08em; }
+.museumGameHeader h3 { margin: 4px 0; color: #f9ecd0; font: 700 clamp(22px, 4vw, 32px) Georgia, serif; }
+.museumGameHeader p { margin: 0; max-width: 60ch; color: #c8d4d3; font-size: 13px; line-height: 1.4; }
+.museumGameNav, .museumGameToolbar, .museumGameArtControls, .museumGameDoorList { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.museumGame button { min-height: 40px; padding: 8px 11px; border: 1px solid #9b8565; border-radius: 8px; background: #303b40; color: #f8edda; font: inherit; font-size: 13px; font-weight: 750; cursor: pointer; }
+.museumGame button:disabled { opacity: .45; cursor: default; }
+.museumGameViewport { position: relative; width: 100%; overflow: hidden; border: 2px solid #aa9268; border-radius: 13px; background: #11191d; box-shadow: 0 8px 25px #0007; }
+.museumGameCanvas { display: block; width: min(100%, 82.5dvh, 840px); height: auto; aspect-ratio: 3 / 2; margin: 0 auto; touch-action: none; image-rendering: auto; }
+.museumGameCrosshair { position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 3px #000; transform: translate(-50%, -50%); pointer-events: none; }
+.museumGameMinimap { position: absolute; top: 9px; right: 9px; width: min(28vw, 130px); height: auto; border: 1px solid #d6c49e; border-radius: 7px; opacity: .9; pointer-events: none; }
+.museumGameMinimap[hidden], .museumGameRoomMap[hidden] { display: none; }
+.museumGameHint { margin: 0; color: #d6c59f; font-size: 13px; line-height: 1.4; }
+.museumGameRoomMap { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.museumGameDoorList button { text-align: left; }
+.museumGameArtControls { justify-content: space-between; }
+.museumGameArtControls span { color: var(--muted); font-size: 13px; }
+.museumGameControls { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 10px 18px; padding: 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
+.museumGameControls small { grid-column: 1 / -1; color: var(--muted); line-height: 1.35; }
+.museumGameJoystick { position: relative; width: 108px; height: 108px; border: 2px solid #9bbeb7; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #66887c, #273c3a); box-shadow: inset 0 0 15px #0008; touch-action: none; }
+.museumGameJoystick span { position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px; border: 2px solid #e5f2e3; border-radius: 50%; background: linear-gradient(135deg, #d7e6ce, #54857b); box-shadow: 0 3px 8px #0007; pointer-events: none; }
+.museumGameTurn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.museumGameTurn button { min-height: 54px; touch-action: none; }
+.museumGameInspect { position: fixed; z-index: 190; inset: 0; display: grid; place-items: center; overflow: auto; padding: 14px; background: #000c; }
+.museumGameInspectCard { display: grid; gap: 10px; width: min(650px, 100%); max-height: 90dvh; overflow: auto; padding: 15px; border: 2px solid #a78c5a; border-radius: 12px; background: #232628; color: #f8edda; }
+.museumGameInspectCard h3, .museumGameInspectCard p { margin: 0; white-space: pre-wrap; }
+.museumGameInspectCard p { padding: 12px; border: 2px solid #a78c5a; background: #d7c28e; color: #211a10; line-height: 1.5; }
+.museumGameInspectCard img { width: 100%; max-height: 48dvh; object-fit: contain; background: #111; cursor: zoom-in; }
+.museumGameInspectCard button { min-height: 44px; border-radius: 8px; }
+@media (max-height: 520px) and (orientation: landscape) {
+    .museumGameCanvas { width: min(100%, 99dvh, 840px); }
+    .museumGameHeader p { font-size: 12px; }
+    .museumGameControls { grid-template-columns: 82px 1fr; }
+    .museumGameJoystick { width: 80px; height: 80px; }
+}
 .blindAuction { display: grid; gap: 12px; width: min(760px, 100%); margin: 0 auto; }
 .blindAuctionSetup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .blindAuctionSetup label, .blindAuctionControls label { display: grid; gap: 6px; font-size: 14px; font-weight: 700; }
@@ -6331,12 +6368,123 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .blindAuctionResults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .blindAuctionResult { display: grid; gap: 8px; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
 .blindAuctionResult img { width: 100%; height: min(28dvh, 240px); object-fit: contain; background: #111; cursor: zoom-in; }
+.auctionStage {
+    --panel-bg: #2d1c24; --border: #79505a; --text: #faefe8; --muted: #dcc9c3; --accent: #e2b76f;
+    position: relative; isolation: isolate; overflow: hidden; width: min(820px, 100%); padding: 55px 20px 20px;
+    border: 1px solid #b58a60; border-radius: 16px; color: var(--text);
+    background: radial-gradient(ellipse at 50% 5%, #54313a 0%, #24171d 48%, #170f14 100%);
+    box-shadow: 0 10px 28px #0006, inset 0 0 0 3px #4d2831;
+}
+.auctionStage::before, .auctionStage::after { content: ""; position: absolute; pointer-events: none; z-index: 0; }
+.auctionStage::before { top: 0; left: 0; right: 0; height: 43px; border-bottom: 3px solid #bc9363; border-radius: 0 0 45% 45%; background: repeating-linear-gradient(95deg, #4d0b1b 0, #a12740 24px, #6a1026 48px, #3d0916 65px); box-shadow: 0 5px 12px #0009; }
+.auctionStage::after { inset: 35px 0 0; background: linear-gradient(90deg, #4f0b1be8 0, #8b1e34a8 9px, transparent 28px, transparent calc(100% - 28px), #8b1e34a8 calc(100% - 9px), #4f0b1be8 100%); }
+.auctionStage > * { position: relative; z-index: 1; }
+.auctionStageMarquee { display: grid; justify-items: center; gap: 3px; padding: 10px 12px; border-block: 1px solid #c49a6d99; color: #ecd1aa; text-align: center; letter-spacing: .16em; }
+.auctionStageMarquee span { font-size: 10px; font-weight: 700; }
+.auctionStageMarquee strong { font-family: Georgia, serif; font-size: clamp(20px, 4vw, 30px); letter-spacing: .09em; }
+.auctionStage .focusSessionIntro { padding: 12px; border: 1px solid #76505b; border-radius: 10px; background: #24171eea; }
+.auctionStage .focusSessionIntro h3, .auctionStage .focusSessionIntro p { margin: 4px 0; }
+.auctionStage .blindAuctionPhoto { min-height: 180px; border: 4px solid #997453; border-radius: 8px; box-shadow: 0 6px 16px #0008; }
+.auctionStage .blindAuctionControls, .auctionPreview { padding: 14px; border: 1px solid #966c65; border-radius: 10px; background: #2d1c24; }
+.auctionStage button { min-height: 44px; border: 1px solid #98746c; border-radius: 8px; background: #482a34; color: #fff3e9; }
+.auctionStage button.adventurePrimary { border-color: #d6aa72; background: #8e2039 !important; color: #fffaf2 !important; }
+.auctionStage button:disabled { opacity: .55; }
+.auctionPreview { display: grid; gap: 10px; }
+.auctionPreview p { margin: 0; color: #ead8d0; }
+.auctionPreviewTitle { font-family: Georgia, serif; font-size: 21px; color: #f4d5a0; }
+.auctionPreviewActions { display: grid; gap: 8px; }
+.auctionEyebrow { color: #e6bf82; font-size: 11px; font-weight: 700; letter-spacing: .13em; }
+@media (max-width: 480px) { .auctionStage { padding: 52px 14px 14px; border-radius: 12px; } .auctionStageMarquee { padding: 8px; } }
+@media (orientation: landscape) and (max-height: 560px) {
+    .auctionStagePlaying { grid-template-columns: minmax(0, 1fr) minmax(220px, .7fr); align-items: start; }
+    .auctionStagePlaying .auctionStageMarquee, .auctionStagePlaying .focusSessionIntro { grid-column: 1 / -1; }
+    .auctionStagePlaying .blindAuctionPhoto { grid-column: 1; grid-row: 3 / span 2; }
+    .auctionStagePlaying .blindAuctionControls { grid-column: 2; grid-row: 3; }
+    .auctionStagePlaying .auctionStageEnd { grid-column: 2; grid-row: 4; }
+    .auctionStagePlaying .blindAuctionPhoto img { max-height: 55dvh; }
+}
+.auctionRevealPhoto img { height: min(46dvh, 460px); }
+.auctionRevealOutcome { color: #f4d5a0; font-weight: 700; }
+.auctionRevealBids { padding: 12px; border: 1px solid #966c65; border-radius: 10px; background: #2d1c24; }
+.auctionRevealBids summary { cursor: pointer; font-weight: 700; }
+.auctionRevealBids p { margin: 7px 0 0; }
+.auctionProfiles { display: grid; gap: 8px; }
+.auctionProfile { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.auctionProfile span { flex: 1; overflow-wrap: anywhere; }
+.auctionAvatar, .auctionAvatarPlaceholder { display: inline-grid; place-items: center; width: 52px; height: 52px; flex: 0 0 52px; object-fit: cover; border-radius: 50%; background: #303540; }
+.auctionProfileDetail, .auctionRoster { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
+.auctionOwnerTabs button, .auctionOwnerPage > button, .auctionCharacterProfile button { min-height: 44px; padding: 8px 12px; border: 1px solid #986d76; border-radius: 8px; background: #46303a; color: #fff2ea; font: inherit; cursor: pointer; }
+.auctionOwnerTabs button[aria-pressed="true"] { border-color: #dbb680; background: #84344a; color: #fff; }
+.auctionOwnerPage > button { justify-self: start; }
+.auctionCharacterProfile { --panel-bg: #302129; --border: #78505c; --text: #f8ece8; --muted: #d6bdba; color: var(--text); gap: 16px; padding: clamp(14px, 3vw, 24px); background: linear-gradient(145deg, #49303b, #211820 65%); border-color: #a77a73; box-shadow: 0 9px 24px #0005; }
+.auctionCharacterHero { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.auctionCharacterProfile .auctionCharacterHero .auctionAvatar { width: 104px; height: 104px; flex: 0 0 104px; border: 3px solid #d1a974; box-shadow: 0 4px 18px #0008; }
+.auctionCharacterIdentity { display: grid; gap: 5px; min-width: 0; }
+.auctionCharacterIdentity h4 { margin: 0; overflow-wrap: anywhere; font: 700 clamp(25px, 5vw, 36px) Georgia, serif; color: #fff0de; }
+.auctionCharacterKicker { color: #ddb887; font-size: 11px; font-weight: 800; letter-spacing: .14em; }
+.auctionProfileBalance { color: #f3d7a5; font-size: 15px; }
+.auctionCharacterActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.auctionCharacterActions button { min-height: 44px; }
+.auctionCharacterActions .auctionDialogue { flex: 1 1 100%; }
+.auctionCharacterBio { padding: 14px; border-left: 3px solid #d2a875; border-radius: 4px 10px 10px 4px; background: #180f16a8; }
+.auctionCharacterBio p { margin: 8px 0 0; line-height: 1.6; color: #f3e4df; }
+.auctionCharacterStats { margin: 0; color: #e5cebe; line-height: 1.5; }
+@media (max-width: 430px) { .auctionCharacterHero { gap: 12px; } .auctionCharacterProfile .auctionCharacterHero .auctionAvatar { width: 78px; height: 78px; flex-basis: 78px; } .auctionCharacterActions button { flex: 1 1 auto; } }
+.auctionRosterControls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.auctionRosterControls label { display: grid; gap: 5px; min-width: 0; }
+.auctionRosterFolder { padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.auctionRosterFolder summary { cursor: pointer; padding: 4px; font-weight: 700; }
+.auctionRosterFolder[open] .blindAuctionResults { margin: 10px 0; }
+.auctionProfileDetail .auctionAvatar { width: 88px; height: 88px; }
+.auctionRecovery { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--panel-bg); }
+.auctionRecovery p { flex: 1 1 100%; margin: 0; }
+.auctionRelationships { display: grid; gap: 8px; }
+.auctionRelationship { display: grid; gap: 3px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+.auctionRelationship span { color: var(--muted); font-size: 13px; }
+.auctionPersonality { display: grid; gap: 8px; }
+.auctionPersonalityEditor { padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+.auctionPersonalityEditor summary { cursor: pointer; font-weight: 700; margin-bottom: 8px; }
+.auctionPersonalityEditor > button { margin: 8px 8px 0 0; }
+.auctionPersonalityOptions { display: grid; gap: 8px; }
+.auctionPersonalityOptions label { display: flex; align-items: center; gap: 8px; }
+.auctionDialogue { margin: 6px 0; padding: 8px 10px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--panel-bg); font-size: 14px; }
+.auctionFormatNotice { font-weight: 700; }
+.auctionMysteryImage { filter: blur(14px); transform: scale(1.05); cursor: default !important; }
+.auctionOwnedPhoto { outline: 3px solid var(--auction-owner-color); outline-offset: -3px; }
+.auctionOwnerBadge { display: inline-block; width: fit-content; max-width: 100%; padding: 3px 8px; border-radius: 6px; background: var(--auction-owner-color); color: #101114; font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
+.auctionSlideshowPhoto img { height: min(65dvh, 720px); }
+.auctionTradeInbox, .auctionTradeOffer, .auctionTradeCompose, .auctionTradePicker { display: grid; gap: 10px; min-width: 0; }
+.auctionTradeOffer, .auctionTradeCompose, .auctionTradePicker { padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.auctionTradeCompose summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
+.auctionTradePickers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.auctionTradePickGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.auctionTradePick { display: grid; gap: 4px; min-width: 0; padding: 4px; border: 2px solid transparent; border-radius: 8px; overflow: hidden; }
+.auctionTradePick[aria-pressed="true"] { border-color: #8da5ff; }
+.auctionTradePick img { width: 100%; height: 80px; object-fit: contain; background: #111; }
+.auctionTradePick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.auctionTradeNav { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+.auctionTradeNav button { min-width: 0; padding-inline: 6px; }
+.auctionTradeToggle { display: flex; gap: 8px; align-items: flex-start; }
+@media (max-width: 430px) { .auctionTradePickers { grid-template-columns: 1fr; } .auctionTradePickGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .tournamentPicker { display: grid; grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 8px; }
 .tournamentPicker button { min-width: 0; padding: 5px; border: 2px solid var(--border); border-radius: 9px; background: var(--panel-bg); color: var(--text); cursor: pointer; }
 .tournamentPicker button.isSelected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .tournamentPicker img { display: block; width: 100%; height: 110px; object-fit: contain; background: #111; }
 .tournamentPicker span { display: block; overflow: hidden; padding: 5px 2px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .tournamentMatchup .thisOrThatCard > img { height: min(48dvh, 480px); width: 100%; object-fit: contain; }
+.gameSaveError { margin: 0; padding: 11px; border: 1px solid #e3a451; border-radius: 9px; background: #50371e; color: #ffe6b5; line-height: 1.4; }
+.tournamentBracket { max-width: 100%; max-height: min(62dvh, 700px); overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); overscroll-behavior: contain; }
+.tournamentBracketColumns { display: flex; align-items: stretch; gap: 30px; width: max-content; min-width: 100%; }
+.tournamentBracketRound { display: flex; flex-direction: column; width: 172px; flex: 0 0 172px; }
+.tournamentBracketRound h4 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 8px; border-radius: 6px; background: var(--panel-bg); color: var(--text); text-align: center; }
+.tournamentBracketMatches { display: flex; flex: 1; flex-direction: column; justify-content: space-around; gap: 10px; padding: 6px 0; }
+.tournamentBracketMatch { position: relative; display: grid; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.tournamentBracketRound:not(:last-child) .tournamentBracketMatch::after { position: absolute; top: 50%; left: 100%; width: 30px; border-top: 2px solid var(--border); content: ""; pointer-events: none; }
+.tournamentBracketMatch button { min-width: 0; min-height: 40px; padding: 7px; overflow: hidden; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 12px; text-align: left; text-overflow: ellipsis; }
+.tournamentBracketMatch button + button { border-top: 1px solid var(--border); }
+.tournamentBracketMatch button:disabled { opacity: .65; }
+.tournamentBracketMatch button.isWinner { color: #76e8b6; font-weight: 800; }
+.tournamentBracketThird { position: sticky; left: 0; width: fit-content; max-width: 100%; color: var(--muted); font-size: 13px; }
 .tournamentSeed { display: flex; align-items: center; gap: 9px; line-height: 1.4; }
 .tournamentSeed input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
 .tournamentTabs { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -7332,4 +7480,77 @@ body.interface-streamlined .streamlinedSceneActions {
     body.interface-streamlined .streamlinedChoiceRow select { grid-column: auto; }
     body.interface-streamlined .streamlinedSceneActions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     body.interface-streamlined .streamlinedSceneActions button { min-height: 34px; font-size: 11px; }
+}
+/* Auction additions: compact controls and full-size photos on phones. */
+.auctionExtraPage, .auctionDinner { display: grid; gap: .8rem; width: min(100%, 760px); margin: 0 auto; padding: 1rem; }
+.auctionExtraPage label, .auctionDinner label { display: grid; gap: .35rem; }
+.auctionExtraPage input, .auctionDinner select { width: min(100%, 16rem); }
+.auctionSeasonCard, .auctionWishlist, .auctionEventReaction { padding: .85rem; border: 1px solid var(--border, #65515b); border-radius: .8rem; background: rgba(110, 70, 85, .14); }
+.auctionSeasonCard summary, .auctionRevealBids summary { cursor: pointer; padding: .5rem; }
+.auctionEventReaction { display: flex; align-items: center; gap: .75rem; justify-content: space-between; }
+.auctionEventReaction p { margin: 0; }
+.auctionWishlistGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.auctionWishlistGrid img { width: 100%; max-height: 12rem; object-fit: contain; }
+.auctionHistoryOverlay { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1rem; background: rgba(0, 0, 0, .76); }
+.auctionHistoryDialog { width: min(100%, 40rem); max-height: 85vh; max-height: 85dvh; overflow: auto; padding: 1rem; border: 1px solid #a9866d; border-radius: 1rem; background: #242129; color: #fff; }
+.auctionDinner { border-radius: 1rem; background: linear-gradient(145deg, #211a26, #462a36); color: #fff; }
+.auctionDinnerTable { display: grid; justify-items: center; text-align: center; gap: .65rem; padding: 1.2rem; border: 1px solid #9d705c; border-radius: .9rem; background: radial-gradient(ellipse at bottom, #79513e 0%, #30212a 65%); }
+.auctionDinnerTable img { max-width: min(45vw, 14rem); max-height: 12rem; object-fit: contain; border: 4px solid #caa571; border-radius: .6rem; }
+.auctionDinnerFrame { border: .6rem ridge #b88b4c; border-radius: .3rem; padding: .35rem; background: #21191a; }
+.auctionDinnerFrame img { display: block; width: 100%; max-height: 58vh; max-height: 58dvh; object-fit: contain; }
+.auctionProfileReactions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.auctionProfileReactions button[aria-pressed="true"] { outline: 2px solid #edb69d; background: #713f54; }
+@media (max-width: 560px) { .auctionExtraPage, .auctionDinner { padding: .7rem; } .auctionEventReaction { align-items: flex-start; flex-direction: column; } .auctionDinnerFrame img { max-height: 48dvh; } }
+.auctionSliderPanel, .auctionInterestEditor, .auctionDinnerConversation { margin-block: .8rem; padding: .85rem; border: 1px solid rgba(201, 160, 136, .45); border-radius: .8rem; background: rgba(100, 57, 71, .15); }
+.auctionSliderPanel > summary, .auctionInterestEditor > summary, .auctionPhotoFit > summary { cursor: pointer; padding: .4rem 0; }
+.auctionSlider { display: grid; grid-template-columns: 1fr auto; gap: .35rem .75rem; padding: .6rem 0; }
+.auctionSlider input, .auctionSlider small { grid-column: 1 / -1; width: 100%; }
+.auctionInterestRow { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; padding: .6rem 0; border-bottom: 1px solid rgba(255,255,255,.1); }
+.auctionInterestRow strong { flex: 1 1 100%; }
+.auctionInterestRow label { display: inline-flex; align-items: center; gap: .3rem; }
+.auctionInterestRow input[type="number"] { width: 4.5rem; }
+.auctionDinnerConversation { display: flex; flex-wrap: wrap; gap: .5rem; }
+.auctionDinnerConversation strong, .auctionDinnerConversation p { flex: 1 1 100%; }
+.auctionDinnerConversation button { flex: 1 1 12rem; }
+.auctionDinner .auctionDinnerConversationToggle { display: flex; align-items: center; gap: .5rem; }
+.auctionDinner .auctionDinnerConversationToggle input { width: auto; }
+.auctionCompareGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; align-items: start; }
+.auctionCompareCard, .auctionScrapbookCard, .auctionMilestones, .auctionDinnerSelection { min-width: 0; padding: .9rem; border: 1px solid rgba(201,160,136,.45); border-radius: .8rem; background: rgba(100,57,71,.15); }
+.auctionCompareCard label, .auctionScrapbookCard label { display: grid; gap: .35rem; }
+.auctionCompareCard img { width: 100%; max-height: 12rem; object-fit: contain; }
+.auctionScrapbookCard { display: grid; gap: .5rem; }
+.auctionScrapbookCard textarea { width: 100%; resize: vertical; }
+.auctionScrapbookCard img { width: 100%; max-height: 20rem; object-fit: contain; }
+.auctionDinnerSelection { display: grid; gap: .7rem; }
+.auctionDinnerChoiceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.auctionDinnerChoiceGrid button { min-width: 0; display: grid; gap: .4rem; }
+.auctionDinnerChoiceGrid img { width: 100%; height: 10rem; object-fit: contain; }
+.auctionMilestoneNotice, .auctionDinnerCallback { padding: .7rem; border-radius: .6rem; background: rgba(143, 91, 79, .2); }
+@media (max-width: 560px) { .auctionCompareGrid { grid-template-columns: 1fr; } .auctionDinnerChoiceGrid img { height: 7rem; } }
+.auctionManualReset { margin-top: 1rem; padding: .8rem; border: 1px solid rgba(220, 155, 120, .55); border-radius: .7rem; }
+.auctionManualReset summary { cursor: pointer; font-weight: 600; }
+.tournamentBracketColumns { align-items: flex-start; }
+.tournamentBracketRound { width: 205px; flex-basis: 205px; }
+.tournamentBracketMatches { display: grid; flex: none; gap: 0; padding: 0; }
+.tournamentBracketMatch { align-self: center; min-width: 0; }
+.tournamentBracketMatch button { display: flex; align-items: center; gap: 6px; height: 46px; padding: 3px 5px; }
+.tournamentBracketMatch button img { width: 38px; height: 38px; flex: 0 0 38px; object-fit: contain; background: #17151b; border-radius: 4px; }
+.tournamentBracketMatch button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tournamentBracketRound:not(:last-child) .tournamentBracketMatch::before { position: absolute; left: calc(100% + 15px); height: var(--bracket-link-span); border-right: 2px solid var(--border); content: ""; pointer-events: none; }
+.tournamentBracketRound:not(:last-child) .tournamentBracketMatch:nth-child(odd)::before { top: 50%; }
+.tournamentBracketRound:not(:last-child) .tournamentBracketMatch:nth-child(even)::before { bottom: 50%; }
+.relationshipNetwork { display: block; width: 100%; height: auto; max-height: 25rem; overflow: visible; background: rgba(56, 38, 51, .4); border-radius: .8rem; }
+.relationshipNetwork text { fill: #fff; font-size: 14px; }
+.personalityGameAnswers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.personalityGameChoices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+.personalityGameChoices button { min-width: 0; display: grid; gap: .4rem; align-content: center; }
+.personalityGameAnswers button, .personalityGameChoices button, .personalityGamesPage > button { min-height: 44px; padding: .65rem .8rem; border-radius: .6rem; }
+.personalityGameChoices img { display: block; width: 100%; height: min(45vh, 22rem); object-fit: contain; }
+@media (max-width: 560px) { .personalityGameChoices img { height: 33vh; } .relationshipNetwork text { font-size: 13px; } }
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+  body.personalityGameOpen #input-bar, body.personalityGameOpen .searchWrap { display: none !important; }
+  .personalityGamesPage.is-playing { gap: .4rem; padding-top: .4rem; }
+  .personalityGamesPage.is-playing > h3 { display: none; }
+  .personalityGamesPage.is-playing > p { margin: .15rem 0; }
+  .personalityGamesPage.is-playing .blindAuctionResult img { height: min(35dvh, 260px); }
 }
