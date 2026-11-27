@@ -76,7 +76,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "146";
+const APP_BUILD_VERSION = "147";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
@@ -3425,7 +3425,8 @@ function getAuctionConsignments(serverId = getActiveServer()?.id) { return (Arra
 function getValidAuctionConsignments(serverId = getActiveServer()?.id) { const owned = (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId === serverId); const seen = new Set(); return getAuctionConsignments(serverId).filter((entry) => { const key = auctionPhotoKey(entry.ref); if (seen.has(key) || !owned.some((item) => item.ownerId === entry.sellerId && auctionPhotoKey(item.ref) === key)) return false; seen.add(key); return true; }); }
 function getAuctionHistory() { return (state.structure.settings.auctionHistory || []).filter((item) => item.serverId === getActiveServer()?.id); }
 function getAuctionTrades() { return (state.structure.settings.auctionTrades || []).filter((item) => item.serverId === getActiveServer()?.id); }
-function getAuctionOwnerName(id) { return id === "john" ? "John" : getAuctionBidders().find((item) => item.id === id)?.name || "Former bidder"; }
+function getArchivedAuctionBidders(serverId = getActiveServer()?.id) { return (Array.isArray(state.structure.settings.auctionArchivedBidders) ? state.structure.settings.auctionArchivedBidders : []).filter((entry) => entry.serverId === serverId && entry.bidder?.id); }
+function getAuctionOwnerName(id) { return id === "john" ? "John" : getAuctionBidders().find((item) => item.id === id)?.name || getArchivedAuctionBidders().find((entry) => entry.bidder.id === id)?.bidder.name || "Former bidder"; }
 
 let auctionRelationshipCache = { history: null, trades: null, serverId: null, records: new Map() };
 function getAuctionRelationshipRecords() {
@@ -3801,7 +3802,10 @@ async function ensureAuctionPhotoRefsLoaded(refs) {
         if (!ref?.messageId || seen.has(ref.messageId) || findAttachment(ref)) continue;
         seen.add(ref.messageId);
         try {
-            const location = await getMessageLocation(ref.messageId, ref.channelId);
+            let location = null;
+            if (typeof getMessageLocation === "function") { try { location = await getMessageLocation(ref.messageId, ref.channelId); } catch (error) { console.warn("Auction photo location lookup failed; checking the source channel:", error); } }
+            if ((!location?.message || !getChannelById(location.channelId)) && ref.channelId && typeof getChannelMessage === "function") { const message = await getChannelMessage(ref.channelId, ref.messageId); if (message) location = { channelId: ref.channelId, message }; }
+            if (!location?.message && ref.channelId && typeof getChannelMessage !== "function" && typeof getChannelMessages === "function") { const message = (await getChannelMessages(ref.channelId)).find((item) => item?.id === ref.messageId); if (message) location = { channelId: ref.channelId, message }; }
             if (location?.message && getChannelById(location.channelId)) state.relocatedMessages.set(ref.messageId, { channelId: location.channelId, message: normalizeMessages([location.message])[0] });
         } catch (error) { console.warn("Could not load an auction photo:", error); }
     }
@@ -3992,7 +3996,8 @@ function addAuctionOwnerBadge(element, ref) {
 }
 
 let auctionChangesQueue = Promise.resolve();
-function saveAuctionChanges(changes) {
+function saveAuctionChanges(changes, options = {}) {
+    if (state.auctionNuclearResetBusy && !options.duringNuclearReset) return Promise.reject(new Error("The auction reset is in progress. Please wait."));
     const write = auctionChangesQueue.catch(() => {}).then(async () => {
         const patch = typeof changes === "function" ? changes() : changes;
         await saveStructure({ ...state.structure, settings: { ...state.structure.settings, ...patch } });
@@ -4000,12 +4005,60 @@ function saveAuctionChanges(changes) {
     });
     auctionChangesQueue = write; return write;
 }
+function buildNuclearAuctionResetPatch(settings) {
+    const patch = {};
+    Object.entries(settings || {}).forEach(([key, value]) => { if (!key.startsWith("auction") || key === "auctionFreshStartVersion") return; patch[key] = Array.isArray(value) ? [] : value && typeof value === "object" ? {} : typeof value === "boolean" ? false : typeof value === "number" ? 0 : typeof value === "string" ? "" : null; });
+    Object.assign(patch, { auctionBidders: [], auctionArchivedBidders: [], auctionOwnership: [], auctionHistory: [], auctionTrades: [], auctionConsignments: [], auctionOwnershipEvents: [], auctionDinnerHistory: [], auctionExhibitionHistory: [], auctionMilestones: [], auctionSeasonCompletions: [], auctionBalances: {}, auctionSessions: {}, auctionRelationshipOverrides: {}, auctionScrapbookEdits: {}, auctionSeasonSizes: {}, auctionEconomy: {}, auctionPersonalitySettings: {}, auctionConsignment: {}, auctionRosterTopCount: 25, allowAuctionBotTrades: false, showAuctionOwners: true, auctionFreshStartVersion: 127 });
+    return patch;
+}
+async function nuclearResetAuctionData() {
+    if (state.auctionNuclearResetBusy || state.auctionResetBusy || state.blindAuction?.saving || state.auctionTradeBusy || state.auctionPersonalityBusy || state.auctionPersonalityCreationBusy || state.auctionScrapbookSaving || state.auctionDinner?.finishing || state.auctionDinner?.conversation?.saving || state.auctionDinner?.photoChoice?.saving) throw new Error("Wait for the current auction operation to finish before resetting.");
+    state.auctionNuclearResetBusy = true;
+    try {
+        await saveAuctionChanges(() => buildNuclearAuctionResetPatch(state.structure.settings), { duringNuclearReset: true });
+        try { stopAuctionSlideshow(); stopAuctionDinner(); stopPunishmentChallenge(); } catch (error) { console.warn("Auction data was reset, but playback could not be stopped cleanly:", error); }
+        Object.assign(state.blindAuction, { screen: "setup", serverId: null, sequence: [], results: [], index: 0, saving: false, pendingAuction: null, consignmentLots: {}, slideshow: null });
+        state.auctionExhibition = null; state.auctionDinner = null; state.punishmentChallenge = null; state.personalityGame = null; state.auctionPersonalityDraft = null; state.auctionTradeDraft = null; state.auctionPersonalityNotice = "All auction data was reset across every server.";
+        return true;
+    } finally { state.auctionNuclearResetBusy = false; }
+}
 function auctionSaveErrorMessage(error) {
     const name = error?.name || "UnknownError";
     if (name === "QuotaExceededError") return "The device's local storage is full. This change was not saved. Export a backup if possible and free device space before retrying. Do not clear website data.";
     if (name === "InvalidStateError" || name === "TransactionInactiveError" || name === "AbortError") return `The local database could not finish the save (${name}). Your previous data was not replaced. Close other copies of the app, reopen this one, and retry; do not clear website data.`;
     if (name === "DataCloneError") return "The local database rejected part of the saved data (DataCloneError). Your previous data was not replaced. Please share this error before attempting any reset.";
     return `Could not save locally (${name}${error?.message ? `: ${String(error.message).slice(0, 180)}` : ""}). Your previous saved data was not intentionally changed. Please share this message; do not clear website data.`;
+}
+async function archiveAuctionPersonality(serverId, bidderId, disposition, expectedPhotoKeys) {
+    if (!["john", "release"].includes(disposition)) throw new Error("Choose what should happen to the owned photos.");
+    await saveAuctionChanges(() => {
+        if (getSavedAuctionSession(serverId) || (state.blindAuction?.serverId === serverId && ["play", "reveal"].includes(state.blindAuction.screen))) throw new Error("Finish or discard the unfinished auction in this server first.");
+        const settings = state.structure.settings, bidders = settings.auctionBidders || [], bidder = bidders.find((item) => item.serverId === serverId && item.id === bidderId);
+        if (!bidder) throw new Error("This personality is no longer available.");
+        const owned = (settings.auctionOwnership || []).filter((item) => item.serverId === serverId && item.ownerId === bidderId), keys = owned.map((item) => auctionPhotoKey(item.ref)).sort();
+        if (JSON.stringify(keys) !== JSON.stringify([...expectedPhotoKeys].sort())) throw new Error("The owned photos changed. Reopen the delete control and review the new count.");
+        const keySet = new Set(keys), at = new Date().toISOString();
+        const ownership = (settings.auctionOwnership || []).flatMap((item) => item.serverId !== serverId || item.ownerId !== bidderId ? [item] : disposition === "john" ? [{ ...item, ownerId: "john", acquiredVia: "admin", previousOwnerId: bidderId }] : []);
+        const events = owned.map((item) => ({ serverId, ref: structuredClone(item.ref), type: disposition === "john" ? "transfer" : "release", fromOwnerId: bidderId, ...(disposition === "john" ? { toOwnerId: "john" } : {}), createdAt: at }));
+        const trades = (settings.auctionTrades || []).map((trade) => trade.serverId === serverId && trade.status === "pending" && (trade.fromOwnerId === bidderId || trade.toOwnerId === bidderId || [trade.giveRef, trade.wantRef].some((ref) => keySet.has(auctionPhotoKey(ref)))) ? { ...trade, status: "stale", resolvedAt: at, reason: "personality deleted" } : trade);
+        const archived = Array.isArray(settings.auctionArchivedBidders) ? settings.auctionArchivedBidders : [];
+        return { auctionBidders: bidders.filter((item) => !(item.serverId === serverId && item.id === bidderId)), auctionArchivedBidders: [...archived, { serverId, bidder: structuredClone(bidder), deletedAt: at, disposition }], auctionOwnership: ownership, auctionOwnershipEvents: [...(settings.auctionOwnershipEvents || []), ...events], auctionTrades: trades, auctionConsignments: (settings.auctionConsignments || []).filter((item) => item.serverId !== serverId || (item.sellerId !== bidderId && !keySet.has(auctionPhotoKey(item.ref)))) };
+    });
+}
+async function restoreArchivedAuctionPersonality(serverId, bidderId) {
+    await saveAuctionChanges(() => {
+        if (getSavedAuctionSession(serverId)) throw new Error("Finish or discard the unfinished auction in this server first.");
+        const settings = state.structure.settings, archived = Array.isArray(settings.auctionArchivedBidders) ? settings.auctionArchivedBidders : [], entry = archived.find((item) => item.serverId === serverId && item.bidder?.id === bidderId);
+        if (!entry || (settings.auctionBidders || []).some((person) => person.serverId === serverId && person.id === bidderId)) throw new Error("This personality cannot be restored because it is missing or already active.");
+        return { auctionBidders: [...(settings.auctionBidders || []), structuredClone(entry.bidder)], auctionArchivedBidders: archived.filter((item) => item !== entry) };
+    });
+}
+function renderAuctionPersonalityDeleteControls(bidder) {
+    const serverId = bidder.serverId, keySet = getAuctionOwnership().filter((item) => item.ownerId === bidder.id).map((item) => auctionPhotoKey(item.ref)), panel = document.createElement("details"), summary = document.createElement("summary");
+    summary.textContent = `Delete ${bidder.name}…`; panel.className = "auctionDeletePersonality"; panel.appendChild(summary);
+    const description = document.createElement("p"); description.textContent = `${keySet.length} auction-owned photos. The personality will be archived for recovery. Original photos and completed history stay in place; affected pending trades expire. A running auction must be finished or discarded first.`;
+    const label = document.createElement("label"); label.textContent = "What should happen to her auction-owned photos?"; const choice = document.createElement("select"); [["john", "Transfer to John"], ["release", "Release for re-auction"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; label.appendChild(choice); choice.appendChild(option); });
+    const button = document.createElement("button"); button.type = "button"; button.textContent = "Delete personality…"; button.addEventListener("click", async () => { if (state.auctionPersonalityCreationBusy || state.auctionPersonalityBusy || state.auctionResetBusy) return; const action = choice.value === "john" ? "transfer her auction-owned photos to John" : "release her auction-owned photos for re-auction"; if (!confirm(`Delete ${bidder.name} and ${action}? The profile will be archived for recovery; originals and completed history remain. Affected pending trades will expire.`)) return; state.auctionPersonalityCreationBusy = true; button.disabled = true; let saved = false; try { await archiveAuctionPersonality(serverId, bidder.id, choice.value, keySet); saved = true; state.auctionPersonalityNotice = `${bidder.name} was deleted and archived. Original photos remain in their source channels.`; } catch (error) { console.error("Could not delete personality:", error); alert(error?.name === "Error" && error.message ? error.message : auctionSaveErrorMessage(error)); } finally { state.auctionPersonalityCreationBusy = false; button.disabled = false; } if (saved) { try { renderChannels(); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) await openView("auctionSettings", "auction-settings"); else if (state.activeView.type === "auctionSettings") renderMessages(); } catch (error) { console.error("Personality was deleted, but the page could not refresh:", error); alert("The personality was deleted and archived. Reopen Auction settings to refresh the display."); } } }); panel.append(description, label, button); return panel;
 }
 
 function renderAuctionOwnerViews() {
@@ -4050,7 +4103,7 @@ async function shuffleAuctionBidderPortrait(id) {
 
 function auctionProfilePhoto(ref, label) {
     const attachment = ref && findAttachment(ref);
-    if (!attachment) { const placeholder = document.createElement("span"); placeholder.className = "auctionAvatarPlaceholder"; placeholder.textContent = "◈"; return placeholder; }
+    if (!attachment) { const placeholder = document.createElement("span"); placeholder.className = "auctionAvatarPlaceholder"; placeholder.textContent = "◈"; placeholder.setAttribute("aria-label", `${label} photo unavailable`); if (ref?.messageId && ref?.attachmentId) void ensureAuctionPhotoRefsLoaded([ref]).then(() => { if (!placeholder.isConnected) return; const recovered = findAttachment(ref); if (!recovered) return; const image = document.createElement("img"); image.className = "auctionAvatar"; image.alt = `${label} portrait`; setRenderedImageSource(image, recovered); placeholder.replaceWith(image); }).catch((error) => console.warn("Could not restore personality portrait:", error)); return placeholder; }
     const image = document.createElement("img"); image.className = "auctionAvatar"; image.alt = `${label} portrait`; setRenderedImageSource(image, attachment); return image;
 }
 
@@ -4090,7 +4143,8 @@ function renderAuctionPersonalityCreation() {
         const save = document.createElement("button"); save.type = "button"; save.className = "adventurePrimary"; save.textContent = "Save these personalities"; save.addEventListener("click", async () => { if (state.auctionPersonalityCreationBusy || state.auctionPersonalityDraft !== draft || getActiveServer()?.id !== serverId) return; const names = draft.people.map((bidder) => String(bidder.name || "").trim()); if (names.some((name) => !name || name.length > 40)) { status.textContent = "Give each personality a name of 1–40 characters."; return; } state.auctionPersonalityCreationBusy = true; save.disabled = true; status.textContent = "Checking portraits and saving locally…"; let saved = false; try { await ensureAuctionPhotoRefsLoaded(draft.people.map((person) => person.avatarRef)); if (state.auctionPersonalityDraft !== draft || getActiveServer()?.id !== serverId || state.activeView.type !== "auctionSettings") return; for (const person of draft.people) { const attachment = findAttachment(person.avatarRef); if (!attachment || !shouldShowAttachment(attachment) || getChannelServer(person.avatarRef.channelId)?.id !== serverId || getChannelById(person.avatarRef.channelId)?.hidden || getChannelCategory(person.avatarRef.channelId)?.hidden) throw new Error("A preview portrait is no longer available or visible. Reroll that personality before saving."); } await saveAuctionChanges(() => { const existing = (state.structure.settings.auctionBidders || []).filter((person) => person.serverId === serverId), used = new Set(existing.map((person) => auctionPhotoKey(person.avatarRef))); for (const person of draft.people) { const key = auctionPhotoKey(person.avatarRef); if (used.has(key)) throw new Error("A portrait is already in use. Reroll that personality before saving."); used.add(key); } const created = draft.people.map((person, i) => ({ ...structuredClone(person), name: names[i], personality: { ...structuredClone(person.personality), bioVariant: existing.length + i } })); return { auctionBidders: [...(state.structure.settings.auctionBidders || []), ...created] }; }); saved = true; if (state.auctionPersonalityDraft === draft) state.auctionPersonalityDraft = null; state.auctionPersonalityNotice = `${draft.people.length} ${draft.people.length === 1 ? "personality" : "personalities"} saved locally.`; } catch (error) { console.error("Personality save failed:", error); status.textContent = error?.name === "Error" && /portrait/i.test(error.message) ? error.message : auctionSaveErrorMessage(error); } finally { state.auctionPersonalityCreationBusy = false; save.disabled = false; } if (saved) { try { renderChannels(); if (getActiveServer()?.id === serverId && state.activeView.type === "auctionSettings") renderMessages(); } catch (error) { console.error("Personalities saved, but the page could not refresh:", error); status.textContent = "Saved locally. Reopen Auction settings to refresh the list."; } } });
         const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel preview"; cancel.addEventListener("click", () => { if (state.auctionPersonalityCreationBusy) return; state.auctionPersonalityDraft = null; renderMessages(); }); preview.append(save, cancel); section.appendChild(preview);
     }
-    if (people.length) { const list = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = `Existing personalities (${people.length})`; list.appendChild(summary); people.forEach((bidder) => { const row = document.createElement("div"); row.className = "auctionProfile"; if (bidder.avatarRef) row.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name)); const name = document.createElement("span"); name.textContent = `${bidder.name} · ${bidder.strategy?.name || "Balanced"}`; const profile = document.createElement("button"); profile.type = "button"; profile.textContent = "Open profile"; profile.addEventListener("click", async () => { await openView("auctionOwner", bidder.id); state.auctionOwnerTab = "profile"; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(bidder.id, "profile")); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) renderMessages(); }); row.append(name, profile); list.appendChild(row); }); section.appendChild(list); }
+    if (people.length) { const list = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = `Existing personalities (${people.length})`; list.appendChild(summary); people.forEach((bidder) => { const row = document.createElement("div"); row.className = "auctionProfile"; if (bidder.avatarRef) row.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name)); const name = document.createElement("span"); name.textContent = `${bidder.name} · ${bidder.strategy?.name || "Balanced"}`; const profile = document.createElement("button"); profile.type = "button"; profile.textContent = "Open profile"; profile.addEventListener("click", async () => { await openView("auctionOwner", bidder.id); state.auctionOwnerTab = "profile"; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(bidder.id, "profile")); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) renderMessages(); }); row.append(name, profile); list.append(row, renderAuctionPersonalityDeleteControls(bidder)); }); section.appendChild(list); }
+    const archived = getArchivedAuctionBidders(serverId); if (archived.length) { const box = document.createElement("details"), summary = document.createElement("summary"), help = document.createElement("p"); summary.textContent = `Recently deleted personalities (${archived.length})`; help.textContent = "Restore brings back the profile and saved balance. Photos that were transferred or released are not automatically moved back; expired trades stay expired."; box.append(summary, help); archived.forEach((entry) => { const row = document.createElement("div"), text = document.createElement("span"), restore = document.createElement("button"); row.className = "auctionProfile"; text.textContent = entry.bidder.name || "Former bidder"; restore.type = "button"; restore.textContent = `Restore ${entry.bidder.name}`; restore.addEventListener("click", async () => { if (state.auctionPersonalityCreationBusy) return; state.auctionPersonalityCreationBusy = true; restore.disabled = true; try { await restoreArchivedAuctionPersonality(serverId, entry.bidder.id); state.auctionPersonalityNotice = `${entry.bidder.name} was restored. Photos remain where they were moved.`; renderChannels(); if (state.activeView.type === "auctionSettings") renderMessages(); } catch (error) { console.error(error); alert(error?.name === "Error" && error.message ? error.message : auctionSaveErrorMessage(error)); } finally { state.auctionPersonalityCreationBusy = false; restore.disabled = false; } }); row.append(text, restore); box.appendChild(row); }); section.appendChild(box); }
     return section;
 }
 
@@ -4278,7 +4332,7 @@ async function samplePersonalityGamePhotos(server, perChannel = 16, allowedChann
     const output = [];
     for (const channel of allChannels(server).filter((item) => (!allowedChannelIds || allowedChannelIds.has(item.id)) && !item.hidden && !getChannelCategory(item.id)?.hidden)) {
         const sample = []; let seen = 0;
-        const inspect = (message) => { if (!message?.id) return; (message.attachments || []).forEach((attachment) => { if (!attachment?.id || !attachment.type?.startsWith("image/") || !shouldShowAttachment(attachment)) return; seen += 1; const candidate = { ref: { channelId: channel.id, messageId: message.id, attachmentId: attachment.id }, message: { tags: message.tags || [], reactions: message.reactions || [] } }; if (sample.length < perChannel) sample.push(candidate); else { const index = Math.floor(Math.random() * seen); if (index < perChannel) sample[index] = candidate; } }); };
+        const inspect = (message) => { if (!message?.id) return; (message.attachments || []).forEach((attachment) => { const type = attachment?.type || attachment?.blob?.type || (String(attachment?.dataUrl || "").startsWith("data:image/") ? "image/legacy" : ""); if (!attachment?.id || !type.startsWith("image/") || !shouldShowAttachment(attachment)) return; seen += 1; const candidate = { ref: { channelId: channel.id, messageId: message.id, attachmentId: attachment.id }, message: { tags: message.tags || [], reactions: message.reactions || [] } }; if (sample.length < perChannel) sample.push(candidate); else { const index = Math.floor(Math.random() * seen); if (index < perChannel) sample[index] = candidate; } }); };
         try {
             if (db.objectStoreNames.contains("messageItems")) await new Promise((resolve, reject) => { const tx = db.transaction("messageItems", "readonly"), store = tx.objectStore("messageItems"), indexed = store.indexNames.contains("channel"), request = indexed ? store.index("channel").openCursor(IDBKeyRange.only(channel.id)) : store.openCursor(); request.onsuccess = () => { const cursor = request.result; if (!cursor) { resolve(); return; } if (indexed || cursor.value.channel === channel.id) inspect(cursor.value.message); cursor.continue(); }; request.onerror = () => reject(request.error); tx.onabort = () => reject(tx.error || new Error("Could not read local photos")); });
             else (await getLegacyChannelMessages(channel.id)).forEach(inspect);
@@ -4937,7 +4991,7 @@ function renderAuctionOwnerChannel() {
         const wins = history.filter((round) => round.ownerId === ownerId);
         const profile = document.createElement("section"); profile.className = "auctionProfileDetail auctionCharacterProfile";
         const hero = document.createElement("header"); hero.className = "auctionCharacterHero";
-        if (bidder?.avatarRef) { const portrait = document.createElement("button"); portrait.type = "button"; portrait.className = "auctionProfilePortraitButton"; portrait.setAttribute("aria-label", `Expand ${bidder.name}'s profile photo`); portrait.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name)); portrait.disabled = !findAttachment(bidder.avatarRef); portrait.addEventListener("click", () => { const attachment = findAttachment(bidder.avatarRef); if (attachment) openImageViewer(attachment, `${bidder.name} profile photo`); }); hero.appendChild(portrait); }
+        if (bidder?.avatarRef) { const portrait = document.createElement("button"); portrait.type = "button"; portrait.className = "auctionProfilePortraitButton"; portrait.setAttribute("aria-label", `Expand ${bidder.name}'s profile photo`); portrait.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name)); portrait.addEventListener("click", async () => { await ensureAuctionPhotoRefsLoaded([bidder.avatarRef]); const attachment = findAttachment(bidder.avatarRef); if (attachment) openImageViewer(attachment, `${bidder.name} profile photo`); else alert("The original portrait could not be located. It has not been deleted or replaced by this app update."); }); hero.appendChild(portrait); }
         const identity = document.createElement("div"); identity.className = "auctionCharacterIdentity";
         const kicker = document.createElement("span"); kicker.className = "auctionCharacterKicker"; kicker.textContent = bidder ? "MEET THE BIDDER" : "YOUR AUCTION PROFILE";
         const heading = document.createElement("h4"); heading.textContent = getAuctionOwnerName(ownerId);
@@ -4950,6 +5004,7 @@ function renderAuctionOwnerChannel() {
         if (bidder) { const play = document.createElement("button"); play.type = "button"; play.textContent = `Play with ${bidder.name}`; play.addEventListener("click", () => { state.personalityGame = { serverId: getActiveServer()?.id, hostId: bidder.id, mode: "quiz", screen: "setup" }; openView("personalityGames", "personality-games"); }); profileActions.appendChild(play); }
         if (bidder && getAuctionPersonalitySettings().dialogue) { const talk = document.createElement("button"); talk.type = "button"; talk.textContent = `Talk to ${bidder.name}`; const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.hidden = true; talk.addEventListener("click", () => { line.textContent = `${bidder.name}: “${randomAuctionDialogue()}”`; line.hidden = false; }); profileActions.append(talk, line); }
         if (profileActions.children.length) profile.appendChild(profileActions);
+        if (bidder) profile.appendChild(renderAuctionPersonalityDeleteControls(bidder));
         if (bidder) { const reactions = document.createElement("section"); reactions.className = "auctionProfileReactions"; const title = document.createElement("strong"); title.textContent = "Your reactions"; reactions.appendChild(title); ["❤️", "😍", "🔥", "😘", "✨", "😊"].forEach((emoji) => { const button = document.createElement("button"); button.type = "button"; button.textContent = emoji; button.setAttribute("aria-label", `React ${emoji}`); button.setAttribute("aria-pressed", String((bidder.profileReactions || []).includes(emoji))); button.addEventListener("click", async () => { const current = getAuctionBidders().find((item) => item.id === ownerId); if (!current) return; const old = Array.isArray(current.profileReactions) ? current.profileReactions : [], next = old.includes(emoji) ? old.filter((item) => item !== emoji) : [...old, emoji]; button.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === ownerId ? { ...item, profileReactions: next } : item) }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); button.disabled = false; alert("Could not save the reaction."); } }); reactions.appendChild(button); }); profile.appendChild(reactions); }
         if (bidder) { const biography = document.createElement("article"); biography.className = "auctionCharacterBio"; const label = document.createElement("span"); label.className = "auctionCharacterKicker"; label.textContent = "A LITTLE ABOUT HER"; const copy = document.createElement("p"); copy.textContent = getAuctionBiography(bidder); biography.append(label, copy); profile.appendChild(biography); }
         const jealousy = getAuctionDinnerJealousy(bidder); if (jealousy) { const note = document.createElement("p"); note.className = "auctionDialogue"; note.textContent = `${bidder.name}: “${jealousy.line}”`; profile.appendChild(note); }
@@ -10598,6 +10653,7 @@ function renderSettingsPage(auctionOnly = false) {
     const resetHelp = document.createElement("p"); resetHelp.textContent = "Nothing resets automatically. The button below releases auction-owned photos, clears auction balances and unfinished auction sessions across all workspaces, and expires pending trades. Original photos, notes, profiles, completed history and scrapbook entries remain. This cannot be undone without a backup."; resetSection.appendChild(resetHelp);
     const resetButton = document.createElement("button"); resetButton.type = "button"; resetButton.textContent = "Reset auctions in all workspaces…";
     resetButton.addEventListener("click", async () => { if (!confirm("Reset auction data in ALL workspaces? This releases all auction ownership, clears balances and unfinished auctions, and expires pending trades. Original photos, profiles and completed history remain. Restore from a backup to undo.")) return; resetButton.disabled = true; try { if (await resetAllAuctionData()) { resetButton.textContent = "Auction data reset"; renderChannels(); } } catch (error) { console.error("Could not reset auctions:", error); alert("The reset could not be saved. Auction data was not changed."); } finally { resetButton.disabled = false; } }); resetSection.appendChild(resetButton);
+    const nuclear = document.createElement("details"), nuclearTitle = document.createElement("summary"), nuclearHelp = document.createElement("p"); nuclear.className = "auctionNuclearReset"; nuclearTitle.textContent = "Testing: complete auction reset"; nuclearHelp.textContent = "Danger: permanently removes ALL auction personalities (including archived ones), balances, ownership, trades, auction and dinner history, relationships, scrapbook edits, seasons, listings and unfinished sessions across EVERY server, and restores auction settings to defaults. Original channel photos, messages, other games and their statistics remain. This cannot be undone without an earlier backup."; const nuclearButton = document.createElement("button"); nuclearButton.type = "button"; nuclearButton.textContent = "Completely reset all auction data…"; nuclearButton.addEventListener("click", async () => { if (!confirm("Permanently reset auction data in EVERY server? This deletes all personalities, balances, auction ownership and auction history. Original channel photos and non-auction data remain. An earlier backup is required to undo this.")) return; if (prompt('To confirm, type RESET AUCTIONS exactly:') !== "RESET AUCTIONS") return; nuclearButton.disabled = true; let completed = false; try { completed = await nuclearResetAuctionData(); } catch (error) { console.error("Complete auction reset failed:", error); alert(error?.name === "Error" && error.message ? error.message : auctionSaveErrorMessage(error)); } finally { nuclearButton.disabled = false; } if (completed) { try { renderChannels(); if (["auctionSettings", "settings"].includes(state.activeView.type)) renderMessages(); else render(); } catch (error) { console.error("Auction reset completed but page refresh failed:", error); alert("Auction data was reset. Reopen Auction settings to refresh the display."); } } }); nuclear.append(nuclearTitle, nuclearHelp, nuclearButton); resetSection.appendChild(nuclear);
     auctionSettings.append(auctionTitle, ownerLabel, economyFields, economyHelp, economySave, displayFields, displaySave, consignmentSection, personalityHeading, director, resetSection); page.appendChild(auctionSettings);
     if (auctionOnly) { els.messages.appendChild(page); return; }
 
@@ -14180,15 +14236,13 @@ async function setAdventureRandomImageSources(adventureId, sceneId) {
 }
 
 function findAttachment(ref) {
-    let message = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId);
-    if (!message) {
-        for (const [channelId, items] of state.messagesByChannel) {
-            message = items.find((item) => item.id === ref.messageId);
-            if (message) { state.relocatedMessages.set(ref.messageId, { channelId, message }); break; }
-        }
-    }
-    if (!message) message = state.relocatedMessages.get(ref.messageId)?.message;
-    return message?.attachments.find((attachment) => attachment.id === ref.attachmentId) || null;
+    if (!ref?.messageId || !ref?.attachmentId) return null;
+    const attachmentIn = (message) => message?.attachments?.find((attachment) => attachment.id === ref.attachmentId);
+    const preferred = (state.messagesByChannel.get(ref.channelId) || []).find((item) => item.id === ref.messageId), local = attachmentIn(preferred);
+    if (local) return local;
+    const relocated = attachmentIn(state.relocatedMessages.get(ref.messageId)?.message); if (relocated) return relocated;
+    for (const [channelId, items] of state.messagesByChannel) { const message = items.find((item) => item.id === ref.messageId && attachmentIn(item)); if (message) { state.relocatedMessages.set(ref.messageId, { channelId, message }); return attachmentIn(message); } }
+    return null;
 }
 
 function renderMessage(message, sourceChannelId = state.activeChannelId) {
