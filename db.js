@@ -101,16 +101,28 @@ async function loadStructure() {
 
 async function saveStructure(data) {
     ensureDB();
-
-    const tx = db.transaction("structure", "readwrite");
-    const store = tx.objectStore("structure");
-
-    store.put({
-        id: STRUCTURE_ID,
-        data
+    // A request error can bubble before tx.error is populated. Waiting for
+    // abort preserves the real cause and confirms that nothing was committed.
+    await new Promise((resolve, reject) => {
+        let tx, requestError = null;
+        const describeFailure = (cause, aborted) => {
+            const failure = new Error(cause?.message || "The local database aborted the structure save without providing a reason.");
+            failure.name = cause?.name || "AbortError";
+            failure.structureTransactionAborted = aborted;
+            return failure;
+        };
+        try {
+            tx = db.transaction("structure", "readwrite");
+            tx.oncomplete = () => resolve();
+            tx.onerror = (event) => { requestError ||= event?.target?.error || tx.error || null; };
+            tx.onabort = () => reject(describeFailure(requestError || tx.error, true));
+            const request = tx.objectStore("structure").put({ id: STRUCTURE_ID, data });
+            request.onerror = () => { requestError ||= request.error || null; };
+        } catch (error) {
+            if (tx) { try { tx.abort(); } catch (_) { /* already inactive */ } }
+            reject(describeFailure(error, false));
+        }
     });
-
-    await transactionDone(tx);
 }
 
 // The original channel-bundle store is deliberately retained during the
@@ -161,6 +173,41 @@ async function getChannelMessages(channelId) {
     return getLegacyChannelMessages(channelId);
 }
 
+// Read a single referenced message without loading every image in its channel.
+// This does not migrate or modify either the current store or the legacy copy.
+async function getChannelMessage(channelId, messageId) {
+    ensureDB();
+    if (db.objectStoreNames.contains("messageItems")) {
+        try {
+            const tx = db.transaction("messageItems", "readonly");
+            const record = await requestToPromise(tx.objectStore("messageItems").get(messageId));
+            return record?.channel === channelId ? record.message : null;
+        } catch (error) {
+            console.warn("Could not read the source message; checking the preserved legacy store.", error);
+        }
+    }
+    return (await getLegacyChannelMessages(channelId)).find((message) => message?.id === messageId) || null;
+}
+
+// Locate a globally identified message after an inbox/sorting move, without
+// changing any saved references or loading its entire destination channel.
+async function getMessageLocation(messageId, preferredChannelId = null) {
+    ensureDB();
+    if (db.objectStoreNames.contains("messageItems")) {
+        const tx = db.transaction("messageItems", "readonly");
+        const record = await requestToPromise(tx.objectStore("messageItems").get(messageId));
+        return record?.message && record?.channel ? { channelId: record.channel, message: record.message } : null;
+    }
+    const tx = db.transaction("messages", "readonly");
+    const records = await requestToPromise(tx.objectStore("messages").getAll());
+    const ordered = [...records].sort((a, b) => Number(b.channel === preferredChannelId) - Number(a.channel === preferredChannelId));
+    for (const record of ordered) {
+        const message = (record.messages || []).find((item) => item?.id === messageId);
+        if (message) return { channelId: record.channel, message };
+    }
+    return null;
+}
+
 async function getRecentChannelMessages(channelId, limit = 100) {
     ensureDB();
     const safeLimit = Math.max(1, Number(limit) || 100);
@@ -172,7 +219,10 @@ async function getRecentChannelMessages(channelId, limit = 100) {
             if (!store.indexNames.contains("channelMessageCreatedAt")) throw new Error("Recent-message index is unavailable.");
             const index = store.index("channelMessageCreatedAt");
             const range = IDBKeyRange.bound([channelId, ""], [channelId, "\uffff"]);
-            const newestFirst = await new Promise((resolve, reject) => {
+            const indexedCount = requestToPromise(index.count(range));
+            const channelCount = store.indexNames.contains("channel")
+                ? requestToPromise(store.index("channel").count(channelId)) : Promise.resolve(null);
+            const cursorItems = new Promise((resolve, reject) => {
                 const items = [];
                 const request = index.openCursor(range, "prev");
                 request.onsuccess = () => {
@@ -186,6 +236,11 @@ async function getRecentChannelMessages(channelId, limit = 100) {
                 };
                 request.onerror = () => reject(request.error);
             });
+            const [newestFirst, indexed, total] = await Promise.all([cursorItems, indexedCount, channelCount]);
+            // Missing or non-string timestamps are not included in the compound
+            // index. Fall back to a complete channel read so older photos do
+            // not become permanently unreachable through pagination.
+            if (total !== null && indexed < total) throw new Error("Some notes are not present in the date index.");
             return newestFirst.reverse();
         } catch (error) {
             // Keep the optimized index optional. A direct channel read below
@@ -304,6 +359,88 @@ async function saveChannelMessage(channelId, message) {
     ensureDB();
     const snapshot = snapshotMessage(message);
     return enqueueChannelWrite(channelId, () => saveChannelMessageNow(channelId, snapshot));
+}
+
+// Only updates the listed ordering metadata, in one transaction. It never
+// replaces the channel snapshot or deletes unlisted messages.
+async function saveChannelMessageOrder(channelId, orderedIds) {
+    ensureDB();
+    const ids = [...orderedIds];
+    if (!ids.length || new Set(ids).size !== ids.length) throw new Error("Invalid photo order.");
+    return enqueueChannelWrite(channelId, async () => {
+        if (db.objectStoreNames.contains("messageItems")) {
+            const tx = db.transaction("messageItems", "readwrite");
+            const store = tx.objectStore("messageItems");
+            ids.forEach((id, index) => {
+                const request = store.get(id);
+                request.onsuccess = () => {
+                    const record = request.result;
+                    if (!record || record.channel !== channelId || !record.message) { tx.abort(); return; }
+                    store.put({ ...record, message: { ...record.message, arrayOrder: index } });
+                };
+                request.onerror = () => tx.abort();
+            });
+            await transactionDone(tx);
+            return;
+        }
+        const tx = db.transaction("messages", "readwrite");
+        const store = tx.objectStore("messages");
+        const request = store.get(channelId);
+        request.onsuccess = () => {
+            const record = request.result;
+            if (!record || !Array.isArray(record.messages)) { tx.abort(); return; }
+            const positions = new Map(ids.map((id, index) => [id, index]));
+            const found = new Set(record.messages.filter((message) => positions.has(message.id)).map((message) => message.id));
+            if (found.size !== ids.length) { tx.abort(); return; }
+            store.put({ ...record, messages: record.messages.map((message) => positions.has(message.id) ? { ...message, arrayOrder: positions.get(message.id) } : message) });
+        };
+        request.onerror = () => tx.abort();
+        await transactionDone(tx);
+    });
+}
+
+// Move a note in a single transaction: a failed destination write must never
+// remove the source photo or message.
+async function moveChannelMessage(sourceChannelId, destinationChannelId, messageId) {
+    ensureDB();
+    if (!sourceChannelId || !destinationChannelId || !messageId || sourceChannelId === destinationChannelId) throw new Error("Invalid message move.");
+    return enqueueChannelWrite(sourceChannelId, async () => {
+        if (db.objectStoreNames.contains("messageItems")) {
+            const tx = db.transaction("messageItems", "readwrite");
+            const store = tx.objectStore("messageItems");
+            const request = store.get(messageId);
+            request.onsuccess = () => {
+                const record = request.result;
+                if (!record || record.channel !== sourceChannelId || !record.message) { tx.abort(); return; }
+                store.put({ ...record, channel: destinationChannelId });
+            };
+            request.onerror = () => tx.abort();
+            await transactionDone(tx);
+            return;
+        }
+        const tx = db.transaction("messages", "readwrite");
+        const store = tx.objectStore("messages");
+        const sourceRequest = store.get(sourceChannelId);
+        const destinationRequest = store.get(destinationChannelId);
+        let sourceReady = false, destinationReady = false;
+        const commit = () => {
+            if (!sourceReady || !destinationReady) return;
+            const source = sourceRequest.result;
+            const destination = destinationRequest.result || { channel: destinationChannelId, messages: [] };
+            if (!Array.isArray(source?.messages) || !Array.isArray(destination.messages)) { tx.abort(); return; }
+            const sourceMessages = source.messages;
+            const destinationMessages = destination.messages;
+            const message = sourceMessages.find((item) => item.id === messageId);
+            if (!message || destinationMessages.some((item) => item.id === messageId)) { tx.abort(); return; }
+            store.put({ ...source, messages: sourceMessages.filter((item) => item.id !== messageId) });
+            store.put({ ...destination, messages: [...destinationMessages, message] });
+        };
+        sourceRequest.onsuccess = () => { sourceReady = true; commit(); };
+        destinationRequest.onsuccess = () => { destinationReady = true; commit(); };
+        sourceRequest.onerror = () => tx.abort();
+        destinationRequest.onerror = () => tx.abort();
+        await transactionDone(tx);
+    });
 }
 
 async function deleteChannelMessagesNow(channelId) {
