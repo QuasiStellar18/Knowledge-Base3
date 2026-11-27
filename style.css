@@ -6356,6 +6356,13 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .blindAuctionSetup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .blindAuctionSetup label, .blindAuctionControls label { display: grid; gap: 6px; font-size: 14px; font-weight: 700; }
 .blindAuctionSetup input, .blindAuctionControls input { min-width: 0; width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); color: var(--text); font: inherit; }
+.blindAuctionSetup input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; flex: 0 0 20px; accent-color: var(--accent); }
+.blindAuctionSetup .auctionOptionToggle, .blindAuctionSetup fieldset label { display: flex; align-items: center; gap: 8px; line-height: 1.4; }
+.auctionStage .blindAuctionSetup > p, .auctionStage .blindAuctionSetup > fieldset, .auctionStage .blindAuctionSetup > button, .auctionStage .blindAuctionSetup > .auctionOptionToggle { grid-column: 1 / -1; }
+.auctionStage .blindAuctionSetup fieldset { min-width: 0; padding: 12px; border: 1px solid #79505a; border-radius: 10px; }
+.auctionStage .blindAuctionSetup fieldset label { padding: 6px 0; }
+.auctionStage .blindAuctionSetup select { width: 100%; min-width: 0; min-height: 44px; }
+.auctionStage .blindAuctionSetup > p { margin: 0; line-height: 1.5; }
 .gameWeightedOptions { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
 .gameWeightedOptions label { display: flex; align-items: center; gap: 9px; line-height: 1.4; }
 .gameWeightedOptions input { width: 20px; height: 20px; flex: 0 0 auto; accent-color: var(--accent); }
@@ -6413,6 +6420,9 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .auctionDraftProfile { flex-wrap: wrap; padding: 10px 0; }
 .auctionDraftProfile label { flex: 1 1 150px; min-width: 0; }
 .auctionDraftProfile input { width: 100%; min-width: 0; }
+.auctionAllRelations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
+.auctionRelationPair { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; text-align: left; }
+.auctionRelationPair strong, .auctionRelationPair span { overflow-wrap: anywhere; }
 .auctionProfile span { flex: 1; overflow-wrap: anywhere; }
 .auctionAvatar, .auctionAvatarPlaceholder { display: inline-grid; place-items: center; width: 52px; height: 52px; flex: 0 0 52px; object-fit: cover; border-radius: 50%; background: #303540; }
 .auctionProfileDetail, .auctionRoster { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
@@ -6421,6 +6431,9 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .auctionOwnerPage > button { justify-self: start; }
 .auctionCharacterProfile { --panel-bg: #302129; --border: #78505c; --text: #f8ece8; --muted: #d6bdba; color: var(--text); gap: 16px; padding: clamp(14px, 3vw, 24px); background: linear-gradient(145deg, #49303b, #211820 65%); border-color: #a77a73; box-shadow: 0 9px 24px #0005; }
 .auctionCharacterHero { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.auctionProfilePortraitButton { padding: 0; border: 0; background: transparent; border-radius: 50%; flex: 0 0 auto; cursor: zoom-in; }
+.auctionProfilePortraitButton:focus-visible { outline: 3px solid #f1c580; outline-offset: 3px; }
+.auctionCharacterProfile button.auctionProfilePortraitButton { padding: 0; border: 0; border-radius: 50%; background: transparent; }
 .auctionCharacterProfile .auctionCharacterHero .auctionAvatar { width: 104px; height: 104px; flex: 0 0 104px; border: 3px solid #d1a974; box-shadow: 0 4px 18px #0008; }
 .auctionCharacterIdentity { display: grid; gap: 5px; min-width: 0; }
 .auctionCharacterIdentity h4 { margin: 0; overflow-wrap: anywhere; font: 700 clamp(25px, 5vw, 36px) Georgia, serif; color: #fff0de; }
@@ -7486,6 +7499,18 @@ body.interface-streamlined .streamlinedSceneActions {
 }
 /* Auction additions: compact controls and full-size photos on phones. */
 .auctionExtraPage, .auctionDinner { display: grid; gap: .8rem; width: min(100%, 760px); margin: 0 auto; padding: 1rem; }
+.auctionExtraPage, .auctionDinner, .auctionOwnerPage, .auctionSettingsPage { min-width: 0; overflow-wrap: anywhere; }
+.auctionExtraPage :is(button, select), .auctionDinner :is(button, select), .auctionOwnerPage :is(button, select), .auctionSettingsPage :is(button, select) { min-height: 44px; max-width: 100%; }
+.auctionExtraPage details, .auctionDinner details, .auctionSettingsPage details { min-width: 0; }
+.auctionExtraPage summary, .auctionDinner summary, .auctionSettingsPage summary { cursor: pointer; padding: .55rem 0; line-height: 1.4; }
+.auctionExtraPage p, .auctionDinner p, .auctionSettingsPage p { line-height: 1.5; }
+@media (max-width: 480px) {
+    .auctionExtraPage, .auctionDinner { padding: .8rem; }
+    .auctionStage .blindAuctionSetup { grid-template-columns: 1fr; }
+    .auctionStage .blindAuctionSetup > * { grid-column: 1; }
+    .auctionOwnerTabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .auctionDraftProfile { align-items: flex-start; }
+}
 .auctionExtraPage label, .auctionDinner label { display: grid; gap: .35rem; }
 .auctionExtraPage input, .auctionDinner select { width: min(100%, 16rem); }
 .auctionSeasonCard, .auctionWishlist, .auctionEventReaction { padding: .85rem; border: 1px solid var(--border, #65515b); border-radius: .8rem; background: rgba(110, 70, 85, .14); }
@@ -7556,4 +7581,43 @@ body.interface-streamlined .streamlinedSceneActions {
   .personalityGamesPage.is-playing > h3 { display: none; }
   .personalityGamesPage.is-playing > p { margin: .15rem 0; }
   .personalityGamesPage.is-playing .blindAuctionResult img { height: min(35dvh, 260px); }
+}
+
+/* Auction rooms: rose velvet, readable controls, and restrained framing. */
+.auctionStage, .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage {
+    --panel-bg: #392231; --border: #9e687f; --text: #fff1f5; --muted: #e6c7d3; --accent: #f2a6c3;
+    color: var(--text);
+}
+.auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage {
+    padding: clamp(14px, 3vw, 24px); border: 1px solid #a96983; border-radius: 16px;
+    background: radial-gradient(ellipse at 90% 0%, #674056 0%, transparent 50%), linear-gradient(145deg, #36212f, #241722 80%);
+    box-shadow: 0 10px 26px #13091266;
+}
+.auctionStage { --panel-bg: #3b2131; --border: #a86f86; --text: #fff1f5; --muted: #ecd0dc; --accent: #f2abc6; border-color: #c68aa1; background: radial-gradient(ellipse at 50% 0%, #78465e, #39212f 50%, #24151f 100%); }
+.auctionStage::before { border-color: #d6a5b6; background: repeating-linear-gradient(95deg, #542039 0, #a34d72 24px, #713048 48px, #462037 65px); }
+.auctionStage::after { background: linear-gradient(90deg, #5f2845d9 0, #9c506d77 9px, transparent 28px, transparent calc(100% - 28px), #9c506d77 calc(100% - 9px), #5f2845d9 100%); }
+.auctionStage .focusSessionIntro, .auctionStage .blindAuctionControls, .auctionPreview, .auctionRevealBids { border-color: #a96d85; background: #3c2534ec; }
+.auctionStageMarquee { border-color: #e2a8bc88; color: #ffd8e5; }
+.auctionStageMarquee strong, .auctionOwnerPage > h3, .auctionExtraPage > h3, .auctionDinner > h3, .auctionSettingsPage h3 { font-family: Georgia, serif; letter-spacing: .025em; color: #ffe4ec; }
+.auctionStage button, .auctionOwnerPage button, .auctionExtraPage button, .auctionDinner button, .auctionSettingsPage button { border-color: #bd8099; border-radius: 9px; background: #593448; color: #fff1f6; }
+.auctionStage button.adventurePrimary, .auctionOwnerPage button.adventurePrimary, .auctionExtraPage button.adventurePrimary, .auctionDinner button.adventurePrimary, .auctionSettingsPage button.adventurePrimary { background: #9c4168 !important; border-color: #f0b0c7; color: #fff !important; }
+.auctionOwnerPage button:focus-visible, .auctionExtraPage button:focus-visible, .auctionDinner button:focus-visible, .auctionSettingsPage button:focus-visible, .auctionStage button:focus-visible { outline: 3px solid #ffd1e1; outline-offset: 2px; }
+.auctionOwnerPage button.auctionProfilePortraitButton { padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.auctionOwnerTabs button[aria-pressed="true"] { border-color: #ffc1d5; background: #9c4168; }
+.auctionCharacterProfile { --panel-bg: #402637; --border: #af748e; --text: #fff1f5; --muted: #e6c7d3; border-color: #c18da3; background: linear-gradient(145deg, #684052, #342130 72%); }
+.auctionCharacterKicker, .auctionProfileBalance { color: #ffd1df; }
+.auctionCharacterBio { border-color: #efa8c0; background: #2c1928bb; }
+.auctionStage .blindAuctionResult, .auctionOwnerPage .blindAuctionResult, .auctionExtraPage .blindAuctionResult, .auctionCompareCard, .auctionScrapbookCard, .auctionTradeOffer, .auctionTradeCompose, .auctionTradePicker, .auctionSettingsPage .settingsCategory { border-color: #a46e85; background: #422a3ae8; border-radius: 12px; }
+.auctionSettingsPage .settingsIntro { color: #ffe6ee; }
+.auctionSettingsPage .settingsCategory > h4, .auctionSettingsPage .settingsCategory > p { margin: 0; }
+.auctionSettingsPage .auctionCreateCount { display: grid; gap: 6px; font-weight: 700; }
+.auctionSettingsPage .auctionCreateCount input { width: min(100%, 12rem); min-height: 44px; padding: 8px; border: 1px solid #a86f86; border-radius: 9px; background: #2e1b29; color: #fff1f5; font: inherit; }
+.auctionSettingsPage .auctionDraftProfile { margin-block: 8px; padding: 12px; border: 1px solid #a66c84; border-radius: 12px; background: #4a2c3e; }
+.auctionDinnerTable { border-color: #dba3b4; background: radial-gradient(ellipse at bottom, #865568, #412637 70%); }
+.auctionDinnerFrame { border-color: #cb8fa6; }
+.auctionDialogue, .auctionDinnerCallback { color: #ffe1ec; }
+@media (max-width: 480px) { .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage { padding: 12px; border-radius: 12px; } }
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    body.auctionViewOpen #input-bar, body.auctionViewOpen .searchWrap, body.auctionViewOpen #mobileRandomBtn, body.auctionViewOpen #mobileAddImageBtn { display: none !important; }
+    body.auctionViewOpen #mobileQuickActions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
