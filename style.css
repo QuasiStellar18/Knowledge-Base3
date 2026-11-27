@@ -6370,6 +6370,8 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .blindAuctionPhoto { display: grid; place-items: center; min-height: 200px; margin: 0; overflow: hidden; border-radius: 12px; background: #101114; }
 .blindAuctionPhoto img { display: block; width: 100%; max-height: min(53dvh, 600px); object-fit: contain; cursor: zoom-in; }
 .blindAuctionControls { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.auctionBidTimeline { display: grid; gap: 3px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 6px; background: #281822; }
+.auctionBidTimeline p { margin: 0; font-size: 14px; line-height: 1.4; }
 .blindAuctionActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .blindAuctionActions button { min-height: 44px; }
 .blindAuctionResults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
@@ -7622,6 +7624,7 @@ body.interface-streamlined .streamlinedSceneActions {
 .auctionSettingsPage .settingsCategory > h4, .auctionSettingsPage .settingsCategory > p { margin: 0; }
 .auctionSettingsPage .auctionCreateCount { display: grid; gap: 6px; font-weight: 700; }
 .auctionSettingsPage .auctionCreateCount input { width: min(100%, 12rem); min-height: 44px; padding: 8px; border: 1px solid #a86f86; border-radius: 9px; background: #2e1b29; color: #fff1f5; font: inherit; }
+.auctionSettingsPage textarea { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 10px; border: 1px solid #a86f86; border-radius: 9px; background: #2e1b29; color: #fff1f5; font: inherit; line-height: 1.45; resize: vertical; }
 .auctionSettingsPage .auctionDraftProfile { margin-block: 8px; padding: 12px; border: 1px solid #a66c84; border-radius: 12px; background: #4a2c3e; }
 .auctionDinnerTable { border-color: #dba3b4; background: radial-gradient(ellipse at bottom, #865568, #412637 70%); }
 .auctionDinnerFrame { border-color: #cb8fa6; }
