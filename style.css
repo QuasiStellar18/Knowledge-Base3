@@ -6356,6 +6356,8 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .blindAuctionSetup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .blindAuctionSetup label, .blindAuctionControls label { display: grid; gap: 6px; font-size: 14px; font-weight: 700; }
 .blindAuctionSetup input, .blindAuctionControls input { min-width: 0; width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); color: var(--text); font: inherit; }
+/* iOS Safari zooms form controls with text smaller than 16px on focus. */
+.blindAuctionSetup input, .blindAuctionControls input { font-size: 16px; }
 .blindAuctionSetup input[type="checkbox"] { width: 20px; height: 20px; min-height: 20px; padding: 0; flex: 0 0 20px; accent-color: var(--accent); }
 .blindAuctionSetup .auctionOptionToggle, .blindAuctionSetup fieldset label { display: flex; align-items: center; gap: 8px; line-height: 1.4; }
 .auctionStage .blindAuctionSetup > p, .auctionStage .blindAuctionSetup > fieldset, .auctionStage .blindAuctionSetup > button, .auctionStage .blindAuctionSetup > .auctionOptionToggle { grid-column: 1 / -1; }
@@ -6372,6 +6374,50 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .blindAuctionControls { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
 .auctionBidTimeline { display: grid; gap: 3px; padding: 8px 10px; border-left: 2px solid var(--accent); border-radius: 6px; background: #281822; }
 .auctionBidTimeline p { margin: 0; font-size: 14px; line-height: 1.4; }
+.auctionBidTimeline summary, .auctionManualBid summary { cursor: pointer; font-size: 13px; }
+.auctionBidderStrip { display: flex; gap: 6px; overflow-x: auto; padding: 5px 0; overscroll-behavior-x: contain; }
+.auctionBidderChip { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 4px 7px; border: 1px solid #91677b; border-radius: 999px; background: #291b25; }
+.auctionBidderChip > img, .auctionBidderChip > .auctionAvatarPlaceholder, .auctionBidderInitial { width: 34px; height: 34px; min-width: 34px; border-radius: 50%; object-fit: cover; }
+.auctionBidderInitial, .auctionBidderChip > .auctionAvatarPlaceholder { display: grid; place-items: center; background: #8e4f6a; color: white; font-weight: 700; }
+.auctionBidderChip > span:last-child { display: grid; line-height: 1.15; }
+.auctionBidderChip strong { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.auctionBidderChip small { color: #e2bfce; font-size: 11px; }
+.auctionBidderChip.isOut { opacity: .6; }
+.auctionBidderChip.isLeading { border-color: #f2bf77; }
+.auctionBidderChip.isActive { box-shadow: inset 0 0 0 1px #f0b0c7; }
+.auctionQuickBids { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.auctionQuickBids button { padding: 7px 3px; font-size: 13px; white-space: nowrap; }
+.auctionManualBid[open] { display: grid; gap: 8px; }
+.auctionBidHelp { color: #ecd0dc; line-height: 1.3; }
+.auctionLatestBid { color: #f5c8da; line-height: 1.3; }
+.auctionPacingSelect { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; }
+.auctionPacingSelect select { min-height: 44px; max-width: 100%; padding: 6px 8px; border: 1px solid #bd8099; border-radius: 8px; background: #422a3a; color: #fff1f6; font-size: 16px; }
+.auctionAutoPause { width: 100%; }
+.localAudioSettings { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
+.localAudioSettings summary { cursor: pointer; font-weight: 700; }
+.localAudioSettings > label, .localAudioSettings > div > label { display: grid; gap: 5px; margin: 8px 0; }
+.localAudioSettings input, .localAudioSettings select { max-width: 100%; min-width: 0; min-height: 44px; padding: 8px; font-size: 16px; }
+.localAudioTrackList { display: grid; gap: 8px; }
+.localAudioTrack { display: flex; flex-wrap: wrap; gap: 6px; }
+.localAudioTrack input { flex: 1 1 140px; }
+.localAudioTrack button, .localAudioSettings button { min-height: 44px; }
+.localAudioSessionBar { position: fixed; z-index: 1200; right: 0; bottom: 0; left: 0; height: 90px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px 22px; align-content: center; align-items: center; gap: 3px 8px; padding: 7px 12px; border-top: 1px solid #d8a6bc; color: white; background: #291923; box-shadow: 0 -4px 16px #0008; }
+.localAudioSessionBar span { font-size: 12px; line-height: 1.25; }
+.localAudioTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.localAudioSessionBar button { min-width: 58px; min-height: 44px; padding: 6px 10px; color: white; background: #75405b; border: 1px solid #d8a6bc; border-radius: 8px; }
+.localAudioProgress { grid-column: 1 / 3; width: 100%; margin: 0; accent-color: #efabc9; }
+.localAudioTime { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+body.localAudioActive #app { height: calc(100vh - 90px); height: calc(100dvh - 90px); }
+.personalityAudioAssignment { padding: 10px; border: 1px solid #a46e85; border-radius: 10px; background: #422a3a; }
+.personalityAudioAssignment summary { cursor: pointer; font-weight: 700; }
+.personalityAudioAssignment label { display: grid; gap: 6px; margin-bottom: 8px; }
+.personalityAudioAssignment select { min-height: 44px; width: 100%; font-size: 16px; }
+@media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
+    .localAudioSessionBar { bottom: var(--mobile-stage-nav-height); }
+    body.localAudioActive #app, body.localAudioActive #servers, body.localAudioActive #sidebar, body.localAudioActive #chat { height: calc(100vh - var(--mobile-stage-nav-height) - 90px); height: calc(100dvh - var(--mobile-stage-nav-height) - 90px); }
+    body.localAudioActive.focusMode .localAudioSessionBar { bottom: 0; }
+}
+.auctionNextTurn { width: 100%; }
 .blindAuctionActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .blindAuctionActions button { min-height: 44px; }
 .blindAuctionResults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
@@ -6404,6 +6450,12 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .auctionPreviewActions { display: grid; gap: 8px; }
 .auctionEyebrow { color: #e6bf82; font-size: 11px; font-weight: 700; letter-spacing: .13em; }
 @media (max-width: 480px) { .auctionStage { padding: 52px 14px 14px; border-radius: 12px; } .auctionStageMarquee { padding: 8px; } }
+@media (max-width: 700px) and (min-height: 500px) {
+    .auctionStagePlaying { overflow: visible; }
+    .auctionStagePlaying .blindAuctionControls { position: sticky; bottom: max(6px, env(safe-area-inset-bottom)); z-index: 5; gap: 6px; padding: 9px; box-shadow: 0 4px 20px #0009; }
+    .auctionStagePlaying .blindAuctionControls > p { margin: 0; }
+    .auctionStagePlaying .auctionBidHelp { font-size: 11px; }
+}
 @media (orientation: landscape) and (max-height: 560px) {
     .auctionStagePlaying { grid-template-columns: minmax(0, 1fr) minmax(220px, .7fr); align-items: start; }
     .auctionStagePlaying .auctionStageMarquee, .auctionStagePlaying .focusSessionIntro { grid-column: 1 / -1; }
