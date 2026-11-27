@@ -1,10 +1,10 @@
-const CACHE_NAME = "knowledge-discord-v150";
+const CACHE_NAME = "knowledge-discord-v156";
 const APP_SHELL = [
     "./",
     "./index.html",
-    "./style.css?v=150",
-    "./db.js?v=150",
-    "./app.js?v=150"
+    "./style.css?v=156",
+    "./db.js?v=156",
+    "./app.js?v=156"
 ];
 
 self.addEventListener("install", (event) => {
@@ -29,6 +29,8 @@ self.addEventListener("fetch", (event) => {
     if (event.request.method !== "GET") return;
     const requestUrl = new URL(event.request.url);
     if (requestUrl.origin !== self.location.origin) return;
+    // Large encrypted recordings are fetched on demand, not duplicated in Cache Storage.
+    if (/\/audio\/track\d+(?:\.part\d+)?\.kba$/.test(requestUrl.pathname)) return;
 
     event.respondWith(
         caches.match(event.request).then((cached) => {
