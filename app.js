@@ -76,7 +76,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "147";
+const APP_BUILD_VERSION = "150";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
@@ -3505,9 +3505,10 @@ function refreshPunishmentFavorites(bidder, candidates) {
     while (refs.length < 3 && ranked.length) refs.push(structuredClone(ranked.shift().ref));
     return { ...bidder, personality: { ...bidder.personality, punishmentFavorites: refs } };
 }
+const AUCTION_PUNISHMENT_DIALOGUE = ["I picked this one for us, darling. Come closer and tell me how much you like my taste.", "This is one of my wicked little favorites. We can take our time with it, if you want to.", "I saved this favorite for a moment when I could have your attention all to myself.", "I chose this one because I love keeping you guessing. Shall we enjoy it together?", "This favorite puts me in a teasing mood. Tell me if you'd like to keep playing.", "I thought you might like this one. I certainly like the way you look at me while we share it.", "Let me show you one of my favorites, gorgeous. I promise to make the anticipation worthwhile.", "I've been waiting for an excuse to share this with you. Stay close and savor it with me.", "This one feels like our little secret. We can stop or change the mood whenever you like.", "I love the tension in a playful challenge. Shall we see where this favorite takes us?"];
 function punishmentFavoriteDialogue(bidder, ref) {
     const hash = [...`${bidder.id}:${auctionPhotoKey(ref)}`].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
-    const lines = ["I picked this one for us, darling. Come closer and tell me how much you like my taste.", "This is one of my wicked little favorites. We can take our time with it, if you want to.", "I saved this favorite for a moment when I could have your attention all to myself.", "I chose this one because I love keeping you guessing. Shall we enjoy it together?", "This favorite puts me in a teasing mood. Tell me if you'd like to keep playing.", "I thought you might like this one. I certainly like the way you look at me while we share it.", "Let me show you one of my favorites, gorgeous. I promise to make the anticipation worthwhile.", "I've been waiting for an excuse to share this with you. Stay close and savor it with me.", "This one feels like our little secret. We can stop or change the mood whenever you like.", "I love the tension in a playful challenge. Shall we see where this favorite takes us?"];
+    const lines = getAuctionDialoguePool("punishment", AUCTION_PUNISHMENT_DIALOGUE);
     return lines[hash % lines.length];
 }
 function punishmentFavoriteNoteEditor(bidder, ref, kind = "punishment") {
@@ -3548,9 +3549,9 @@ function auctionNewMilestones(serverId, before, after, round = null) {
         const goal = bidder.personality?.goal;
         if (goal?.channelId && Number.isInteger(goal.target) && goal.target > 0) {
             const count = (items) => items.filter((item) => item.serverId === serverId && item.ownerId === bidder.id && item.ref?.channelId === goal.channelId).length;
-            if (count(before) < goal.target && count(after) >= goal.target) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "goal", channelId: goal.channelId, target: goal.target, ref: round?.ref || null, createdAt: new Date().toISOString(), reaction: "I reached my collection goal! Come celebrate with me, darling." });
+            if (count(before) < goal.target && count(after) >= goal.target) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "goal", channelId: goal.channelId, target: goal.target, ref: round?.ref || null, createdAt: new Date().toISOString(), reaction: scriptedAuctionDialogue("milestone_goal", `${bidder.id}:${goal.channelId}`) });
         }
-        if (round?.ownerId === bidder.id && (round.bids || []).filter((bid) => bid.bid > 0).length >= 2 && ![...existing, ...added].some((item) => item.serverId === serverId && item.bidderId === bidder.id && item.type === "contested")) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "contested", ref: round.ref, createdAt: round.createdAt, reaction: "That was a deliciously close contest. I think I earned your attention." });
+        if (round?.ownerId === bidder.id && (round.bids || []).filter((bid) => bid.bid > 0).length >= 2 && ![...existing, ...added].some((item) => item.serverId === serverId && item.bidderId === bidder.id && item.type === "contested")) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "contested", ref: round.ref, createdAt: round.createdAt, reaction: scriptedAuctionDialogue("milestone_contest", bidder.id) });
     });
     return added;
 }
@@ -3672,7 +3673,7 @@ const AUCTION_FLIRTY_DIALOGUE = [
     "You're a very tempting distraction from my perfectly respectable plans.",
     "Keep that look in your eyes, darling. I want to remember it."
 ];
-function randomAuctionDialogue() { return AUCTION_FLIRTY_DIALOGUE[Math.floor(Math.random() * AUCTION_FLIRTY_DIALOGUE.length)]; }
+function randomAuctionDialogue() { const lines = getAuctionDialoguePool("auction", AUCTION_FLIRTY_DIALOGUE); return lines[Math.floor(Math.random() * lines.length)]; }
 const AUCTION_DINNER_DIALOGUE = [
     "I keep coming back to this one. You have the same effect on me, and I want to take my time with both of you.",
     "I chose this because it makes me feel a little wicked. Come closer and I'll tell you what else does.",
@@ -3721,7 +3722,47 @@ const AUCTION_DINNER_DIALOGUE = [
     "The longer you stay, the less inclined I am to let you leave without a smile.",
     "I chose this for us. The way you're looking at me is an unexpected bonus.",
     "If you like this, wait until you see what else I've been saving for you.",
-    "There's that look again. You really do know how to make me feel wanted."
+    "There's that look again. You really do know how to make me feel wanted.",
+    "I picked this for the way it catches the light. You, on the other hand, have my attention without even trying.",
+    "Tell me your first thought. I have a feeling your second one might be even more interesting.",
+    "I almost kept this one to myself, but the thought of showing it to you was too tempting.",
+    "You don't have to say anything yet. I rather like watching you take your time.",
+    "That little smile tells me I chose well. Come closer and let me enjoy it.",
+    "I thought we could linger here a moment. There's something delicious about not rushing.",
+    "Look at the details, darling. I like to think I'm worth a closer look too.",
+    "I wonder whether you'd have picked this one for me. Tell me what gave you that idea.",
+    "This caught my eye when I was choosing tonight's surprises. You caught mine even faster.",
+    "I have a confession: I planned this whole evening hoping you'd look at me like that.",
+    "There's a story behind this choice, but you'll have to sit beside me to hear it.",
+    "Some pictures deserve a second glance. You deserve a much longer one.",
+    "I'm curious what you notice first. Don't worry, I'm paying very close attention too.",
+    "I chose a change of pace for us. Let the suspense build a little, gorgeous.",
+    "You're making this tour more distracting than I expected, and I don't mind a bit.",
+    "I could tell you why I chose this, but I might enjoy hearing your guess more.",
+    "Let me steal a moment of your attention before I reveal the next surprise.",
+    "I like how differently we see things. Tell me what this one brings to mind.",
+    "This one has been on my mind. You've been there rather often too.",
+    "I wanted something playful for this moment. Your expression is making it even better.",
+    "Come sit closer, handsome. I've been imagining exactly how much attention I could tempt out of you tonight.",
+    "The picture can wait. I want to feel your eyes on me while I tell you what I've been thinking.",
+    "I chose this to tease you, and judging by that look, I might have to keep teasing a little longer.",
+    "If you want me closer, darling, you only have to say so. I've been hoping you would.",
+    "I like the tension between us. Let's draw it out until neither of us can pretend not to notice.",
+    "You're looking at me as though you have plans. I hope they involve keeping me close.",
+    "Let me whisper what I like about this one, then you can tell me what you'd like from me.",
+    "I wore this smile for you, but I have much more tempting ways to keep your attention.",
+    "I love making you wait just long enough to wonder what I'll do when I finally lean in.",
+    "We could talk about the photo, or you could tell me why you keep looking at my lips.",
+    "The longer you stay beside me, the more difficult it becomes to keep this conversation innocent.",
+    "I picked something enticing for you. Now come close enough that I can see your reaction.",
+    "You make me want to abandon my careful plans and spend the rest of the evening flirting shamelessly.",
+    "Tell me what you desire, gorgeous. I like knowing exactly how to tempt you.",
+    "I can be patient, but that look is making me want to pull you closer right now.",
+    "I saved this moment for when we had a little privacy. Shall we make the most of it?",
+    "Keep your eyes on me for a moment. I want you thinking about me when the next photo appears.",
+    "I like when you take your time with me. It gives me more chances to make you want another moment.",
+    "You're dangerously charming tonight. If you keep it up, I may have to steal a kiss.",
+    "Let me show you something I love, then tell me whether you can resist giving me a little more attention."
 ];
 const AUCTION_DINNER_THEMES = {
     romantic: ["Stay close, darling. I chose this one for a slower, more intimate evening.", "Sharing a favorite with you feels almost like a secret, and I want to savor it.", "This picture reminds me how much I enjoy having your full attention.", "Let me sit beside you while we enjoy this. I'm in no hurry to let you go.", "I chose this with you in mind. I love watching your face as you look.", "There's something irresistible about a quiet moment with you and a favorite photo."],
@@ -3729,17 +3770,72 @@ const AUCTION_DINNER_THEMES = {
     competitive: ["I chose a strong contender. Think you could pick something more tempting?", "This one ranks highly, but I think I enjoy your challenge even more.", "I like a little competition between us. Show me what catches your eye.", "Go on, tell me if your favorite can beat mine. I love your confident look.", "I'm not letting you win too easily tonight, darling. Where would be the fun in that?", "This is one of my best picks. Give me a reason to make room for yours."],
     mysterious: ["I chose something unexpected. Come closer and I'll tell you what I see in it.", "There's more to this one than first appears. I rather like keeping you curious.", "I saved a surprise for you. Take your time; anticipation is half the pleasure.", "I won't tell you everything just yet. I want you to discover this with me.", "This one deserves a second look. So do I, if you're feeling curious.", "A little mystery gives us a reason to stay close, don't you think?"]
 };
+function getCustomAuctionDinnerDialogue() {
+    const saved = state.structure.settings.auctionDinnerCustomDialogue;
+    return Array.isArray(saved) ? saved.filter((line) => typeof line === "string").map((line) => line.trim().slice(0, 300)).filter(Boolean).slice(0, 200) : [];
+}
+const AUCTION_SCRIPTED_DIALOGUE = {
+    game_quiz_prompt: ["Can you guess which channel this is from, darling?"],
+    game_choice_prompt: ["Choose the one you like best. I'm curious about your taste."],
+    game_tournament_prompt: ["Pick the one you'd like to send through, gorgeous."],
+    game_correct: ["Correct. You know my collection beautifully."],
+    game_wrong: ["Not quite. It came from #{channel}."],
+    game_choice_feedback: ["A tempting choice. Shall we see another pair?"],
+    dinner_start: ["Sit close, darling. I have a few favorites I’d love to show you."],
+    dinner_end: ["I loved having you all to myself. Come back soon, darling."],
+    dinner_end_guest: ["I loved sharing this evening with you. Come back soon, darling."],
+    dinner_invitation: ["I invited {guest} to join us, darling. I thought we might enjoy sharing your attention."],
+    dinner_photo_choice: ["Which one would you like to see next?"],
+    milestone_goal: ["I reached my collection goal! Come celebrate with me, darling."],
+    milestone_contest: ["That was a deliciously close contest. I think I earned your attention."]
+};
+const AUCTION_SCRIPTED_LABELS = {
+    game_quiz_prompt: "Personality game · quiz prompt", game_choice_prompt: "Personality game · choice prompt", game_tournament_prompt: "Personality game · tournament prompt",
+    game_correct: "Personality game · correct answer", game_wrong: "Personality game · wrong answer", game_choice_feedback: "Personality game · choice feedback",
+    dinner_start: "Dinner · welcome", dinner_end: "Dinner · farewell", dinner_end_guest: "Dinner · farewell with guest", dinner_invitation: "Dinner · guest invitation", dinner_photo_choice: "Dinner · photo selection",
+    milestone_goal: "Milestone · collection goal", milestone_contest: "Milestone · close contest"
+};
+function getDefaultAuctionDialoguePools() {
+    return [
+        { id: "auction", label: "Auction lots and profile talk", lines: AUCTION_FLIRTY_DIALOGUE },
+        { id: "reaction", label: "Close-bid reactions", lines: AUCTION_REACTION_DIALOGUE },
+        { id: "dinner", label: "Dinner slideshow · general", lines: [...AUCTION_DINNER_DIALOGUE, ...getCustomAuctionDinnerDialogue()] },
+        ...["romantic", "playful", "competitive", "mysterious"].map((key) => ({ id: `dinner_${key}`, label: `Dinner slideshow · ${key}`, lines: AUCTION_DINNER_THEMES[key] })),
+        { id: "guest", label: "Dinner guest photo remarks", lines: AUCTION_DINNER_GUEST_LINES },
+        { id: "punishment", label: "Punishment-photo favorites", lines: AUCTION_PUNISHMENT_DIALOGUE },
+        { id: "jealousy", label: "Dinner jealousy", lines: AUCTION_JEALOUSY_DIALOGUE, hint: "Use {other} for the other personality's name." },
+        { id: "reply_curious", label: "Dinner reply · curious", lines: AUCTION_DINNER_REPLY_DEFAULTS.curious, hint: "Use {channel} for the photo's source channel." },
+        { id: "reply_flirt", label: "Dinner reply · flirt", lines: AUCTION_DINNER_REPLY_DEFAULTS.flirt },
+        { id: "reply_compliment", label: "Dinner reply · compliment", lines: AUCTION_DINNER_REPLY_DEFAULTS.compliment },
+        { id: "memory_dinner", label: "Dinner memory · previous dinner", lines: AUCTION_DINNER_CALLBACK_DEFAULTS.dinner },
+        { id: "memory_trade", label: "Dinner memory · trade", lines: AUCTION_DINNER_CALLBACK_DEFAULTS.trade },
+        { id: "memory_contest", label: "Dinner memory · close bid", lines: AUCTION_DINNER_CALLBACK_DEFAULTS.contest },
+        { id: "bio_flirt", label: "Profile biography · opening", lines: AUCTION_BIO_FLIRT },
+        { id: "bio_seduction", label: "Profile biography · second line", lines: AUCTION_BIO_SEDUCTION },
+        ...Object.keys(AUCTION_SCRIPTED_DIALOGUE).map((id) => ({ id, label: AUCTION_SCRIPTED_LABELS[id], lines: AUCTION_SCRIPTED_DIALOGUE[id], hint: id === "game_wrong" ? "Use {channel} for the source channel." : id === "dinner_invitation" ? "Use {guest} for the guest's name." : "" }))
+    ];
+}
+function hasAuctionDialogueOverride(key) { return Array.isArray(state.structure.settings.auctionDialoguePools?.[key]) && state.structure.settings.auctionDialoguePools[key].some((line) => typeof line === "string" && line.trim()); }
+function getAuctionDialoguePool(key, defaults) {
+    const lines = hasAuctionDialogueOverride(key) ? state.structure.settings.auctionDialoguePools[key] : defaults;
+    return lines.filter((line) => typeof line === "string" && line.trim()).map((line) => line.trim().slice(0, 300)).slice(0, 200);
+}
+function scriptedAuctionDialogue(key, seed = "", values = {}) {
+    const lines = getAuctionDialoguePool(key, AUCTION_SCRIPTED_DIALOGUE[key]);
+    const hash = [...`${key}:${seed}`].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 17);
+    return Object.entries(values).reduce((line, [name, value]) => line.split(`{${name}}`).join(String(value)), lines[hash % lines.length]);
+}
 function nextAuctionDialogue(game, bidders, result) {
     if (!getAuctionPersonalitySettings().dialogue || !bidders.length) return null;
     const speaker = bidders.find((bidder) => bidder.id === result.ownerId) || bidders[Math.floor(Math.random() * bidders.length)];
-    const choices = AUCTION_FLIRTY_DIALOGUE.filter((line) => line !== game.dialogue?.text);
+    const all = getAuctionDialoguePool("auction", AUCTION_FLIRTY_DIALOGUE), choices = all.filter((line) => line !== game.dialogue?.text); if (!choices.length) choices.push(...all);
     return { bidderId: speaker.id, text: choices[Math.floor(Math.random() * choices.length)] };
 }
 function currentAuctionDialogue(game) {
     if (!getAuctionPersonalitySettings().dialogue || !game.bidders?.length || !auctionDialogueVisible(game.index || 0)) return null;
     if (game.dialogue?.text && game.dialogue?.bidderId) return game.dialogue;
     const hash = [...`${game.auctionId || "auction"}:${game.index}`].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 17);
-    return { bidderId: game.bidders[hash % game.bidders.length].id, text: AUCTION_FLIRTY_DIALOGUE[hash % AUCTION_FLIRTY_DIALOGUE.length] };
+    const lines = getAuctionDialoguePool("auction", AUCTION_FLIRTY_DIALOGUE); return { bidderId: game.bidders[hash % game.bidders.length].id, text: lines[hash % lines.length] };
 }
 function getAuctionBalances(serverId = getActiveServer()?.id) {
     const saved = state.structure.settings.auctionBalances?.[serverId];
@@ -3753,13 +3849,14 @@ function isValidSavedAuctionSession(session, serverId) {
         && Number.isInteger(session.index) && (session.screen === "play" ? session.index >= 0 && session.index < session.sequence.length : session.index >= 1 && session.index <= session.sequence.length)
         && Array.isArray(session.results) && session.results.length === session.index
         && Array.isArray(session.bidders) && session.bidders.length > 0 && session.bidders.every((bidder) => bidder?.id && money(session.balances?.[bidder.id]))
-        && money(session.remaining) && money(session.budget));
+        && money(session.remaining) && money(session.budget)
+        && (session.biddingMode !== "open" || session.screen !== "play" || Boolean(session.openLot && session.openLot.index === session.index && Array.isArray(session.openLot.order) && session.openLot.order.length > 0 && new Set(session.openLot.order).size === session.openLot.order.length && Number.isInteger(session.openLot.turnIndex) && session.openLot.turnIndex >= 0 && session.openLot.turnIndex < session.openLot.order.length && Array.isArray(session.openLot.passed) && Array.isArray(session.openLot.events) && money(session.openLot.highBid) && session.openLot.caps && session.openLot.explanations)));
 }
 function snapshotAuctionSession(game, overrides = {}) {
     const current = { ...game, ...overrides };
     return structuredClone({ screen: current.screen === "reveal" ? "reveal" : "play", serverId: current.serverId, auctionId: current.auctionId, count: current.count,
         budget: current.budget, startBalances: current.startBalances || {}, aiCount: current.aiCount, bidders: current.bidders,
-        balances: current.balances, remaining: current.remaining, sequence: current.sequence, results: current.results, consignmentLots: current.consignmentLots || {}, consignmentFeePercent: current.consignmentFeePercent || 0,
+        balances: current.balances, remaining: current.remaining, sequence: current.sequence, results: current.results, consignmentLots: current.consignmentLots || {}, consignmentFeePercent: current.consignmentFeePercent || 0, biddingMode: current.biddingMode || "sealed", bidRulesVersion: current.bidRulesVersion || 1, openLot: current.openLot || null,
         index: current.index, punishmentWeighted: Boolean(current.punishmentWeighted), censoredWeighted: Boolean(current.censoredWeighted),
         auctionFormat: current.auctionFormat || { type: "standard" }, moods: current.moods || {}, dialogue: current.dialogue || null,
         dialogueCount: current.dialogueCount || 0, lastDialogueRound: Number.isInteger(current.lastDialogueRound) ? current.lastDialogueRound : -10, dismissedReactions: current.dismissedReactions || [], updatedAt: new Date().toISOString() });
@@ -3771,7 +3868,8 @@ async function resumeSavedAuction(serverId) {
     const bidders = session.bidders.map((bidder) => current.get(bidder.id) || bidder);
     await ensureAuctionPhotoRefsLoaded([...session.sequence, ...bidders.map((bidder) => bidder.avatarRef).filter(Boolean)]);
     if (getActiveServer()?.id !== serverId || state.activeView.type !== "blindAuction") return;
-    Object.assign(state.blindAuction, structuredClone(session), { bidders, saving: false, visibleLimit: 10, slideshow: null,
+    const restoredLot = session.biddingMode === "open" && session.openLot ? (session.bidRulesVersion === 2 ? structuredClone(session.openLot) : migrateOpenAuctionPasses(session.openLot)) : null;
+    Object.assign(state.blindAuction, structuredClone(session), { bidders, saving: false, visibleLimit: 10, slideshow: null, biddingMode: session.biddingMode === "open" ? "open" : "sealed", bidRulesVersion: 2, openLot: restoredLot,
         auctionFormat: session.auctionFormat || { type: "standard" }, moods: session.moods || {}, dialogue: session.dialogue || null,
         dialogueCount: session.dialogueCount || 0, lastDialogueRound: Number.isInteger(session.lastDialogueRound) ? session.lastDialogueRound : -10 });
     renderMessages();
@@ -4000,7 +4098,15 @@ function saveAuctionChanges(changes, options = {}) {
     if (state.auctionNuclearResetBusy && !options.duringNuclearReset) return Promise.reject(new Error("The auction reset is in progress. Please wait."));
     const write = auctionChangesQueue.catch(() => {}).then(async () => {
         const patch = typeof changes === "function" ? changes() : changes;
-        await saveStructure({ ...state.structure, settings: { ...state.structure.settings, ...patch } });
+        const snapshot = { ...state.structure, settings: { ...state.structure.settings, ...patch } };
+        try { await saveStructure(snapshot); }
+        catch (error) {
+            // Retry only after IndexedDB confirmed an abort: an aborted
+            // transaction cannot have partially committed the structure.
+            if (!error?.structureTransactionAborted || !["AbortError", "UnknownError"].includes(error.name)) throw error;
+            console.warn("Auction save was aborted; retrying once:", error);
+            await saveStructure(snapshot);
+        }
         Object.assign(state.structure.settings, patch);
     });
     auctionChangesQueue = write; return write;
@@ -4025,9 +4131,9 @@ async function nuclearResetAuctionData() {
 function auctionSaveErrorMessage(error) {
     const name = error?.name || "UnknownError";
     if (name === "QuotaExceededError") return "The device's local storage is full. This change was not saved. Export a backup if possible and free device space before retrying. Do not clear website data.";
-    if (name === "InvalidStateError" || name === "TransactionInactiveError" || name === "AbortError") return `The local database could not finish the save (${name}). Your previous data was not replaced. Close other copies of the app, reopen this one, and retry; do not clear website data.`;
+    if (name === "InvalidStateError" || name === "TransactionInactiveError" || name === "AbortError") return `The local database could not finish the save (${name}${error?.message ? `: ${String(error.message).slice(0, 180)}` : ""}). Your previous data was not replaced. Close other copies of the app, reopen this one, and retry; do not clear website data.`;
     if (name === "DataCloneError") return "The local database rejected part of the saved data (DataCloneError). Your previous data was not replaced. Please share this error before attempting any reset.";
-    return `Could not save locally (${name}${error?.message ? `: ${String(error.message).slice(0, 180)}` : ""}). Your previous saved data was not intentionally changed. Please share this message; do not clear website data.`;
+    return `Could not save locally (${name}${error?.message ? `: ${String(error.message).slice(0, 180)}` : ""}). The browser did not provide enough detail to identify the cause. Please share this message and your Settings build number; do not clear website data.`;
 }
 async function archiveAuctionPersonality(serverId, bidderId, disposition, expectedPhotoKeys) {
     if (!["john", "release"].includes(disposition)) throw new Error("Choose what should happen to the owned photos.");
@@ -4174,18 +4280,58 @@ function auctionBotBid(bidder, remaining, roundsLeft, quality, competitors = [],
     return bid;
 }
 
+const AUCTION_REACTION_DIALOGUE = ["That was dangerously close, darling. I like it when you make me chase you.", "You almost had me there. Come closer and I might tell you how to win me over.", "You made my heart race with that bid. Don't stop now.", "I do love a little tension between us. Shall we make the next round even hotter?", "Look at you, teasing me with a bid like that. I'm paying attention.", "You can have this one, gorgeous. But I'm not finished playing with you.", "Such a close call. I could get used to this delicious competition.", "You know exactly how to tempt me into another round, don't you?", "If you wanted my attention, darling, you certainly have it now.", "That was almost unfairly attractive. Try it again for me.", "I like how boldly you go after what you want. Show me some more.", "You and I are going to have fun together, aren't we?",
+        "That was close enough to leave me breathless. Come collect your compliment.", "You made me want that one almost as much as I want your attention.", "I love how hard you made me work. Shall we find another excuse to play?", "You have me all worked up over a single bid, darling.", "I could feel the tension between us. I hope you plan to keep it going.", "You nearly stole it from me. I might let you try stealing my attention next.", "The way you challenged me was irresistible. I want another round with you.", "You've got a talent for keeping me on edge, and I'm enjoying every second.", "If you wanted to make me think about you later, that certainly worked.", "You can have the victory, gorgeous. I still want a moment alone with you.", "You really know how to make a contest feel like foreplay to a flirtation.", "I'm smiling because of that bid—and because I know you're watching me.", "Come closer and tell me whether you enjoyed that as much as I did.", "I'm not ready to let you go yet. Give me another deliciously close round.", "You make losing my composure look dangerously appealing.", "You play with such confidence. I could watch you all night.", "I like you best when you're determined. Show me that look again.", "One more bid like that and I might ask you to stay after the auction.", "This rivalry is getting rather seductive, don't you think?", "I'll remember that little challenge when we're together later."];
 function auctionEventReaction(bids, winner) {
     if (!getAuctionPersonalitySettings().dialogue || !getAuctionPersonalitySettings().eventReactions || !winner || Math.random() >= auctionEventChance(.35)) return null;
     const ordered = bids.filter((bid) => bid.bid > 0).sort((a, b) => b.bid - a.bid);
     if (ordered.length < 2 || ordered[0].bid - ordered[1].bid > Math.max(3, ordered[0].bid * .2)) return null;
     const speaker = ordered.find((bid) => bid.id !== "john" && bid.id !== winner.id) || ordered.find((bid) => bid.id !== "john");
     if (!speaker) return null;
-    const lines = ["That was dangerously close, darling. I like it when you make me chase you.", "You almost had me there. Come closer and I might tell you how to win me over.", "You made my heart race with that bid. Don't stop now.", "I do love a little tension between us. Shall we make the next round even hotter?", "Look at you, teasing me with a bid like that. I'm paying attention.", "You can have this one, gorgeous. But I'm not finished playing with you.", "Such a close call. I could get used to this delicious competition.", "You know exactly how to tempt me into another round, don't you?", "If you wanted my attention, darling, you certainly have it now.", "That was almost unfairly attractive. Try it again for me.", "I like how boldly you go after what you want. Show me some more.", "You and I are going to have fun together, aren't we?",
-        "That was close enough to leave me breathless. Come collect your compliment.", "You made me want that one almost as much as I want your attention.", "I love how hard you made me work. Shall we find another excuse to play?", "You have me all worked up over a single bid, darling.", "I could feel the tension between us. I hope you plan to keep it going.", "You nearly stole it from me. I might let you try stealing my attention next.", "The way you challenged me was irresistible. I want another round with you.", "You've got a talent for keeping me on edge, and I'm enjoying every second.", "If you wanted to make me think about you later, that certainly worked.", "You can have the victory, gorgeous. I still want a moment alone with you.", "You really know how to make a contest feel like foreplay to a flirtation.", "I'm smiling because of that bid—and because I know you're watching me.", "Come closer and tell me whether you enjoyed that as much as I did.", "I'm not ready to let you go yet. Give me another deliciously close round.", "You make losing my composure look dangerously appealing.", "You play with such confidence. I could watch you all night.", "I like you best when you're determined. Show me that look again.", "One more bid like that and I might ask you to stay after the auction.", "This rivalry is getting rather seductive, don't you think?", "I'll remember that little challenge when we're together later."];
+    const lines = getAuctionDialoguePool("reaction", AUCTION_REACTION_DIALOGUE);
     return { bidderId: speaker.id, text: lines[Math.floor(Math.random() * lines.length)] };
 }
 
-async function resolveAuctionBid(amount, expectedIndex) {
+function createOpenAuctionLot(game) {
+    const ref = game.sequence[game.index], seller = game.consignmentLots?.[auctionPhotoKey(ref)]?.sellerId, minimum = game.auctionFormat?.type === "reserve" ? Math.max(1, Number(game.auctionFormat.minimum) || 5) : 1;
+    const order = ["john", ...game.bidders.map((bidder) => bidder.id)].filter((id) => id !== seller), caps = {}, explanations = {}, quality = auctionRankValue(ref), ranked = getAuctionTradeValues().has(auctionPhotoKey(ref));
+    game.bidders.filter((bidder) => bidder.id !== seller).forEach((bidder) => { const explanation = {}; caps[bidder.id] = auctionBotBid(bidder, game.balances[bidder.id], game.sequence.length - game.index, quality, order.filter((id) => id !== bidder.id), ref, game.moods?.[bidder.id], explanation); explanations[bidder.id] = { ...explanation, ranked, minimum, available: Boolean(findAttachment(ref)) }; });
+    return { index: game.index, order, turnIndex: 0, passed: [], highBid: 0, highBidder: null, events: [], caps, explanations, minimum };
+}
+function migrateOpenAuctionPasses(original) {
+    const lot = structuredClone(original); let passed = [];
+    for (const event of lot.events || []) { if (event.action === "bid") passed = []; else if (event.action === "pass" && !passed.includes(event.id)) passed.push(event.id); }
+    lot.passed = passed;
+    const last = lot.events?.[lot.events.length - 1], lastIndex = last ? lot.order.indexOf(last.id) : -1;
+    if (lastIndex >= 0) for (let offset = 1; offset <= lot.order.length; offset++) { const index = (lastIndex + offset) % lot.order.length, id = lot.order[index]; if (id !== lot.highBidder && !passed.includes(id)) { lot.turnIndex = index; break; } }
+    return lot;
+}
+function applyOpenAuctionTurn(game, original, amount) {
+    const lot = structuredClone(original), actor = lot.order[lot.turnIndex];
+    if (!actor || lot.passed.includes(actor) || actor === lot.highBidder) throw new Error("This bidding turn is no longer available.");
+    const required = lot.highBid ? lot.highBid + 1 : lot.minimum, available = Boolean(findAttachment(game.sequence[game.index]));
+    if (actor === "john") {
+        if (!Number.isInteger(amount) || amount < 0 || (amount > 0 && (!available || amount < required || amount > game.remaining))) throw new Error(`Enter a whole-number bid from ${required} to ${game.remaining}, or pass.`);
+    } else { const cap = Number(lot.caps[actor]) || 0; amount = available && cap >= required ? Math.min(cap, required + (required >= 10 ? Math.max(1, Math.floor(required * .08)) : 0)) : 0; }
+    if (amount > 0) { lot.highBid = amount; lot.highBidder = actor; lot.passed = []; lot.events.push({ id: actor, action: "bid", amount }); }
+    else { lot.passed.push(actor); lot.events.push({ id: actor, action: "pass", amount: 0 }); }
+    const remaining = lot.order.filter((id) => !lot.passed.includes(id));
+    const finished = lot.highBidder ? remaining.every((id) => id === lot.highBidder) : remaining.length === 0;
+    if (!finished) { for (let offset = 1; offset <= lot.order.length; offset++) { const next = (lot.turnIndex + offset) % lot.order.length, id = lot.order[next]; if (!lot.passed.includes(id) && id !== lot.highBidder) { lot.turnIndex = next; break; } } }
+    return { lot, finished };
+}
+async function advanceOpenAuctionTurn(amount, expectedIndex, expectedTurn) {
+    const game = state.blindAuction, original = game.openLot;
+    if (game.saving || game.screen !== "play" || game.index !== expectedIndex || !original || original.turnIndex !== expectedTurn) return;
+    let next; try { next = applyOpenAuctionTurn(game, original, amount); } catch (error) { alert(error.message); return; }
+    if (next.finished) { const johnBid = Math.max(0, ...next.lot.events.filter((event) => event.id === "john" && event.action === "bid").map((event) => event.amount)); await resolveAuctionBid(johnBid, expectedIndex, next.lot); return; }
+    const serverId = game.serverId; game.saving = true; renderMessages();
+    try { const sessions = { ...(state.structure.settings.auctionSessions || {}), [serverId]: snapshotAuctionSession(game, { openLot: next.lot }) }; await saveAuctionChanges({ auctionSessions: sessions }); if (game.serverId === serverId && game.index === expectedIndex && game.openLot === original) game.openLot = next.lot; }
+    catch (error) { console.error("Could not save bidding turn:", error); alert(auctionSaveErrorMessage(error)); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction" && game.serverId === serverId) renderMessages(); }
+}
+
+async function resolveAuctionBid(amount, expectedIndex, openLot = null) {
     const game = state.blindAuction;
     if (game.saving || game.screen !== "play" || expectedIndex !== game.index || !Number.isInteger(amount) || amount < 0 || amount > game.remaining) return;
     const minimum = game.auctionFormat?.type === "reserve" ? Math.max(1, Number(game.auctionFormat.minimum) || 5) : 1;
@@ -4202,13 +4348,13 @@ async function resolveAuctionBid(amount, expectedIndex) {
         const currentBidders = new Map(getAuctionBidders().map((bidder) => [bidder.id, bidder]));
         const activeBidders = game.bidders.map((bidder) => currentBidders.get(bidder.id) || bidder), bidderIds = ["john", ...activeBidders.map((bidder) => bidder.id)];
         const ranked = getAuctionTradeValues().has(auctionPhotoKey(ref));
-        const bids = [{ id: "john", bid: available && consignment?.sellerId !== "john" ? amount : 0 }, ...activeBidders.map((bidder) => { const explanation = {}; const bid = available && bidder.id !== consignment?.sellerId ? auctionBotBid(bidder, game.balances[bidder.id], game.sequence.length - game.index, quality, bidderIds.filter((id) => id !== bidder.id), ref, game.moods?.[bidder.id], explanation) : 0; return { id: bidder.id, bid: bid >= minimum ? bid : 0, explanation: { ...explanation, ranked, minimum, available, seller: bidder.id === consignment?.sellerId } }; })];
+        const bids = openLot ? bidderIds.map((id) => ({ id, bid: Math.max(0, ...openLot.events.filter((event) => event.id === id && event.action === "bid").map((event) => event.amount)), explanation: id === "john" ? undefined : { ...(openLot.explanations[id] || {}), ranked, minimum, available, seller: id === consignment?.sellerId } })) : [{ id: "john", bid: available && consignment?.sellerId !== "john" ? amount : 0 }, ...activeBidders.map((bidder) => { const explanation = {}; const bid = available && bidder.id !== consignment?.sellerId ? auctionBotBid(bidder, game.balances[bidder.id], game.sequence.length - game.index, quality, bidderIds.filter((id) => id !== bidder.id), ref, game.moods?.[bidder.id], explanation) : 0; return { id: bidder.id, bid: bid >= minimum ? bid : 0, explanation: { ...explanation, ranked, minimum, available, seller: bidder.id === consignment?.sellerId } }; })];
         const ordered = shuffledCopy(bids).sort((a, b) => b.bid - a.bid);
-        const winner = ordered[0].bid > 0 ? ordered[0] : null;
-        const price = winner ? Math.min(winner.bid, Math.max(minimum, (ordered[1]?.bid || 0) + 1)) : 0;
+        const winner = openLot ? (openLot.highBidder ? bids.find((bid) => bid.id === openLot.highBidder) : null) : (ordered[0].bid > 0 ? ordered[0] : null);
+        const price = openLot ? (winner ? openLot.highBid : 0) : (winner ? Math.min(winner.bid, Math.max(minimum, (ordered[1]?.bid || 0) + 1)) : 0);
         const shownDialogue = currentAuctionDialogue(game);
         const fee = winner && consignment ? Math.floor(price * (Number(game.consignmentFeePercent) || 0) / 100) : 0, proceeds = winner && consignment ? price - fee : 0;
-        const result = { id: newLocalGameRecordId(), auctionId: game.auctionId, serverId: game.serverId, ref: structuredClone(ref), ownerId: winner?.id || null, price, johnBid: amount, bids, dialogue: shownDialogue, eventReaction: auctionEventReaction(bids, winner), rankValue: quality, createdAt: new Date().toISOString(), ...(consignment ? { sellerId: consignment.sellerId, consignmentFee: fee, sellerProceeds: proceeds } : {}) };
+        const result = { id: newLocalGameRecordId(), auctionId: game.auctionId, serverId: game.serverId, ref: structuredClone(ref), ownerId: winner?.id || null, price, johnBid: amount, bids, ...(openLot ? { biddingMode: "open", bidEvents: structuredClone(openLot.events) } : {}), dialogue: shownDialogue, eventReaction: auctionEventReaction(bids, winner), rankValue: quality, createdAt: new Date().toISOString(), ...(consignment ? { sellerId: consignment.sellerId, consignmentFee: fee, sellerProceeds: proceeds } : {}) };
         const history = [...(state.structure.settings.auctionHistory || []), result];
         const ownership = winner ? [...(state.structure.settings.auctionOwnership || []).filter((entry) => !consignment || entry.serverId !== game.serverId || auctionPhotoKey(entry.ref) !== auctionPhotoKey(ref)), { serverId: game.serverId, ownerId: winner.id, ref: structuredClone(ref), price, auctionId: game.auctionId, acquiredAt: result.createdAt, ...(consignment ? { acquiredVia: "consignment", previousOwnerId: consignment.sellerId } : {}) }] : (state.structure.settings.auctionOwnership || []);
         const milestones = auctionNewMilestones(game.serverId, state.structure.settings.auctionOwnership || [], ownership, result);
@@ -4224,12 +4370,12 @@ async function resolveAuctionBid(amount, expectedIndex) {
         const evolvedById = new Map(nextBidders.map((bidder) => [bidder.id, bidder]));
         const allBidders = (state.structure.settings.auctionBidders || []).map((bidder) => evolvedById.get(bidder.id) || bidder);
         const sessions = { ...(state.structure.settings.auctionSessions || {}) };
-        sessions[game.serverId] = snapshotAuctionSession(game, { screen: "reveal", index: nextIndex, results: nextResults, remaining: balances.john, balances: nextBalances, bidders: nextBidders, dialogue: shownDialogue });
+        sessions[game.serverId] = snapshotAuctionSession(game, { screen: "reveal", index: nextIndex, results: nextResults, remaining: balances.john, balances: nextBalances, bidders: nextBidders, dialogue: shownDialogue, openLot: null });
         const changes = { auctionHistory: history, auctionOwnership: ownership, auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [game.serverId]: balances }, auctionSessions: sessions, auctionBidders: allBidders };
         if (winner && consignment) { changes.auctionConsignments = (state.structure.settings.auctionConsignments || []).filter((item) => item.serverId !== game.serverId || auctionPhotoKey(item.ref) !== auctionPhotoKey(ref)); changes.auctionTrades = invalidateAuctionTradesForRefs(game.serverId, [ref]); }
         if (milestones.length) changes.auctionMilestones = [...(state.structure.settings.auctionMilestones || []), ...milestones];
         await saveAuctionChanges(changes);
-        game.remaining = balances.john; game.balances = nextBalances; game.results = nextResults; game.index = nextIndex; game.bidders = nextBidders; game.dialogue = shownDialogue; game.screen = "reveal";
+        game.remaining = balances.john; game.balances = nextBalances; game.results = nextResults; game.index = nextIndex; game.bidders = nextBidders; game.dialogue = shownDialogue; game.openLot = null; game.screen = "reveal";
         renderChannels();
     } catch (error) { console.error("Could not save auction round:", error); alert("The round could not be saved locally. No bid was charged; please try again."); }
     finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); if (game.screen === "reveal") revealAuctionStage(); } }
@@ -4241,12 +4387,13 @@ async function continueAuctionAfterReveal() {
     game.saving = true; renderMessages();
     try {
         const sessions = { ...(state.structure.settings.auctionSessions || {}) }, finished = game.index >= game.sequence.length;
-        let dialogue = null, dialogueCount = game.dialogueCount || 0, lastDialogueRound = game.lastDialogueRound;
+        let dialogue = null, dialogueCount = game.dialogueCount || 0, lastDialogueRound = game.lastDialogueRound, nextLot = null;
         if (finished) delete sessions[game.serverId];
         else {
             dialogue = nextAuctionDialogue(game, game.bidders, game.results[game.results.length - 1]);
             if (dialogue) { dialogueCount += 1; lastDialogueRound = game.index; }
-            sessions[game.serverId] = snapshotAuctionSession(game, { screen: "play", dialogue, dialogueCount, lastDialogueRound });
+            if (game.biddingMode === "open") nextLot = createOpenAuctionLot(game);
+            sessions[game.serverId] = snapshotAuctionSession(game, { screen: "play", dialogue, dialogueCount, lastDialogueRound, openLot: nextLot });
         }
         const changes = { auctionSessions: sessions };
         if (finished) changes.auctionSeasonCompletions = recordAuctionSeasonCompletion(game);
@@ -4255,7 +4402,7 @@ async function continueAuctionAfterReveal() {
             catch (error) { console.warn("Could not prepare suggested trades:", error); }
         }
         await saveAuctionChanges(changes);
-        game.screen = finished ? "results" : "play"; game.dialogue = dialogue; game.dialogueCount = dialogueCount; game.lastDialogueRound = lastDialogueRound;
+        game.screen = finished ? "results" : "play"; game.dialogue = dialogue; game.dialogueCount = dialogueCount; game.lastDialogueRound = lastDialogueRound; game.openLot = nextLot;
         renderChannels();
     } catch (error) { console.error("Could not continue auction:", error); alert("Could not save the next step. The completed sale is saved, and you can try again."); }
     finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); revealAuctionStage(); } }
@@ -4401,10 +4548,10 @@ function renderPersonalityGames() {
         const start = document.createElement("button"); start.className = "adventurePrimary"; start.textContent = game.busy ? "Finding photos…" : "Start unranked game"; start.disabled = game.busy; start.addEventListener("click", startPersonalityGame); page.appendChild(start);
     } else if (game.screen === "finished") { const heading = document.createElement("h4"); heading.textContent = "Tournament winner · unranked"; page.appendChild(heading); if (game.winner) page.appendChild(auctionImageCard(game.winner, "Your winner")); }
     else {
-        const hostLine = document.createElement("p"); hostLine.className = "auctionDialogue"; hostLine.textContent = `${game.host.name}: “${game.mode === "quiz" ? "Can you guess which channel this is from, darling?" : game.mode === "thisOrThat" ? "Choose the one you like best. I'm curious about your taste." : "Pick the one you'd like to send through, gorgeous."}”`; page.appendChild(hostLine);
+        const hostLine = document.createElement("p"); hostLine.className = "auctionDialogue"; hostLine.textContent = `${game.host.name}: “${scriptedAuctionDialogue(game.mode === "quiz" ? "game_quiz_prompt" : game.mode === "thisOrThat" ? "game_choice_prompt" : "game_tournament_prompt", `${game.host.id}:${game.rounds}`)}”`; page.appendChild(hostLine);
         const counter = document.createElement("p"); counter.textContent = game.mode === "quiz" ? `Session only: ${game.score}/${game.rounds} correct` : game.mode === "tournament" ? `Round of ${game.round.length} · match ${Math.floor(game.matchIndex / 2) + 1} of ${game.round.length / 2}` : `Session choices: ${game.rounds}`; page.appendChild(counter);
-        if (game.mode === "quiz") { page.appendChild(auctionImageCard(game.current[0], "Tap to expand")); const answers = document.createElement("div"); answers.className = "personalityGameAnswers"; game.answers.forEach((id) => { const button = document.createElement("button"); button.textContent = `#${getChannelById(id)?.name || "unavailable channel"}`; button.disabled = Boolean(game.feedback) || game.busy; button.addEventListener("click", () => { if (game.feedback) return; const correct = id === game.current[0].channelId; game.rounds += 1; if (correct) game.score += 1; game.feedback = correct ? "Correct. You know my collection beautifully." : `Not quite. It came from #${getChannelById(game.current[0].channelId)?.name || "the original channel"}.`; renderMessages(); }); answers.appendChild(button); }); page.appendChild(answers); }
-        else { const choices = document.createElement("div"); choices.className = "personalityGameChoices"; game.current.forEach((ref) => { const button = document.createElement("button"); button.type = "button"; button.disabled = Boolean(game.feedback) || game.busy; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo choice"; button.appendChild(image); } const label = document.createElement("span"); label.textContent = "Choose this photo"; button.appendChild(label); button.addEventListener("click", () => { if (game.mode === "tournament") choosePersonalityTournamentPhoto(game, ref); else { game.rounds += 1; game.feedback = "A tempting choice. Shall we see another pair?"; renderMessages(); } }); choices.appendChild(button); }); page.appendChild(choices); }
+        if (game.mode === "quiz") { page.appendChild(auctionImageCard(game.current[0], "Tap to expand")); const answers = document.createElement("div"); answers.className = "personalityGameAnswers"; game.answers.forEach((id) => { const button = document.createElement("button"); button.textContent = `#${getChannelById(id)?.name || "unavailable channel"}`; button.disabled = Boolean(game.feedback) || game.busy; button.addEventListener("click", () => { if (game.feedback) return; const correct = id === game.current[0].channelId; game.rounds += 1; if (correct) game.score += 1; game.feedback = scriptedAuctionDialogue(correct ? "game_correct" : "game_wrong", `${game.host.id}:${game.rounds}`, { channel: getChannelById(game.current[0].channelId)?.name || "the original channel" }); renderMessages(); }); answers.appendChild(button); }); page.appendChild(answers); }
+        else { const choices = document.createElement("div"); choices.className = "personalityGameChoices"; game.current.forEach((ref) => { const button = document.createElement("button"); button.type = "button"; button.disabled = Boolean(game.feedback) || game.busy; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo choice"; button.appendChild(image); } const label = document.createElement("span"); label.textContent = "Choose this photo"; button.appendChild(label); button.addEventListener("click", () => { if (game.mode === "tournament") choosePersonalityTournamentPhoto(game, ref); else { game.rounds += 1; game.feedback = scriptedAuctionDialogue("game_choice_feedback", `${game.host.id}:${game.rounds}`); renderMessages(); } }); choices.appendChild(button); }); page.appendChild(choices); }
         if (game.feedback) { const feedback = document.createElement("p"); feedback.className = "auctionDialogue"; feedback.textContent = `${game.host.name}: “${game.feedback}”`; page.appendChild(feedback); const next = document.createElement("button"); next.textContent = "Next round"; next.disabled = game.busy; next.addEventListener("click", () => nextPersonalityGameRound(game)); page.appendChild(next); }
     }
     if (game.screen !== "setup") { const end = document.createElement("button"); end.textContent = game.screen === "finished" ? "Play again" : "End game"; end.disabled = game.busy; end.addEventListener("click", () => { clearPersonalityGamePhotoCache(game); state.personalityGame = { serverId, hostId: game.hostId, mode: game.mode, screen: "setup" }; renderMessages(); }); page.appendChild(end); } els.messages.appendChild(page);
@@ -4513,6 +4660,16 @@ function renderPunishmentChallenge() {
 }
 
 let auctionDinnerTimer;
+const AUCTION_JEALOUSY_DIALOGUE = [
+    "I heard you had dinner with {other}. I hope you saved some of that irresistible attention for me.",
+    "{other} had you all to herself? Now I'm imagining how much more fun we could have together.",
+    "So {other} got a dinner date with you. I'm just jealous enough to want you closer tonight.",
+    "I won't pretend I'm not a little jealous of {other}. Make it up to me with a little private attention?",
+    "Was dinner with {other} as tempting as it sounds? Come sit beside me and let me make you forget it.",
+    "{other} has been keeping you busy, hasn't she? I have a few delicious ideas for stealing you away.",
+    "I heard about your evening with {other}. Now I want my turn to make you blush, darling.",
+    "If {other} gets to charm you over dinner, I think I deserve the chance to be even more distracting."
+];
 function getAuctionDinnerJealousy(bidder) {
     const settings = getAuctionPersonalitySettings();
     if (!bidder || !settings.dinnerJealousy || !settings.dialogue) return null;
@@ -4521,18 +4678,9 @@ function getAuctionDinnerJealousy(bidder) {
     if (!latest || latest.ownerId === bidder.id || (latest.guestIds || []).includes(bidder.id)) return null;
     const other = getAuctionBidders().find((item) => item.id === latest.ownerId);
     if (!other) return null;
-    const lines = [
-        `I heard you had dinner with ${other.name}. I hope you saved some of that irresistible attention for me.`,
-        `${other.name} had you all to herself? Now I'm imagining how much more fun we could have together.`,
-        `So ${other.name} got a dinner date with you. I'm just jealous enough to want you closer tonight.`,
-        `I won't pretend I'm not a little jealous of ${other.name}. Make it up to me with a little private attention?`,
-        `Was dinner with ${other.name} as tempting as it sounds? Come sit beside me and let me make you forget it.`,
-        `${other.name} has been keeping you busy, hasn't she? I have a few delicious ideas for stealing you away.`,
-        `I heard about your evening with ${other.name}. Now I want my turn to make you blush, darling.`,
-        `If ${other.name} gets to charm you over dinner, I think I deserve the chance to be even more distracting.`
-    ];
+    const lines = getAuctionDialoguePool("jealousy", AUCTION_JEALOUSY_DIALOGUE);
     const hash = [...`${bidder.id}:${latest.id || latest.finishedAt}`].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
-    return { otherId: other.id, line: lines[hash % lines.length] };
+    return { otherId: other.id, line: lines[hash % lines.length].split("{other}").join(other.name) };
 }
 function prepareAuctionDinnerGuest(host, allowed, count, existingRefs, values) {
     if (!allowed || !getAuctionPersonalitySettings().dinnerGuests || Math.random() >= auctionEventChance(.35)) return null;
@@ -4578,14 +4726,19 @@ async function advanceAuctionDinner(index) {
     renderMessages();
     if (!show.conversation) auctionDinnerTimer = window.setTimeout(requestNextAuctionDinnerPhoto, item.seconds * 1000);
 }
+const AUCTION_DINNER_CALLBACK_DEFAULTS = {
+    dinner: ["I've been thinking about our last dinner, darling. I'm glad I get you to myself again.", "I remember the way you looked at me over dinner. I've been hoping you'd come back for more of my attention.", "Our last evening together left me wanting another. Come sit a little closer this time."],
+    trade: ["I still remember the trade we made. You negotiate so charmingly; perhaps we should do it again.", "I've been thinking about our trade—and the way you persuaded me. You can try that charm on me again tonight.", "That trade of ours was tempting. I'd love to see what else you can talk me into."],
+    contest: ["Remember how close our bids were? That little rivalry made me want more of your attention.", "I've been replaying our close auction in my head. You looked irresistible when you challenged me.", "Our bidding rivalry had me on the edge of my seat. I'm enjoying having you a little closer now."]
+};
 function auctionDinnerCallback(bidder) {
     const callbacks = [], serverId = getActiveServer()?.id;
     const dinners = (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId && item.ownerId === bidder.id);
-    if (dinners.length) callbacks.push("I've been thinking about our last dinner, darling. I'm glad I get you to myself again.", "I remember the way you looked at me over dinner. I've been hoping you'd come back for more of my attention.", "Our last evening together left me wanting another. Come sit a little closer this time.");
+    if (dinners.length) callbacks.push(...getAuctionDialoguePool("memory_dinner", AUCTION_DINNER_CALLBACK_DEFAULTS.dinner));
     const trade = [...getAuctionTrades()].reverse().find((item) => item.status === "accepted" && [item.fromOwnerId, item.toOwnerId].includes("john") && [item.fromOwnerId, item.toOwnerId].includes(bidder.id));
-    if (trade) callbacks.push("I still remember the trade we made. You negotiate so charmingly; perhaps we should do it again.", "I've been thinking about our trade—and the way you persuaded me. You can try that charm on me again tonight.", "That trade of ours was tempting. I'd love to see what else you can talk me into.");
+    if (trade) callbacks.push(...getAuctionDialoguePool("memory_trade", AUCTION_DINNER_CALLBACK_DEFAULTS.trade));
     const contest = [...getAuctionHistory()].reverse().find((item) => { const yours = (item.bids || []).find((bid) => bid.id === "john" && bid.bid > 0), hers = (item.bids || []).find((bid) => bid.id === bidder.id && bid.bid > 0); return yours && hers && Math.abs(yours.bid - hers.bid) <= Math.max(3, Math.max(yours.bid, hers.bid) * .2); });
-    if (contest) callbacks.push("Remember how close our bids were? That little rivalry made me want more of your attention.", "I've been replaying our close auction in my head. You looked irresistible when you challenged me.", "Our bidding rivalry had me on the edge of my seat. I'm enjoying having you a little closer now.");
+    if (contest) callbacks.push(...getAuctionDialoguePool("memory_contest", AUCTION_DINNER_CALLBACK_DEFAULTS.contest));
     return callbacks.length && Math.random() < .6 ? callbacks[Math.floor(Math.random() * callbacks.length)] : null;
 }
 async function requestNextAuctionDinnerPhoto() {
@@ -4608,10 +4761,16 @@ async function chooseAuctionDinnerPhoto(chosenIndex) {
     catch (error) { console.error(error); alert("Could not save your photo choice locally. Please try again or let her choose."); }
     finally { selection.saving = false; if (state.activeView.type === "auctionDinner" && state.auctionDinner === show) renderMessages(); }
 }
+const AUCTION_DINNER_REPLY_DEFAULTS = {
+    curious: ["You're curious again. I love that you pay attention: #{channel} always draws my eye—and so do you.", "Asking me again? I love showing you #{channel}, especially when it brings you this close.", "Curious again, darling? #{channel} catches my eye, but you're becoming my favorite distraction.", "I have a soft spot for #{channel}. But watching you take an interest might be my favorite part.", "Something about #{channel} draws me in. The way you're watching me now is just as tempting.", "I chose this from #{channel} because I wanted to share a favorite with someone irresistible."],
+    flirt: ["There you go tempting me again. Come closer; I intend to make this worth your while.", "Flirting again? Keep that up and I may not want to let you go tonight.", "You're drawing me in again, gorgeous. Stay close and see how much I enjoy it.", "Come closer, gorgeous. If you keep tempting me, I may want you all to myself tonight.", "Mmm, come here. I've been hoping you'd give me an excuse to get closer.", "You have no idea how tempting you sound. Stay beside me and let me enjoy it.", "Flirting with me again? I was hoping you would. Stay close, darling.", "There you go charming me again. I could get used to having you this near.", "You're teasing me again, and I'm enjoying every moment.", "Mmm, I like your confidence. Come a little closer and keep me company.", "I'd love to. Stay close enough that I can tell you exactly what I'm thinking.", "Careful, darling. If you invite me closer, I might not want to move away."],
+    compliment: ["Another compliment? Careful, darling—I'm starting to expect your attention, and I love it.", "Sweet-talking me again? I could listen to you all night.", "Another lovely compliment. You're giving me excellent reasons to keep you close.", "You like my taste? Wait until you see what else I chose to share with you.", "You have wonderful taste yourself, darling. After all, you chose to spend the evening with me.", "Keep talking to me like that and I may have to reward you with another favorite."]
+};
 function auctionDinnerResponse(bidder, choice, ref) {
     const memory = bidder.dinnerMemory || {}, bold = getAuctionPersonalitySliders(bidder).flirty >= 65;
     const channel = getChannelById(ref?.channelId)?.name || "this collection";
     const pick = (lines) => lines[Math.floor(Math.random() * lines.length)];
+    if (hasAuctionDialogueOverride(`reply_${choice}`) && AUCTION_DINNER_REPLY_DEFAULTS[choice]) return pick(getAuctionDialoguePool(`reply_${choice}`, AUCTION_DINNER_REPLY_DEFAULTS[choice])).split("{channel}").join(channel);
     if (choice === "curious") return memory.lastChoice === "curious" ? pick([`You're curious again. I love that you pay attention: #${channel} always draws my eye—and so do you.`, `Asking me again? I love showing you #${channel}, especially when it brings you this close.`, `Curious again, darling? #${channel} catches my eye, but you're becoming my favorite distraction.`]) : pick([`I have a soft spot for #${channel}. But watching you take an interest might be my favorite part.`, `Something about #${channel} draws me in. The way you're watching me now is just as tempting.`, `I chose this from #${channel} because I wanted to share a favorite with someone irresistible.`]);
     if (choice === "flirt") return bold ? (memory.lastChoice === "flirt" ? pick(["There you go tempting me again. Come closer; I intend to make this worth your while.", "Flirting again? Keep that up and I may not want to let you go tonight.", "You're drawing me in again, gorgeous. Stay close and see how much I enjoy it."]) : pick(["Come closer, gorgeous. If you keep tempting me, I may want you all to myself tonight.", "Mmm, come here. I've been hoping you'd give me an excuse to get closer.", "You have no idea how tempting you sound. Stay beside me and let me enjoy it."])) : (memory.lastChoice === "flirt" ? pick(["Flirting with me again? I was hoping you would. Stay close, darling.", "There you go charming me again. I could get used to having you this near.", "You're teasing me again, and I'm enjoying every moment."]) : pick(["Mmm, I like your confidence. Come a little closer and keep me company.", "I'd love to. Stay close enough that I can tell you exactly what I'm thinking.", "Careful, darling. If you invite me closer, I might not want to move away."]));
     return memory.lastChoice === "compliment" ? pick(["Another compliment? Careful, darling—I'm starting to expect your attention, and I love it.", "Sweet-talking me again? I could listen to you all night.", "Another lovely compliment. You're giving me excellent reasons to keep you close."]) : pick(["You like my taste? Wait until you see what else I chose to share with you.", "You have wonderful taste yourself, darling. After all, you chose to spend the evening with me.", "Keep talking to me like that and I may have to reward you with another favorite."]);
@@ -4639,7 +4798,7 @@ function renderAuctionDinner() {
     if (show.screen === "setup" || show.screen === "end") {
         const table = document.createElement("div"); table.className = "auctionDinnerTable"; const title = document.createElement("h3"); title.textContent = show.screen === "end" ? "Until next time…" : `Dinner with ${bidder.name}`; table.appendChild(title);
         if (bidder.avatarRef) table.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name));
-        const line = document.createElement("p"); line.textContent = show.screen === "end" ? (show.guestIds?.length ? `“I loved sharing this evening with you. Come back soon, darling.”` : `“I loved having you all to myself. Come back soon, darling.”`) : `“Sit close, darling. I have a few favorites I’d love to show you.”`; table.appendChild(line); page.appendChild(table);
+        const line = document.createElement("p"); line.textContent = `“${scriptedAuctionDialogue(show.screen === "end" ? (show.guestIds?.length ? "dinner_end_guest" : "dinner_end") : "dinner_start", bidder.id)}”`; table.appendChild(line); page.appendChild(table);
         if (show.screen === "end") { const recap = document.createElement("details"), summary = document.createElement("summary"), info = document.createElement("p"); summary.textContent = "Dinner recap"; const guest = show.guestIds?.length ? ` Guest: ${show.guestIds.map(getAuctionOwnerName).join(", ")} (${show.guestPhotoCount} contributed photos).` : " No guest joined."; info.textContent = `${show.items.length} photos shown with ${bidder.name}.${guest} This dinner is recorded locally; it does not change trade trust or bidding rivalry.`; recap.append(summary, info); page.appendChild(recap); }
         if (show.screen === "setup") {
             const items = getAuctionRosterSections(bidder.id).items, help = document.createElement("p"); help.textContent = `${bidder.name} will choose from her owned photos, set each photo’s duration and BPM, and guide you through them. Sometimes you can pick the next photo; the source channels you choose can influence later tours. The metronome is restored when you leave.`; page.appendChild(help);
@@ -4651,25 +4810,27 @@ function renderAuctionDinner() {
             const specialRefs = getPunishmentFavoriteRefs(bidder), specialToggle = document.createElement("input"); specialToggle.type = "checkbox"; specialToggle.checked = Boolean(specialRefs.length); if (specialRefs.length) { const specialLabel = document.createElement("label"); specialLabel.className = "auctionDinnerConversationToggle"; specialLabel.append(specialToggle, document.createTextNode(" Include her punishment-photo favorites")); page.appendChild(specialLabel); }
             const begin = document.createElement("button"); begin.className = "adventurePrimary"; begin.textContent = "Begin the tour"; begin.disabled = !items.length && !specialRefs.length;
             begin.addEventListener("click", () => { const entered = count.value.trim(); if (entered && (!Number.isInteger(Number(entered)) || Number(entered) < 1 || Number(entered) > 50)) { alert("Enter a number from 1 to 50, or leave it blank."); return; } if (inviteToggle.checked && (!guestCount.value.trim() || !Number.isInteger(Number(guestCount.value)) || Number(guestCount.value) < 1 || Number(guestCount.value) > 5)) { alert("Choose 1 to 5 guest photos."); return; } const values = getAuctionTradeValues(), requested = entered ? Number(entered) : (3 + Math.floor(Math.random() * 6)), favoriteKeys = new Set(getAuctionPersonalFavorites(bidder, items, values).map(auctionPhotoKey)); const specialKeys = new Set((specialToggle.checked ? specialRefs : []).map(auctionPhotoKey)); const combined = [...items]; if (specialToggle.checked) specialRefs.forEach((ref) => { if (!combined.some((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref))) combined.push({ ref }); }); if (!combined.length) { alert("Choose at least one available photo for the tour."); return; } const preference = (ref) => 1 + Math.min(5, Number(bidder.dinnerMemory?.photoChannels?.[ref.channelId]) || 0) * .05; const noise = new Map(combined.map((item) => [auctionPhotoKey(item.ref), Math.random() * 50])); const score = (item) => { const base = auctionPersonalScore(bidder, item.ref, values) * preference(item.ref) * (favoriteKeys.has(auctionPhotoKey(item.ref)) ? 1.25 : 1), rank = auctionTradeValue(item.ref, values); return theme.value === "competitive" ? base + rank * .4 : theme.value === "mysterious" ? base * .4 + (100 - rank) : theme.value === "playful" ? base * .7 + noise.get(auctionPhotoKey(item.ref)) : base; }; const ranked = [...combined].sort((a, b) => score(b) - score(a)); const selected = ranked.slice(0, Math.min(requested, ranked.length)); if (specialKeys.size && !selected.some((item) => specialKeys.has(auctionPhotoKey(item.ref)))) selected[selected.length - 1] = ranked.find((item) => specialKeys.has(auctionPhotoKey(item.ref))); const factor = Number(bidder.strategy?.factor) || 1;
-                const lines = shuffledCopy(AUCTION_DINNER_THEMES[theme.value] || AUCTION_DINNER_DIALOGUE);
+                const generalLines = shuffledCopy(getAuctionDialoguePool("dinner", [...AUCTION_DINNER_DIALOGUE, ...getCustomAuctionDinnerDialogue()]));
+                const themedLines = AUCTION_DINNER_THEMES[theme.value] ? shuffledCopy(getAuctionDialoguePool(`dinner_${theme.value}`, AUCTION_DINNER_THEMES[theme.value])) : [];
+                const lines = themedLines.length ? [...themedLines.flatMap((line, index) => [line, generalLines[index]]), ...generalLines.slice(themedLines.length)] : generalLines;
                 show.items = selected.map((item, index) => ({ ref: structuredClone(item.ref), isFavorite: favoriteKeys.has(auctionPhotoKey(item.ref)), seconds: Math.max(5, Math.min(25, Math.round(7 + factor * 3 + (index % 4) * 2))), bpm: Math.max(50, Math.min(200, Math.round(75 + factor * 30 + (index % 5) * 8))), line: specialKeys.has(auctionPhotoKey(item.ref)) ? punishmentFavoriteDialogue(bidder, item.ref) : lines[(index + (bidder.personality?.bioVariant || 0)) % lines.length] }));
-                const invitation = prepareAuctionDinnerGuest(bidder, inviteToggle.checked, guestCount.value, show.items.map((item) => item.ref), values); show.guestIds = invitation ? [invitation.guest.id] : []; show.guestPhotoCount = invitation?.refs.length || 0; show.guestIntro = invitation ? `I invited ${invitation.guest.name} to join us, darling. I thought we might enjoy sharing your attention.` : "";
-                if (invitation) { const guestFactor = Number(invitation.guest.strategy?.factor) || 1, guestLines = shuffledCopy(AUCTION_DINNER_GUEST_LINES), total = show.items.length; invitation.refs.forEach((ref, index) => { show.items.splice(Math.min(show.items.length, Math.floor((index + 1) * (total + 1) / (invitation.refs.length + 1)) + index), 0, { ref, speakerId: invitation.guest.id, seconds: Math.max(5, Math.min(25, Math.round(7 + guestFactor * 3 + (index % 4) * 2))), bpm: Math.max(50, Math.min(200, Math.round(75 + guestFactor * 30 + (index % 5) * 8))), line: guestLines[index % guestLines.length] }); }); }
+                const invitation = prepareAuctionDinnerGuest(bidder, inviteToggle.checked, guestCount.value, show.items.map((item) => item.ref), values); show.guestIds = invitation ? [invitation.guest.id] : []; show.guestPhotoCount = invitation?.refs.length || 0; show.guestIntro = invitation ? scriptedAuctionDialogue("dinner_invitation", bidder.id, { guest: invitation.guest.name }) : "";
+                if (invitation) { const guestFactor = Number(invitation.guest.strategy?.factor) || 1, guestLines = shuffledCopy(getAuctionDialoguePool("guest", AUCTION_DINNER_GUEST_LINES)), total = show.items.length; invitation.refs.forEach((ref, index) => { show.items.splice(Math.min(show.items.length, Math.floor((index + 1) * (total + 1) / (invitation.refs.length + 1)) + index), 0, { ref, speakerId: invitation.guest.id, seconds: Math.max(5, Math.min(25, Math.round(7 + guestFactor * 3 + (index % 4) * 2))), bpm: Math.max(50, Math.min(200, Math.round(75 + guestFactor * 30 + (index % 5) * 8))), line: guestLines[index % guestLines.length] }); }); }
                 show.theme = theme.value; show.index = 0; show.dinnerId = newLocalGameRecordId(); show.callback = getAuctionDinnerJealousy(bidder)?.line || auctionDinnerCallback(bidder); show.photoChoiceSeen = []; show.conversationsEnabled = conversationToggle.checked; show.conversationSeen = []; show.previousBpm = els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120; show.previousRunning = Boolean(metronomeTimer); show.musicStarted = true; show.screen = "tour"; advanceAuctionDinner(0); });
             if (!items.length && !specialRefs.length) page.appendChild(emptyPanel("This bidder needs an owned photo before she can lead a tour.")); page.appendChild(begin);
         }
     } else {
         const item = show.items[show.index], heading = document.createElement("h3"); heading.textContent = `${bidder.name}’s favorites · ${show.index + 1}/${show.items.length}`; page.appendChild(heading);
-        const frame = document.createElement("div"); frame.className = "auctionDinnerFrame"; frame.appendChild(auctionImageCard(item.ref, `${item.seconds} seconds · ${item.bpm} BPM`)); page.appendChild(frame);
+        const frame = document.createElement("div"); frame.className = "auctionDinnerFrame"; frame.appendChild(auctionImageCard(item.ref, `${item.seconds} seconds · ${item.bpm} BPM${item.isFavorite ? " · Personal favorite" : ""}`)); page.appendChild(frame);
         if (show.guestIds?.length) { const guestNotice = document.createElement("p"); guestNotice.textContent = `Guest: ${getAuctionOwnerName(show.guestIds[0])} · ${show.guestPhotoCount} additional photo${show.guestPhotoCount === 1 ? "" : "s"}`; page.appendChild(guestNotice); }
-        if (getAuctionPersonalitySettings().dialogue && (item.speakerId || auctionDialogueVisible(show.index))) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${item.speakerId ? getAuctionOwnerName(item.speakerId) : bidder.name}: “${item.isFavorite ? "This is one of my personal favorites. " : ""}${item.line}”`; page.appendChild(line); }
+        if (getAuctionPersonalitySettings().dialogue && (item.speakerId || auctionDialogueVisible(show.index))) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${item.speakerId ? getAuctionOwnerName(item.speakerId) : bidder.name}: “${item.line}”`; page.appendChild(line); }
         if (show.index === 0 && show.guestIntro && getAuctionPersonalitySettings().dialogue) { const intro = document.createElement("p"); intro.className = "auctionDinnerCallback"; intro.textContent = `${bidder.name}: “${show.guestIntro}”`; page.appendChild(intro); }
         if (show.index === 0 && show.callback) { const callback = document.createElement("p"); callback.className = "auctionDinnerCallback"; callback.textContent = `${bidder.name}: “${show.callback}”`; page.appendChild(callback); }
         if (show.conversation) { const conversation = document.createElement("section"); conversation.className = "auctionDinnerConversation"; const prompt = document.createElement("strong"); prompt.textContent = show.conversation.response ? `${bidder.name} replies` : "What would you like to say? The slideshow is waiting for you."; conversation.appendChild(prompt);
             if (show.conversation.response) { const response = document.createElement("p"); response.textContent = `“${show.conversation.response}”`; conversation.appendChild(response); const proceed = document.createElement("button"); proceed.className = "adventurePrimary"; proceed.textContent = "Continue tour"; proceed.addEventListener("click", continueAuctionDinnerConversation); conversation.appendChild(proceed); }
             else { [["curious", "Why did you choose this?"], ["flirt", "Come a little closer."], ["compliment", "You have wonderful taste."]].forEach(([choice, text]) => { const button = document.createElement("button"); button.textContent = text; button.disabled = show.conversation.saving; button.addEventListener("click", () => answerAuctionDinner(choice)); conversation.appendChild(button); }); const skip = document.createElement("button"); skip.textContent = "Skip conversation"; skip.disabled = show.conversation.saving; skip.addEventListener("click", continueAuctionDinnerConversation); conversation.appendChild(skip); }
             page.appendChild(conversation); }
-        if (show.photoChoice) { const selection = document.createElement("section"); selection.className = "auctionDinnerSelection"; const question = document.createElement("strong"); question.textContent = `${bidder.name}: “Which one would you like to see next?”`; selection.appendChild(question); const choices = document.createElement("div"); choices.className = "auctionDinnerChoiceGrid";
+        if (show.photoChoice) { const selection = document.createElement("section"); selection.className = "auctionDinnerSelection"; const question = document.createElement("strong"); question.textContent = `${bidder.name}: “${scriptedAuctionDialogue("dinner_photo_choice", `${bidder.id}:${show.index}`)}”`; selection.appendChild(question); const choices = document.createElement("div"); choices.className = "auctionDinnerChoiceGrid";
             show.photoChoice.indices.forEach((index) => { const ref = show.items[index].ref, button = document.createElement("button"); button.type = "button"; button.disabled = show.photoChoice.saving; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo option"; button.appendChild(image); } const text = document.createElement("span"); text.textContent = `Choose photo from #${getChannelById(ref.channelId)?.name || "channel"}`; button.appendChild(text); button.addEventListener("click", () => chooseAuctionDinnerPhoto(index)); choices.appendChild(button); }); selection.appendChild(choices); const skip = document.createElement("button"); skip.textContent = "Let her choose"; skip.disabled = show.photoChoice.saving; skip.addEventListener("click", () => advanceAuctionDinner(show.index + 1)); selection.appendChild(skip); page.appendChild(selection); }
         if (show.finishError) { const error = document.createElement("p"); error.textContent = show.finishError; page.appendChild(error); }
         const controls = document.createElement("div"); controls.className = "blindAuctionActions";
@@ -4961,7 +5122,7 @@ const AUCTION_BIO_SEDUCTION = [
 function getAuctionBiography(bidder) {
     const serverBidders = getAuctionBidders(), position = serverBidders.findIndex((item) => item.id === bidder.id);
     const variant = Number.isInteger(bidder.personality?.bioVariant) ? bidder.personality.bioVariant : Math.max(0, position);
-    const flourish = AUCTION_BIO_FLIRT[((variant % AUCTION_BIO_FLIRT.length) + AUCTION_BIO_FLIRT.length) % AUCTION_BIO_FLIRT.length];
+    const openingLines = getAuctionDialoguePool("bio_flirt", AUCTION_BIO_FLIRT), flourish = openingLines[((variant % openingLines.length) + openingLines.length) % openingLines.length];
     const style = String(bidder.strategy?.name || "Balanced").toLowerCase(), habit = bidder.personality?.moneyStyle || "balanced";
     const money = habit === "saver" ? "likes to keep a reserve" : habit === "spender" ? "is willing to spend for the right photo" : "balances spending with saving";
     const channels = Object.entries(bidder.personality?.taste?.channels || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
@@ -4970,7 +5131,7 @@ function getAuctionBiography(bidder) {
     const rival = others.filter((item) => item.relation.contests > 0).sort((a, b) => b.relation.contests - a.relation.contests)[0];
     const partner = others.filter((item) => item.relation.trades > 0).sort((a, b) => b.relation.trades - a.relation.trades)[0];
     const relationships = rival ? ` Her most frequent bidding rival so far is ${rival.name}.` : partner ? ` She has built a trading connection with ${partner.name}.` : " She is still getting to know the other bidders.";
-    const seduction = AUCTION_BIO_SEDUCTION[((variant % AUCTION_BIO_SEDUCTION.length) + AUCTION_BIO_SEDUCTION.length) % AUCTION_BIO_SEDUCTION.length];
+    const closingLines = getAuctionDialoguePool("bio_seduction", AUCTION_BIO_SEDUCTION), seduction = closingLines[((variant % closingLines.length) + closingLines.length) % closingLines.length];
     return `${flourish} ${seduction} At auction, she uses a ${style} strategy and ${money}.${favorite}${relationships}`;
 }
 
@@ -5155,7 +5316,8 @@ async function acceptAuctionPreview(serverId) {
         const moods = {}; if (getAuctionPersonalitySettings().moods) prepared.forEach((bidder) => { if (Math.random() < auctionEventChance(.18)) moods[bidder.id] = Math.random() < .5 ? "bold" : "cautious"; });
         const activeBidders = updatedBidders.filter((item) => bidderIds.has(item.id));
         const dialogue = nextAuctionDialogue({ dialogue: null }, activeBidders, {});
-        const newGame = { serverId, count: plan.desired, budget: starting.john, startBalances: starting, aiCount: plan.aiCount, bidders: activeBidders, balances: Object.fromEntries(prepared.map((item) => [item.id, starting[item.id]])), auctionId: newLocalGameRecordId(), sequence: selection.refs, consignmentLots, consignmentFeePercent: plan.feePercent || 0, results: [], index: 0, remaining: starting.john, punishmentWeighted: plan.punishmentWeighted, censoredWeighted: plan.censoredWeighted, auctionFormat: structuredClone(plan.auctionFormat), moods, dialogue, dialogueCount: dialogue ? 1 : 0, lastDialogueRound: dialogue ? 0 : -10, visibleLimit: 10, pendingAuction: null, screen: "play" };
+        const newGame = { serverId, count: plan.desired, budget: starting.john, startBalances: starting, aiCount: plan.aiCount, bidders: activeBidders, balances: Object.fromEntries(prepared.map((item) => [item.id, starting[item.id]])), auctionId: newLocalGameRecordId(), sequence: selection.refs, consignmentLots, consignmentFeePercent: plan.feePercent || 0, biddingMode: "open", bidRulesVersion: 2, results: [], index: 0, remaining: starting.john, punishmentWeighted: plan.punishmentWeighted, censoredWeighted: plan.censoredWeighted, auctionFormat: structuredClone(plan.auctionFormat), moods, dialogue, dialogueCount: dialogue ? 1 : 0, lastDialogueRound: dialogue ? 0 : -10, visibleLimit: 10, pendingAuction: null, screen: "play" };
+        newGame.openLot = createOpenAuctionLot(newGame);
         await saveAuctionChanges({ auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [serverId]: balances }, auctionBidders: updatedBidders, auctionSessions: { ...(state.structure.settings.auctionSessions || {}), [serverId]: snapshotAuctionSession(newGame) } });
         if (game.serverId === serverId) Object.assign(game, newGame);
         renderChannels();
@@ -5174,7 +5336,7 @@ function renderBlindAuction() {
     marquee.append(marqueeKicker, marqueeTitle, marqueeDetail); page.appendChild(marquee);
     const intro = document.createElement("section"); intro.className = "focusSessionIntro"; page.appendChild(intro);
     if (game.screen === "setup") {
-        intro.innerHTML = "<h3>Photo Auction</h3><p>Bid against local programmed opponents. Highest bid wins; the winner pays one dollar above the next bid, up to their own bid. Ties are random. Future photos remain a surprise.</p>";
+        intro.innerHTML = "<h3>Photo Auction</h3><p>Bid in turns against local programmed opponents. Raise or pass; once everyone else passes, the highest bidder wins and pays their bid. Future photos remain a surprise.</p>";
         const saved = getSavedAuctionSession(serverId);
         if (saved) {
             const recovery = document.createElement("section"); recovery.className = "auctionRecovery";
@@ -5244,6 +5406,7 @@ function renderBlindAuction() {
             else { const reasons = [x.ranked ? `This or That score ${Math.round(x.quality * 100)}/100` : "no This or That ranking yet (neutral estimate)", `${x.strategy} strategy`, `budget $${x.remaining} across ${x.roundsLeft} remaining photos`, `random variation ${Math.round(x.noise * 100)}%`]; if (x.competitive && x.competitive !== 1) reasons.push(`competitiveness ×${x.competitive.toFixed(2)}`); if (x.taste !== 1) reasons.push(`taste and goal multiplier ×${x.taste.toFixed(2)}`); if (x.goal) reasons.push("matches a collection goal"); if (x.rivalry > 0) reasons.push(`rivalry +${Math.round(x.rivalry * 100)}%`); if (x.mood) reasons.push(`${x.mood} mood`); if (x.wish) reasons.push(`${x.wish === "revealed" ? "revealed wishlist" : "strong personal interest"} +${Math.round(((x.wishBoost || 1.18) - 1) * 100)}%`); if (x.reserve) reasons.push(`$${x.reserve} reserved for later`); if (bid.bid === 0 && x.calculated > 0 && x.calculated < x.minimum) reasons.push(`below the $${x.minimum} minimum`); copy.textContent = reasons.join(" · ") + "."; }
             row.appendChild(copy); details.appendChild(row);
         }); page.appendChild(details);
+        if (Array.isArray(result.bidEvents)) { const trace = document.createElement("details"), label = document.createElement("summary"); label.textContent = "Bidding sequence"; trace.appendChild(label); result.bidEvents.forEach((event) => { const row = document.createElement("p"); row.textContent = event.action === "bid" ? `${getAuctionOwnerName(event.id)} bid $${event.amount}.` : `${getAuctionOwnerName(event.id)} passed.`; trace.appendChild(row); }); page.appendChild(trace); }
         const next = document.createElement("button"); next.type = "button"; next.className = "adventurePrimary"; next.textContent = game.saving ? "Saving…" : game.index >= game.sequence.length ? "View auction results" : "Next photo"; next.disabled = game.saving; next.addEventListener("click", continueAuctionAfterReveal); page.appendChild(next);
     } else if (game.screen === "play") {
         const ref = game.sequence[game.index], attachment = ref && findAttachment(ref);
@@ -5258,11 +5421,19 @@ function renderBlindAuction() {
         if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = "Current auction photo"; if (game.auctionFormat?.type === "mystery") { image.classList.add("auctionMysteryImage"); image.alt = "Blurred mystery auction photo"; } else image.addEventListener("click", () => openImageViewer(attachment, image.alt)); figure.appendChild(image); } else figure.appendChild(emptyPanel("This photo is unavailable; pass to continue."));
         const controls = document.createElement("div"); controls.className = "blindAuctionControls";
         const minimum = game.auctionFormat?.type === "reserve" ? Math.max(1, Number(game.auctionFormat.minimum) || 5) : 1;
-        const label = document.createElement("label"); label.textContent = "Your maximum bid ($)"; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(minimum); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(minimum); bid.disabled = ownLot || !attachment || game.remaining < minimum || game.saving; label.appendChild(bid);
         const actions = document.createElement("div"); actions.className = "blindAuctionActions";
-        const pass = document.createElement("button"); pass.textContent = ownLot ? "Let bidders compete" : "Pass"; pass.disabled = game.saving; const submit = document.createElement("button"); submit.textContent = game.saving ? "Saving…" : "Place bid"; submit.className = "adventurePrimary"; submit.disabled = ownLot || !attachment || game.remaining < minimum || game.saving;
-        const index = game.index; pass.addEventListener("click", () => resolveAuctionBid(0, index)); submit.addEventListener("click", () => { const amount = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(amount) || amount < minimum || amount > game.remaining) { alert(`Enter a whole-number bid between ${minimum} and ${game.remaining}.`); return; } resolveAuctionBid(amount, index); });
-        actions.append(pass, submit); controls.append(label, actions);
+        if (game.biddingMode === "open" && game.openLot) {
+            const lot = game.openLot, actor = lot.order[lot.turnIndex], required = lot.highBid ? lot.highBid + 1 : lot.minimum, status = document.createElement("p"); status.setAttribute("role", "status"); status.textContent = `${lot.highBidder ? `Current bid: $${lot.highBid} by ${getAuctionOwnerName(lot.highBidder)}.` : `Opening bid: $${lot.minimum}.`} ${actor === "john" ? "Your turn." : `${getAuctionOwnerName(actor)} is next.`}`; controls.appendChild(status);
+            const help = document.createElement("small"); help.textContent = "Each raise gives everyone else another chance. A photo sells only after everyone else passes at the current price; the winner pays their bid."; controls.appendChild(help);
+            if (lot.events.length) { const recent = document.createElement("div"); recent.className = "auctionBidTimeline"; lot.events.slice(-5).forEach((event) => { const line = document.createElement("p"); line.textContent = event.action === "bid" ? `${getAuctionOwnerName(event.id)} bid $${event.amount}` : `${getAuctionOwnerName(event.id)} passed`; recent.appendChild(line); }); controls.appendChild(recent); }
+            const index = game.index, turn = lot.turnIndex;
+            if (actor === "john") { const label = document.createElement("label"); label.textContent = `Your bid ($${required} minimum)`; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(required); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(required); bid.disabled = !attachment || game.remaining < required || game.saving; label.appendChild(bid); const pass = document.createElement("button"); pass.textContent = "Pass for now"; pass.disabled = game.saving; pass.addEventListener("click", () => advanceOpenAuctionTurn(0, index, turn)); const submit = document.createElement("button"); submit.className = "adventurePrimary"; submit.textContent = game.saving ? "Saving…" : "Raise bid"; submit.disabled = !attachment || game.remaining < required || game.saving; submit.addEventListener("click", () => { const value = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(value) || value < required || value > game.remaining) { alert(`Enter a whole-number bid between ${required} and ${game.remaining}, or pass.`); return; } advanceOpenAuctionTurn(value, index, turn); }); actions.append(pass, submit); controls.append(label, actions); }
+            else { const next = document.createElement("button"); next.className = "adventurePrimary"; next.textContent = game.saving ? "Saving…" : `Continue · ${getAuctionOwnerName(actor)}'s turn`; next.disabled = game.saving; next.addEventListener("click", () => advanceOpenAuctionTurn(null, index, turn)); controls.appendChild(next); }
+        } else {
+            const label = document.createElement("label"); label.textContent = "Your maximum bid ($)"; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(minimum); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(minimum); bid.disabled = ownLot || !attachment || game.remaining < minimum || game.saving; label.appendChild(bid);
+            const pass = document.createElement("button"); pass.textContent = ownLot ? "Let bidders compete" : "Pass"; pass.disabled = game.saving; const submit = document.createElement("button"); submit.textContent = game.saving ? "Saving…" : "Place bid"; submit.className = "adventurePrimary"; submit.disabled = ownLot || !attachment || game.remaining < minimum || game.saving;
+            const index = game.index; pass.addEventListener("click", () => resolveAuctionBid(0, index)); submit.addEventListener("click", () => { const amount = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(amount) || amount < minimum || amount > game.remaining) { alert(`Enter a whole-number bid between ${minimum} and ${game.remaining}.`); return; } resolveAuctionBid(amount, index); }); actions.append(pass, submit); controls.append(label, actions);
+        }
         const end = document.createElement("button"); end.className = "auctionStageEnd"; end.textContent = "End auction early"; end.disabled = game.saving; end.addEventListener("click", async () => {
             if (!confirm("End the auction? Completed sales remain saved.")) return;
             game.saving = true; renderMessages();
@@ -10649,6 +10820,13 @@ function renderSettingsPage(auctionOnly = false) {
     const directorSelect = (key, labelText, choices) => { const label = document.createElement("label"), select = document.createElement("select"); label.textContent = labelText; choices.forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = getAuctionPersonalitySettings()[key] === value; select.appendChild(option); }); select.addEventListener("change", async () => { const before = getAuctionPersonalitySettings()[key], value = select.value; select.disabled = true; try { await saveAuctionChanges({ auctionPersonalitySettings: { ...getAuctionPersonalitySettings(), [key]: value } }); } catch (error) { console.error(error); select.value = before; alert("Could not save this setting locally."); } finally { select.disabled = false; } }); label.appendChild(select); directorFields.appendChild(label); };
     directorSelect("eventFrequency", "Random event frequency", [["low", "Less often"], ["normal", "Normal"], ["high", "More often"]]); directorSelect("dialogueFrequency", "Auction and dinner photo dialogue", [["sparse", "Less often"], ["normal", "Every photo"]]); director.appendChild(directorFields); director.appendChild(personalityHelp);
     const explain = document.createElement("details"), explainSummary = document.createElement("summary"), explainText = document.createElement("p"); explainSummary.textContent = "Why do these things happen?"; explainText.textContent = "Special auction formats, temporary moods, close-bid reactions, and dinner guests are random; the frequency control changes their chances. A guest also needs a positive trade relationship and owned photos. Jealousy refers to the most recent completed dinner in this server. Shared bids build rivalry and accepted trades build trust; the relationship map shows the underlying events and adjustments."; explain.append(explainSummary, explainText); director.appendChild(explain);
+    const dialogueEditor = document.createElement("details"), dialogueSummary = document.createElement("summary"), dialogueHelp = document.createElement("p"); dialogueSummary.textContent = "Edit all dialogue pools"; dialogueHelp.textContent = "Choose a pool to edit its existing lines or add your own, one per row. Save each pool separately. Changes are local and apply to future dialogue; unsaved text lasts only while this page is open. Use 1–200 lines of up to 300 characters each.";
+    const pools = getDefaultAuctionDialoguePools(), draftLines = new Map(), poolLabel = document.createElement("label"), poolSelect = document.createElement("select"); poolLabel.textContent = "Dialogue pool"; pools.forEach((pool) => { const option = document.createElement("option"); option.value = pool.id; option.textContent = pool.label; poolSelect.appendChild(option); }); poolLabel.appendChild(poolSelect);
+    const dialogueHint = document.createElement("p"), dialogueLabel = document.createElement("label"); dialogueLabel.textContent = "Lines in selected pool"; const dialogueField = document.createElement("textarea"); dialogueField.rows = 9; dialogueField.placeholder = "One line per row"; dialogueLabel.appendChild(dialogueField); const dialogueStatus = document.createElement("p"); dialogueStatus.setAttribute("role", "status"); let activePool = pools[0].id;
+    const showPool = () => { const pool = pools.find((item) => item.id === activePool); dialogueField.value = draftLines.has(activePool) ? draftLines.get(activePool) : getAuctionDialoguePool(pool.id, pool.lines).join("\n"); dialogueHint.textContent = `${hasAuctionDialogueOverride(pool.id) ? "Edited pool." : "Built-in pool."}${pool.hint ? ` ${pool.hint}` : ""}`; dialogueStatus.textContent = ""; }; poolSelect.addEventListener("change", () => { draftLines.set(activePool, dialogueField.value); activePool = poolSelect.value; showPool(); }); showPool();
+    const dialogueSave = document.createElement("button"); dialogueSave.type = "button"; dialogueSave.textContent = "Save selected pool"; dialogueSave.addEventListener("click", async () => { const key = activePool, lines = dialogueField.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean); if (!lines.length || lines.length > 200 || lines.some((line) => line.length > 300)) { dialogueStatus.textContent = "Use 1–200 lines, with no more than 300 characters per line."; return; } dialogueSave.disabled = true; poolSelect.disabled = true; dialogueStatus.textContent = "Saving locally…"; try { await saveAuctionChanges(() => ({ auctionDialoguePools: { ...(state.structure.settings.auctionDialoguePools || {}), [key]: lines } })); draftLines.delete(key); dialogueStatus.textContent = `Saved ${lines.length} ${lines.length === 1 ? "line" : "lines"} locally for this pool.`; dialogueHint.textContent = "Edited pool."; } catch (error) { console.error("Could not save dialogue pool:", error); dialogueStatus.textContent = auctionSaveErrorMessage(error); } finally { dialogueSave.disabled = false; poolSelect.disabled = false; } });
+    const dialogueReset = document.createElement("button"); dialogueReset.type = "button"; dialogueReset.textContent = "Restore selected pool defaults…"; dialogueReset.addEventListener("click", async () => { const key = activePool; if (!confirm("Restore this pool's built-in lines? Your edits to this pool will be removed. Earlier separately saved custom dinner lines, if any, remain.")) return; dialogueReset.disabled = true; poolSelect.disabled = true; try { await saveAuctionChanges(() => { const updated = { ...(state.structure.settings.auctionDialoguePools || {}) }; delete updated[key]; return { auctionDialoguePools: updated }; }); draftLines.delete(key); showPool(); dialogueStatus.textContent = "Restored the default pool locally."; } catch (error) { console.error("Could not restore dialogue pool:", error); dialogueStatus.textContent = auctionSaveErrorMessage(error); } finally { dialogueReset.disabled = false; poolSelect.disabled = false; } });
+    dialogueEditor.append(dialogueSummary, dialogueHelp, poolLabel, dialogueHint, dialogueLabel, dialogueSave, dialogueReset, dialogueStatus); director.appendChild(dialogueEditor);
     const resetSection = document.createElement("details"); resetSection.className = "auctionManualReset"; const resetSummary = document.createElement("summary"); resetSummary.textContent = "Advanced: reset auction data"; resetSection.appendChild(resetSummary);
     const resetHelp = document.createElement("p"); resetHelp.textContent = "Nothing resets automatically. The button below releases auction-owned photos, clears auction balances and unfinished auction sessions across all workspaces, and expires pending trades. Original photos, notes, profiles, completed history and scrapbook entries remain. This cannot be undone without a backup."; resetSection.appendChild(resetHelp);
     const resetButton = document.createElement("button"); resetButton.type = "button"; resetButton.textContent = "Reset auctions in all workspaces…";
