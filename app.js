@@ -51,6 +51,17 @@ const DEFAULT_STRUCTURE = {
         museumExhibits: [],
         thisOrThatHistory: [],
         tournamentHistory: [],
+        auctionBidders: [],
+        auctionOwnership: [],
+        auctionHistory: [],
+        auctionTrades: [],
+        allowAuctionBotTrades: false,
+        auctionBalances: {},
+        auctionSessions: {},
+        auctionEconomy: { grant: 100, carryPercent: 50, newBidderBonus: 25 },
+        auctionRosterTopCount: 25,
+        auctionPersonalitySettings: { tastes: true, goals: true, moneyHabits: true, moods: true, specialFormats: true, dialogue: true, wishlists: true, eventReactions: true },
+        showAuctionOwners: true,
         censorPresets: [],
         museumQuietMode: false,
         museumLowPowerMode: false,
@@ -65,8 +76,8 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "124";
-const TOURNAMENT_SIZES = [4, 8, 16, 32, 64];
+const APP_BUILD_VERSION = "143";
+const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
     try {
@@ -102,6 +113,8 @@ const state = {
     storageText: "Storage: checking",
     randomNumberText: "",
     randomText: "",
+    wasMobileLayout: false,
+    auctionsFolderCollapsed: true,
     error: "",
     visibleMessageLimit: 100,
     sourceFocus: null,
@@ -113,7 +126,7 @@ const state = {
     rouletteSlideshow: { current: null, isPlaying: false, lastChannelId: null, previousBpm: null, previousMetronomeRunning: false },
     imageDraft: { stage: "setup", mode: "blind", count: 6, sourceType: "all", sourceId: "", durationPreset: "gentle-rise", bpmPreset: "calm-rise", playOrder: "random", censorMode: false, censorMetric: "area", censorAreaStep: 8, censorGranularityStep: 2, censorReverse: false, censorMysteryDirection: false, censorResolvedReverse: null, punishmentWeighted: false, censoredWeighted: false, wheelWinnerStays: false, wheelWinnerTimerSeconds: 0, candidates: [], ranked: [], historyId: null, play: null, censor: null, wheel: null },
     tournament: { screen: "setup", size: 4, selected: [], visibleLimit: 10, serverId: null, round: [], nextRound: [], matchIndex: 0, wins: {}, matches: [], seeded: true, thirdPlaceEnabled: false, saving: false },
-    blindAuction: { screen: "setup", serverId: null, count: 10, budget: 100, punishmentWeighted: false, censoredWeighted: false, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10 },
+    blindAuction: { screen: "setup", serverId: null, count: 10, budget: 100, aiCount: 3, punishmentWeighted: false, censoredWeighted: false, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10, saving: false, slideshow: null },
     tournamentRankingsTab: "rankings",
     tournamentHistoryLimit: 5,
     tournamentChampionLimit: 10,
@@ -162,6 +175,7 @@ let museumWalkJoystickFrame;
 let randomZoomSlideshowTimer;
 let rouletteSlideshowTimer;
 let imageDraftSlideshowTimer;
+let auctionSlideshowTimer;
 let imageDraftWheelTimer;
 let imageDraftWinnerTimer;
 
@@ -263,14 +277,18 @@ async function initApp() {
         const createdInbox = ensureInboxChannel();
         const createdDraftGallery = ensureDraftGalleryFolder();
         const createdMuseum = ensureMuseumFolder();
+        // Opt out of the legacy automatic reset without touching auction data.
+        // The marker also protects against that reset if an older build later loads.
+        const optedOutOfLegacyReset = !(Number(state.structure.settings.auctionFreshStartVersion) >= 127);
+        if (optedOutOfLegacyReset) state.structure.settings.auctionFreshStartVersion = 127;
         selectInitialChannel();
         hydrateSettingsControls();
         state.ready = true;
-        if (createdInbox || createdAdventureServer || createdDraftGallery || createdMuseum) {
+        if (createdInbox || createdAdventureServer || createdDraftGallery || createdMuseum || optedOutOfLegacyReset) {
             try { await saveStructure(state.structure); }
             catch (error) {
                 console.error("Could not save generated workspace channels:", error);
-                state.lastSaveError = "Could not save workspace changes locally. Existing notes are still available; check storage before making changes.";
+                state.lastSaveError = optedOutOfLegacyReset ? "Could not save workspace changes or the legacy-reset opt-out locally. Your existing data was not reset; avoid reopening an older build until storage is working." : "Could not save workspace changes locally. Existing notes are still available; check storage before making changes.";
             }
         }
         if (state.isUnlocked) {
@@ -291,6 +309,7 @@ async function initApp() {
 
     render();
     renderLockScreen();
+    state.wasMobileLayout = isMobileLayout();
     showMobileStage(state.activeView.type ? "chat" : "sidebar", "auto");
     registerServiceWorker();
 }
@@ -367,7 +386,7 @@ function bindEvents() {
     els.streamlinedHubBtn.addEventListener("click", openStreamlinedHub);
 
     els.app.addEventListener("scroll", debounce(() => updateMobileStageNav(), 80), { passive: true });
-    window.addEventListener("resize", () => updateMobileStageNav());
+    window.addEventListener("resize", handleResponsiveLayoutChange);
     window.addEventListener("beforeunload", (event) => {
         if (adventureAutosaveTimer) {
             event.preventDefault();
@@ -400,10 +419,16 @@ async function unlockWorkspace(event) {
         state.loadingChannelId = null;
         render();
         renderLockScreen();
+        // On phones, unlocking should reveal the active notes view rather than
+        // whichever horizontal panel happened to be visible behind the lock.
+        showMobileStage("chat", "auto");
     }
 }
 
 function lockWorkspace() {
+    stopPunishmentChallenge();
+    stopAuctionDinner();
+    stopAuctionSlideshow(false);
     stopMetronome();
     stopRandomZoomSlideshow();
     stopRouletteSlideshow({ restoreMetronome: false, render: false });
@@ -460,6 +485,12 @@ function normalizeStructure(savedStructure) {
             museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : [],
             thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : [],
             tournamentHistory: Array.isArray(base.settings?.tournamentHistory) ? base.settings.tournamentHistory : [],
+            auctionBidders: Array.isArray(base.settings?.auctionBidders) ? base.settings.auctionBidders : [],
+            auctionOwnership: Array.isArray(base.settings?.auctionOwnership) ? base.settings.auctionOwnership : [],
+            auctionHistory: Array.isArray(base.settings?.auctionHistory) ? base.settings.auctionHistory : [],
+            auctionTrades: Array.isArray(base.settings?.auctionTrades) ? base.settings.auctionTrades : [],
+            auctionBalances: base.settings?.auctionBalances && typeof base.settings.auctionBalances === "object" && !Array.isArray(base.settings.auctionBalances) ? base.settings.auctionBalances : {},
+            auctionSessions: base.settings?.auctionSessions && typeof base.settings.auctionSessions === "object" && !Array.isArray(base.settings.auctionSessions) ? base.settings.auctionSessions : {},
             censorPresets: Array.isArray(base.settings?.censorPresets) ? base.settings.censorPresets.slice(-12) : []
         }
     };
@@ -814,6 +845,9 @@ function renderServers() {
         button.append(icon, name);
 
         button.addEventListener("click", async () => {
+            stopPunishmentChallenge();
+            stopAuctionDinner();
+            clearPersonalityGamePhotoCache(state.personalityGame);
             state.activeServerId = server.id;
             state.activeChannelId = allChannels(server)[0]?.id || null;
             state.activeView = server.isAdventureServer
@@ -847,7 +881,10 @@ function renderChannels() {
     }
 
     els.channels.appendChild(renderSpecialViews());
-    if (!server.isAdventureServer) els.channels.appendChild(renderGamesViews());
+    if (!server.isAdventureServer) {
+        els.channels.appendChild(renderGamesViews());
+        els.channels.appendChild(renderAuctionViews());
+    }
 
     if (allChannels(server).length === 0 && !server.isAdventureServer) {
         els.channels.appendChild(emptyPanel("No channels yet"));
@@ -1103,7 +1140,6 @@ function renderGamesViews() {
             title: "Choose between two local photos round after round"
         }));
         group.appendChild(renderSmartChannelRow({ id: "tournament", type: "tournament", label: "photo tournament", prefix: "🏆", title: "Run a single-elimination photo tournament" }));
-        group.appendChild(renderSmartChannelRow({ id: "blind-auction", type: "blindAuction", label: "blind auction", prefix: "◈", title: "Allocate a limited points budget to mystery photos" }));
         group.appendChild(renderSmartChannelRow({
             id: "channel-quiz",
             type: "channelQuiz",
@@ -1125,6 +1161,25 @@ function renderGamesViews() {
             prefix: "⌕",
             title: "Reveal a random detail from a local image"
         }));
+    }
+    return group;
+}
+
+function renderAuctionViews() {
+    const group = document.createElement("section"); group.className = "category";
+    const header = document.createElement("button"); header.className = "categoryHeader"; header.type = "button";
+    header.setAttribute("aria-expanded", String(!state.auctionsFolderCollapsed));
+    header.innerHTML = `<span>${state.auctionsFolderCollapsed ? ">" : "v"}</span><strong>Auctions</strong>`;
+    header.addEventListener("click", () => { state.auctionsFolderCollapsed = !state.auctionsFolderCollapsed; renderChannels(); }); group.appendChild(header);
+    if (!state.auctionsFolderCollapsed) {
+        [{ id: "blind-auction", type: "blindAuction", label: "photo auction", prefix: "◈", title: "Bid against local programmed opponents" },
+         { id: "auction-exhibition", type: "auctionExhibition", label: "exhibition night", prefix: "✧", title: "Browse bidder showcases and choose a winner" },
+         { id: "auction-seasons", type: "auctionSeasons", label: "auction seasons", prefix: "◷", title: "Local auction season recaps" },
+         { id: "auction-compare", type: "auctionCompare", label: "compare personalities", prefix: "⇄", title: "Compare bidders and their collections" },
+         { id: "personality-games", type: "personalityGames", label: "personality games", prefix: "♠", title: "Play unranked games with a personality" },
+         { id: "relationship-map", type: "relationshipMap", label: "relationship map", prefix: "♡", title: "Explore local friendships and rivalries" },
+         { id: "auction-scrapbook", type: "auctionScrapbook", label: "private scrapbook", prefix: "✿", title: "Local auction and dinner memories" }].forEach((view) => group.appendChild(renderSmartChannelRow(view)));
+        const rosters = renderAuctionOwnerViews(); while (rosters.firstChild) group.appendChild(rosters.firstChild);
     }
     return group;
 }
@@ -1207,6 +1262,10 @@ function renderChannelRow(channel) {
 
 async function openView(type, id) {
     state.sourceFocus = null;
+    if (type !== "punishmentChallenge") stopPunishmentChallenge();
+    if (type !== "personalityGames") clearPersonalityGamePhotoCache(state.personalityGame);
+    if (type !== "auctionDinner") stopAuctionDinner();
+    if (type !== "blindAuction") stopAuctionSlideshow();
     if (type !== "randomZoom") stopRandomZoomSlideshow();
     if (type !== "rouletteSlideshow") stopRouletteSlideshow({ render: false });
     if (type !== "imageDraft") stopImageDraftSlideshow({ render: false });
@@ -1256,11 +1315,46 @@ async function openView(type, id) {
         await ensureServerMessagesLoaded();
         const exhibit = getMuseumExhibit(state.museum3d?.exhibitId);
         if (exhibit) await ensurePhotoReferencesLoaded(getExhibitPhotoRefs(exhibit));
-    } else if (type === "tournament" || type === "blindAuction") {
+    } else if (type === "tournament") {
         for (const channel of allChannels(getActiveServer())) {
             const messages = normalizeMessages(await getChannelMessages(channel.id));
             state.messagesByChannel.set(channel.id, messages);
             state.channelMessageCounts.set(channel.id, messages.length);
+        }
+    } else if (type === "blindAuction") {
+        const saved = getSavedAuctionSession();
+        if (saved && isValidSavedAuctionSession(saved, getActiveServer()?.id)) {
+            await ensureAuctionPhotoRefsLoaded([...saved.sequence, ...getAuctionBidders().map((item) => item.avatarRef).filter(Boolean)]);
+        } else if (!saved) {
+            await ensureServerMessagesLoaded();
+            await ensureAuctionPhotoRefsLoaded(getAuctionBidders().map((item) => item.avatarRef).filter(Boolean));
+        }
+    } else if (type === "punishmentChallenge") {
+        const bidder = getAuctionBidders().find((item) => item.id === id); await ensureAuctionPhotoRefsLoaded(getPunishmentFavoriteRefs(bidder));
+    } else if (type === "auctionDinner") {
+        const dinner = state.auctionDinner, bidder = getAuctionBidders().find((item) => item.id === id);
+        await ensureAuctionPhotoRefsLoaded([bidder?.avatarRef, dinner?.items?.[dinner.index]?.ref].filter(Boolean));
+    } else if (type === "personalityGames" || type === "relationshipMap") {
+        const serverId = getActiveServer()?.id;
+        if (type === "personalityGames") { if (state.personalityGame?.serverId !== serverId) state.personalityGame = { serverId, screen: "setup", hostId: "", mode: "quiz" }; else { const game = state.personalityGame; if (game.screen === "play" && game.current?.length) await loadPersonalityGamePhotos(game, game.current); else if (game.screen === "finished" && game.winner) await loadPersonalityGamePhotos(game, [game.winner]); } }
+    } else if (type === "auctionCompare" || type === "auctionScrapbook") {
+        if (type === "auctionCompare") await ensureAuctionPhotoRefsLoaded(getAuctionCompareBidders().map((item) => item.avatarRef).filter(Boolean));
+        else { state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); }
+    } else if (type === "auctionExhibition" || type === "auctionSeasons") {
+        if (type === "auctionExhibition" && state.auctionExhibition?.serverId !== getActiveServer()?.id) state.auctionExhibition = null;
+        const exhibit = state.auctionExhibition;
+        if (exhibit?.lineups?.length) await ensureAuctionPhotoRefsLoaded([exhibit.lineups[exhibit.ownerIndex]?.refs[exhibit.photoIndex]].filter(Boolean));
+    } else if (type === "auctionOwner") {
+        state.auctionOwnerTab = getAuctionTrades().some((trade) => trade.status === "pending" && (trade.fromOwnerId === id || trade.toOwnerId === id)) ? "trades" : "roster";
+        state.auctionTradeNotice = "";
+        await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(id, state.auctionOwnerTab));
+        const bidder = getAuctionBidders().find((item) => item.id === id);
+        if (bidder && !bidder.personality && state.activeView.type === "auctionOwner" && state.activeView.id === id) {
+            const samples = bidder.avatarRef ? [{ ref: bidder.avatarRef, message: auctionPhotoMessage(bidder.avatarRef) }] : [];
+            const seeded = seedAuctionPersonality(bidder, samples); seeded.personality.goal = null; seeded.personality.goalPending = true;
+            seeded.personality.lastLearned = "Initial taste seeded from the profile photo; a collection goal will be chosen at the next auction.";
+            try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === id ? seeded : item) }); }
+            catch (error) { console.warn("Could not save the initial bidder personality:", error); }
         }
     } else if (type === "thisOrThat") {
         await ensureServerMessagesLoaded();
@@ -1441,8 +1535,19 @@ function renderHeader() {
         return;
     }
     if (state.activeView.type === "blindAuction") {
-        els.activeTitle.textContent = "Blind Auction";
-        els.activeMeta.textContent = "Bid local points on photos one at a time";
+        els.activeTitle.textContent = "Photo Auction";
+        els.activeMeta.textContent = "Bid local points against programmed opponents";
+        return;
+    }
+    if (state.activeView.type === "punishmentChallenge") { els.activeTitle.textContent = "Favorite-photo challenge"; els.activeMeta.textContent = "Temporary · unranked · local"; return; }
+    if (["auctionExhibition", "auctionSeasons", "auctionDinner", "auctionCompare", "auctionScrapbook", "personalityGames", "relationshipMap"].includes(state.activeView.type)) {
+        els.activeTitle.textContent = state.activeView.type === "personalityGames" ? "Personality games" : state.activeView.type === "relationshipMap" ? "Relationship map" : state.activeView.type === "auctionExhibition" ? "Exhibition night" : state.activeView.type === "auctionDinner" ? `Dinner with ${getAuctionOwnerName(state.activeView.id)}` : state.activeView.type === "auctionCompare" ? "Compare personalities" : state.activeView.type === "auctionScrapbook" ? "Private scrapbook" : "Auction seasons";
+        els.activeMeta.textContent = "Private, local auction activity for this server";
+        return;
+    }
+    if (state.activeView.type === "auctionOwner") {
+        els.activeTitle.textContent = `Auction · ${getAuctionOwnerName(state.activeView.id)}`;
+        els.activeMeta.textContent = "Owned photos · originals remain in their source channels";
         return;
     }
 
@@ -1498,6 +1603,7 @@ function renderHeader() {
 }
 
 function renderMessages() {
+    document.body.classList.toggle("personalityGameOpen", state.activeView.type === "personalityGames");
     releaseRenderedObjectUrls();
     els.messages.innerHTML = "";
 
@@ -1568,6 +1674,18 @@ function renderMessages() {
     }
     if (state.activeView.type === "blindAuction") {
         renderBlindAuction();
+        return;
+    }
+    if (state.activeView.type === "auctionExhibition") { renderAuctionExhibition(); return; }
+    if (state.activeView.type === "auctionSeasons") { renderAuctionSeasons(); return; }
+    if (state.activeView.type === "auctionDinner") { renderAuctionDinner(); return; }
+    if (state.activeView.type === "punishmentChallenge") { renderPunishmentChallenge(); return; }
+    if (state.activeView.type === "auctionCompare") { renderAuctionCompare(); return; }
+    if (state.activeView.type === "auctionScrapbook") { renderAuctionScrapbook(); return; }
+    if (state.activeView.type === "personalityGames") { renderPersonalityGames(); return; }
+    if (state.activeView.type === "relationshipMap") { renderRelationshipMap(); return; }
+    if (state.activeView.type === "auctionOwner") {
+        renderAuctionOwnerChannel();
         return;
     }
 
@@ -1821,6 +1939,7 @@ function renderPhotoTile(message, attachment, channelId, viewerItems = null, vie
     description.textContent = attachment.note || message.text || attachment.name || "Local photo";
     caption.append(meta, description);
     figure.append(image, caption);
+    addAuctionOwnerBadge(figure, ref);
     const more = document.createElement("button");
     more.type = "button";
     more.className = "photoMenuButton";
@@ -3218,7 +3337,7 @@ function placeBlindAuctionBid(amount, expectedIndex) {
     return true;
 }
 
-function renderBlindAuction() {
+function renderLegacyBlindAuction() {
     const game = state.blindAuction;
     const serverId = getActiveServer()?.id;
     if (game.serverId !== serverId) Object.assign(game, { screen: "setup", serverId, sequence: [], results: [], index: 0, remaining: 0, visibleLimit: 10 });
@@ -3290,6 +3409,1758 @@ function renderBlindAuction() {
     els.messages.appendChild(page);
 }
 
+// Auction channels are views over the original photos, not copies or moves.
+function auctionPhotoKey(ref) { return `${ref?.messageId || ""}:${ref?.attachmentId || ""}`; }
+function getAuctionBidders() { return (state.structure.settings.auctionBidders || []).filter((item) => item.serverId === getActiveServer()?.id); }
+function getAuctionOwnership() { return (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId === getActiveServer()?.id); }
+function getAuctionConsignmentSettings() { const value = state.structure.settings.auctionConsignment || {}; return { enabled: value.enabled === true, feePercent: Number.isInteger(Number(value.feePercent)) ? Math.max(0, Math.min(100, Number(value.feePercent))) : 0 }; }
+function getAuctionConsignments(serverId = getActiveServer()?.id) { return (Array.isArray(state.structure.settings.auctionConsignments) ? state.structure.settings.auctionConsignments : []).filter((item) => item.serverId === serverId && item.ref?.messageId && item.ref?.attachmentId && item.sellerId); }
+function getValidAuctionConsignments(serverId = getActiveServer()?.id) { const owned = (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId === serverId); const seen = new Set(); return getAuctionConsignments(serverId).filter((entry) => { const key = auctionPhotoKey(entry.ref); if (seen.has(key) || !owned.some((item) => item.ownerId === entry.sellerId && auctionPhotoKey(item.ref) === key)) return false; seen.add(key); return true; }); }
+function getAuctionHistory() { return (state.structure.settings.auctionHistory || []).filter((item) => item.serverId === getActiveServer()?.id); }
+function getAuctionTrades() { return (state.structure.settings.auctionTrades || []).filter((item) => item.serverId === getActiveServer()?.id); }
+function getAuctionOwnerName(id) { return id === "john" ? "John" : getAuctionBidders().find((item) => item.id === id)?.name || "Former bidder"; }
+
+let auctionRelationshipCache = { history: null, trades: null, serverId: null, records: new Map() };
+function getAuctionRelationshipRecords() {
+    const history = state.structure.settings.auctionHistory || [], trades = state.structure.settings.auctionTrades || [], serverId = getActiveServer()?.id;
+    if (auctionRelationshipCache.history === history && auctionRelationshipCache.trades === trades && auctionRelationshipCache.serverId === serverId) return auctionRelationshipCache.records;
+    const records = new Map();
+    const pair = (a, b) => {
+        if (!a || !b || a === b) return null;
+        const key = JSON.stringify([a, b].sort());
+        if (!records.has(key)) records.set(key, { participants: [a, b].sort(), contests: 0, wins: {}, trades: 0 });
+        return records.get(key);
+    };
+    history.filter((round) => round.serverId === serverId).forEach((round) => {
+        const bidders = [...new Set((round.bids || []).filter((bid) => Number(bid.bid) > 0).map((bid) => bid.id).filter(Boolean))];
+        for (let i = 0; i < bidders.length; i++) for (let j = i + 1; j < bidders.length; j++) {
+            const record = pair(bidders[i], bidders[j]); if (!record) continue;
+            record.contests += 1;
+            if (round.ownerId === bidders[i] || round.ownerId === bidders[j]) record.wins[round.ownerId] = (record.wins[round.ownerId] || 0) + 1;
+        }
+    });
+    trades.filter((trade) => trade.serverId === serverId && trade.status === "accepted").forEach((trade) => { const record = pair(trade.fromOwnerId, trade.toOwnerId); if (record) record.trades += 1; });
+    auctionRelationshipCache = { history, trades, serverId, records }; return records;
+}
+function getAuctionRelationship(a, b) {
+    const key = JSON.stringify([a, b].sort()), record = getAuctionRelationshipRecords().get(key) || { participants: [a, b], contests: 0, wins: {}, trades: 0 };
+    const adjustment = state.structure.settings.auctionRelationshipOverrides?.[getActiveServer()?.id]?.[key];
+    if (!adjustment) return record;
+    const baseline = adjustment.baseline || {}, wins = {};
+    [a, b].forEach((id) => { wins[id] = Math.max(0, (record.wins[id] || 0) - (baseline.wins?.[id] || 0)); });
+    return { ...record, actualContests: record.contests, actualTrades: record.trades, contests: Math.max(0, record.contests - (baseline.contests || 0) + (adjustment.contests || 0)), trades: Math.max(0, record.trades - (baseline.trades || 0) + (adjustment.trades || 0)), wins, manuallyAdjusted: true };
+}
+function auctionRivalryBoost(bidder, competitors) {
+    if (!getAuctionPersonalitySettings().relationshipInfluence) return 0;
+    const rivalry = competitors.reduce((max, id) => {
+        const relation = getAuctionRelationship(bidder.id, id);
+        return Math.max(max, Math.min(.16, relation.contests * .008 + (relation.wins[id] || 0) * .012));
+    }, 0);
+    return rivalry;
+}
+
+async function resetAllAuctionData() {
+    if (state.auctionResetBusy || state.blindAuction?.saving || state.auctionTradeBusy || state.auctionPersonalityBusy || state.auctionScrapbookSaving || state.auctionDinner?.finishing || state.auctionDinner?.conversation?.saving || state.auctionDinner?.photoChoice?.saving) { alert("Wait for the current auction change to finish before resetting."); return false; }
+    state.auctionResetBusy = true;
+    const changes = {
+        auctionOwnership: [], auctionBalances: {}, auctionSessions: {}, auctionFreshStartVersion: 127,
+        auctionTrades: (state.structure.settings.auctionTrades || []).map((trade) => trade.status === "pending" ? { ...trade, status: "stale", resolvedAt: new Date().toISOString(), reason: "manual auction reset" } : trade)
+    };
+    try {
+        await saveAuctionChanges(changes);
+        try { stopAuctionSlideshow(); stopAuctionDinner(); } catch (error) { console.warn("Auction data was reset, but a player could not be stopped cleanly:", error); }
+        Object.assign(state.blindAuction, { screen: "setup", serverId: null, sequence: [], results: [], index: 0, saving: false, pendingAuction: null });
+        state.auctionExhibition = null; state.auctionDinner = null;
+        return true;
+    } finally { state.auctionResetBusy = false; }
+}
+
+function getAuctionEconomy() {
+    const raw = state.structure.settings.auctionEconomy || {};
+    const safe = (value, fallback, max) => Number.isFinite(Number(value)) ? Math.min(max, Math.max(0, Math.floor(Number(value)))) : fallback;
+    return { grant: safe(raw.grant, 100, 10000), carryPercent: safe(raw.carryPercent, 50, 100), newBidderBonus: safe(raw.newBidderBonus, 25, 10000) };
+}
+function getAuctionPersonalitySettings() {
+    return { tastes: true, goals: true, moneyHabits: true, moods: true, specialFormats: true, dialogue: true, wishlists: true, eventReactions: true, punishmentFavorites: false, dinnerGuests: true, dinnerJealousy: true, eventFrequency: "normal", dialogueFrequency: "normal", relationshipInfluence: true, ...(state.structure.settings.auctionPersonalitySettings || {}) };
+}
+function auctionEventChance(base) { const frequency = getAuctionPersonalitySettings().eventFrequency; return Math.min(1, base * (frequency === "low" ? .5 : frequency === "high" ? 1.7 : 1)); }
+function auctionDialogueVisible(index) { return getAuctionPersonalitySettings().dialogueFrequency !== "sparse" || index % 3 === 0; }
+function getPunishmentFavoriteRefs(bidder) {
+    if (!getAuctionPersonalitySettings().punishmentFavorites) return [];
+    return (Array.isArray(bidder?.personality?.punishmentFavorites) ? bidder.personality.punishmentFavorites : []).filter((ref) => { const channel = ref && getChannelById(ref.channelId); return ref?.messageId && ref?.attachmentId && channel && !channel.hidden && !getChannelCategory(ref.channelId)?.hidden && getChannelServer(ref.channelId)?.id === getActiveServer()?.id && normalizeChannelName(channel.name || "") === "punishment"; }).slice(0, 3);
+}
+function refreshPunishmentFavorites(bidder, candidates) {
+    if (!getAuctionPersonalitySettings().punishmentFavorites || !bidder?.personality) return bidder;
+    const pool = candidates.filter((item) => item.ref && normalizeChannelName(getChannelById(item.ref.channelId)?.name || "") === "punishment" && getChannelServer(item.ref.channelId)?.id === getActiveServer()?.id && (!item.attachment || shouldShowAttachment(item.attachment)));
+    const available = new Map(pool.map((item) => [auctionPhotoKey(item.ref), item])), saved = Array.isArray(bidder.personality.punishmentFavorites) ? bidder.personality.punishmentFavorites : [], refs = saved.filter((ref) => available.has(auctionPhotoKey(ref))).slice(0, 3), used = new Set(refs.map(auctionPhotoKey));
+    const ranked = shuffledCopy(pool.filter((item) => !used.has(auctionPhotoKey(item.ref)))).sort((a, b) => auctionTasteMultiplier(bidder, b.ref, b.message) - auctionTasteMultiplier(bidder, a.ref, a.message));
+    while (refs.length < 3 && ranked.length) refs.push(structuredClone(ranked.shift().ref));
+    return { ...bidder, personality: { ...bidder.personality, punishmentFavorites: refs } };
+}
+function punishmentFavoriteDialogue(bidder, ref) {
+    const hash = [...`${bidder.id}:${auctionPhotoKey(ref)}`].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
+    const lines = ["I picked this one for us, darling. Come closer and tell me how much you like my taste.", "This is one of my wicked little favorites. We can take our time with it, if you want to.", "I saved this favorite for a moment when I could have your attention all to myself.", "I chose this one because I love keeping you guessing. Shall we enjoy it together?", "This favorite puts me in a teasing mood. Tell me if you'd like to keep playing.", "I thought you might like this one. I certainly like the way you look at me while we share it.", "Let me show you one of my favorites, gorgeous. I promise to make the anticipation worthwhile.", "I've been waiting for an excuse to share this with you. Stay close and savor it with me.", "This one feels like our little secret. We can stop or change the mood whenever you like.", "I love the tension in a playful challenge. Shall we see where this favorite takes us?"];
+    return lines[hash % lines.length];
+}
+function punishmentFavoriteNoteEditor(bidder, ref, kind = "punishment") {
+    const noteKey = kind === "personal" ? "favoriteNotes" : "punishmentNotes";
+    const key = auctionPhotoKey(ref), details = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Private photo note"; details.appendChild(summary);
+    const label = document.createElement("label"); label.textContent = "Why this photo is a favorite"; const field = document.createElement("textarea"); field.rows = 2; field.maxLength = 500; field.value = bidder.personality?.[noteKey]?.[key] || ""; label.appendChild(field); details.appendChild(label);
+    const save = document.createElement("button"); save.type = "button"; save.textContent = "Save note"; save.addEventListener("click", async () => { if (state.auctionPersonalityBusy) return; const current = getAuctionBidders().find((item) => item.id === bidder.id); if (!current?.personality) return; const refs = kind === "personal" ? getAuctionPersonalFavorites(current) : getPunishmentFavoriteRefs(current); if (!refs.some((item) => auctionPhotoKey(item) === key)) return; const notes = { ...(current.personality[noteKey] || {}) }; const value = field.value.trim().slice(0, 500); if (value) notes[key] = value; else delete notes[key]; state.auctionPersonalityBusy = true; save.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id && item.serverId === current.serverId ? { ...item, personality: { ...item.personality, [noteKey]: notes } } : item) }); save.textContent = "Saved locally"; } catch (error) { console.error(error); alert("Could not save this note; the previous note remains."); } finally { state.auctionPersonalityBusy = false; save.disabled = false; } }); details.appendChild(save); return details;
+}
+function auctionPhotoMessage(ref) {
+    return (state.messagesByChannel?.get(ref?.channelId) || []).find((item) => item.id === ref?.messageId) || state.relocatedMessages?.get(ref?.messageId)?.message || null;
+}
+function auctionPhotoTraits(ref, candidate = null) {
+    const message = candidate?.message || auctionPhotoMessage(ref) || {};
+    return { channelId: ref?.channelId || "", tags: (Array.isArray(message.tags) ? message.tags : []).map((tag) => String(tag).trim().toLowerCase()).filter(Boolean), emojis: (Array.isArray(message.reactions) ? message.reactions : []).filter((emoji) => typeof emoji === "string" && emoji) };
+}
+function getAuctionPersonalitySliders(bidder) {
+    const raw = bidder?.personality?.sliders || {};
+    const value = (key) => Number.isFinite(Number(raw[key])) ? Math.max(0, Math.min(100, Number(raw[key]))) : 50;
+    return { competitive: value("competitive"), flirty: value("flirty"), risk: value("risk"), generous: value("generous"), attachment: value("attachment") };
+}
+function auctionInterestMatches(bidder, ref, message = null) {
+    const taste = bidder?.personality?.taste || {}, traits = auctionPhotoTraits(ref, message ? { message } : null), matches = [];
+    const add = (kind, key, label) => { const weight = Number(taste[kind]?.[key]); if (Number.isFinite(weight) && weight > 1) matches.push({ kind, key, label, weight }); };
+    add("channels", traits.channelId, `#${getChannelById(traits.channelId)?.name || "source channel"}`);
+    traits.tags.forEach((tag) => add("tags", tag, `tag ${tag}`));
+    traits.emojis.forEach((emoji) => add("emojis", emoji, `${emoji} reaction`));
+    const factor = Math.min(1.65, matches.reduce((total, item) => total * item.weight, 1));
+    return { matches, factor, metadataLoaded: Boolean(message || auctionPhotoMessage(ref)) };
+}
+function auctionGoalProgress(bidder, ownership = getAuctionOwnership()) {
+    const goal = bidder?.personality?.goal;
+    if (!goal?.channelId || !Number.isInteger(goal.target) || goal.target < 1) return null;
+    return { ...goal, count: ownership.filter((item) => item.ownerId === bidder.id && item.ref?.channelId === goal.channelId).length };
+}
+function auctionNewMilestones(serverId, before, after, round = null) {
+    const existing = Array.isArray(state.structure.settings.auctionMilestones) ? state.structure.settings.auctionMilestones : [], added = [];
+    getAuctionBidders().filter((bidder) => bidder.serverId === serverId).forEach((bidder) => {
+        const goal = bidder.personality?.goal;
+        if (goal?.channelId && Number.isInteger(goal.target) && goal.target > 0) {
+            const count = (items) => items.filter((item) => item.serverId === serverId && item.ownerId === bidder.id && item.ref?.channelId === goal.channelId).length;
+            if (count(before) < goal.target && count(after) >= goal.target) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "goal", channelId: goal.channelId, target: goal.target, ref: round?.ref || null, createdAt: new Date().toISOString(), reaction: "I reached my collection goal! Come celebrate with me, darling." });
+        }
+        if (round?.ownerId === bidder.id && (round.bids || []).filter((bid) => bid.bid > 0).length >= 2 && ![...existing, ...added].some((item) => item.serverId === serverId && item.bidderId === bidder.id && item.type === "contested")) added.push({ id: newLocalGameRecordId(), serverId, bidderId: bidder.id, type: "contested", ref: round.ref, createdAt: round.createdAt, reaction: "That was a deliciously close contest. I think I earned your attention." });
+    });
+    return added;
+}
+function auctionMilestoneTitle(item) { return item.type === "goal" ? `Collection goal: ${item.target} from #${getChannelById(item.channelId)?.name || "a channel"}` : "First contested auction win"; }
+function buildAuctionGoal(bidder, candidates) {
+    const counts = new Map(); candidates.forEach((item) => counts.set(item.ref.channelId, (counts.get(item.ref.channelId) || 0) + 1));
+    const choices = shuffledCopy([...counts.entries()]).map(([channelId, size]) => ({ channelId, size, target: size <= 4 ? size : Math.min(6, Math.max(2, Math.ceil(Math.sqrt(size)))) }));
+    const ownership = getAuctionOwnership(), choice = choices.find((item) => ownership.filter((owned) => owned.ownerId === bidder.id && owned.ref.channelId === item.channelId).length < item.target);
+    return choice ? { channelId: choice.channelId, target: choice.target, sourceSize: choice.size, origin: "automatic" } : null;
+}
+function seedAuctionPersonality(bidder, candidates) {
+    if (bidder.personality) return bidder;
+    const sample = candidates[Math.floor(Math.random() * candidates.length)], traits = sample ? auctionPhotoTraits(sample.ref, sample) : { channelId: "", tags: [], emojis: [] };
+    const factor = Number(bidder.strategy?.factor) || 1, moneyStyle = factor < .85 ? "saver" : factor > 1.15 ? "spender" : "balanced";
+    const position = getAuctionBidders().findIndex((item) => item.id === bidder.id);
+    return { ...bidder, personality: { bioVariant: Math.max(0, position), taste: { channels: traits.channelId ? { [traits.channelId]: 1.2 } : {}, tags: traits.tags[0] ? { [traits.tags[0]]: 1.12 } : {}, emojis: traits.emojis[0] ? { [traits.emojis[0]]: 1.12 } : {} }, evolutionPaused: false, moneyStyle, goal: buildAuctionGoal(bidder, candidates), lastLearned: "Initial taste seeded from the local gallery." } };
+}
+function refreshAuctionWishlist(bidder, candidates) {
+    if (!getAuctionPersonalitySettings().wishlists || !bidder.personality) return bidder;
+    const owned = new Set(getAuctionOwnership().map((item) => auctionPhotoKey(item.ref)));
+    const available = new Map(candidates.map((item) => [auctionPhotoKey(item.ref), item]));
+    const existing = (Array.isArray(bidder.personality.wishlist) ? bidder.personality.wishlist : []).filter((item) => item?.ref && available.has(auctionPhotoKey(item.ref)) && !owned.has(auctionPhotoKey(item.ref))).slice(0, 5);
+    const used = new Set(existing.map((item) => auctionPhotoKey(item.ref)));
+    const values = getAuctionTradeValues();
+    const pool = shuffledCopy(candidates.filter((item) => !owned.has(auctionPhotoKey(item.ref)) && !used.has(auctionPhotoKey(item.ref)))).slice(0, 100);
+    pool.sort((a, b) => (auctionTasteMultiplier(bidder, b.ref, b.message) * auctionTradeValue(b.ref, values)) - (auctionTasteMultiplier(bidder, a.ref, a.message) * auctionTradeValue(a.ref, values)));
+    while (existing.length < 5 && pool.length) { const item = pool.shift(); existing.push({ ref: structuredClone(item.ref), revealed: existing.length < 2 }); }
+    return { ...bidder, personality: { ...bidder.personality, wishlist: existing } };
+}
+function auctionTasteMultiplier(bidder, ref, message = null) {
+    const settings = getAuctionPersonalitySettings(), personality = bidder?.personality || {}, traits = auctionPhotoTraits(ref, message ? { message } : null), taste = personality.taste || {};
+    let value = 1;
+    if (settings.tastes) {
+        value *= Number(taste.channels?.[traits.channelId]) || 1;
+        traits.tags.forEach((tag) => { value *= Number(taste.tags?.[tag]) || 1; });
+        traits.emojis.forEach((emoji) => { value *= Number(taste.emojis?.[emoji]) || 1; });
+    }
+    if (settings.goals) { const goal = auctionGoalProgress(bidder); if (goal && goal.count < goal.target && goal.channelId === traits.channelId) value *= 1.15; }
+    return Math.max(.7, Math.min(1.65, value));
+}
+function evolveAuctionWinner(bidder, ref) {
+    if (!bidder?.personality || bidder.personality.evolutionPaused || !getAuctionPersonalitySettings().tastes) return bidder;
+    const traits = auctionPhotoTraits(ref), personality = structuredClone(bidder.personality), taste = personality.taste || { channels: {}, tags: {}, emojis: {} };
+    const strengthen = (kind, map, key, increment) => { if (!key || (personality.lockedInterests?.[kind] || []).includes(key)) return map || {}; const next = { ...(map || {}), [key]: Math.min(1.5, Math.round(((Number(map?.[key]) || 1) + increment) * 100) / 100) }; const locked = new Set(personality.lockedInterests?.[kind] || []); return Object.fromEntries(Object.entries(next).sort((a, b) => Number(locked.has(b[0])) - Number(locked.has(a[0])) || b[1] - a[1]).slice(0, Math.max(8, locked.size))); };
+    taste.channels = strengthen("channels", taste.channels, traits.channelId, .03);
+    traits.tags.slice(0, 2).forEach((tag) => { taste.tags = strengthen("tags", taste.tags, tag, .02); });
+    traits.emojis.slice(0, 2).forEach((emoji) => { taste.emojis = strengthen("emojis", taste.emojis, emoji, .02); });
+    personality.taste = taste; personality.lastLearned = `Learned from a win in #${getChannelById(traits.channelId)?.name || "a channel"}.`;
+    return { ...bidder, personality };
+}
+function chooseAuctionFormat(candidates, desired, weighted) {
+    if (!getAuctionPersonalitySettings().specialFormats || Math.random() >= auctionEventChance(.2)) return { type: "standard" };
+    const types = ["reserve", "mystery"];
+    const counts = new Map(); candidates.forEach((item) => counts.set(item.ref.channelId, (counts.get(item.ref.channelId) || 0) + 1));
+    const themes = [...counts.entries()].filter(([, count]) => count >= desired).map(([id]) => id);
+    if (!weighted && themes.length) types.push("theme");
+    const type = types[Math.floor(Math.random() * types.length)];
+    return type === "reserve" ? { type, minimum: 5 } : type === "theme" ? { type, channelId: themes[Math.floor(Math.random() * themes.length)] } : { type };
+}
+function auctionFormatDescription(format) {
+    if (format?.type === "reserve") return `Special auction: $${format.minimum || 5} minimum bid.`;
+    if (format?.type === "mystery") return "Special auction: mystery photos are blurred until the results.";
+    if (format?.type === "theme") return `Special auction: photos from #${getChannelById(format.channelId)?.name || "the selected channel"}.`;
+    return "Standard auction.";
+}
+const AUCTION_FLIRTY_DIALOGUE = [
+    "You're trouble, aren't you? I rather like that.", "Careful, John—I might make you work for this one.", "A little competition looks good on you.",
+    "I hope you're ready to be distracted.", "You have excellent taste. I was hoping you'd notice mine.", "Shall we make this interesting?",
+    "I can be persuasive when I want to be.", "Don't look so surprised when I steal your favorite.", "I'm enjoying this little game of ours.",
+    "You can try to outbid me, darling.", "I like a person who knows what they want.", "If you want it, you'll have to tempt me with a better offer.",
+    "That look tells me we're after the same thing.", "You're making it difficult to stay sensible.", "I've got my eye on more than the auction.",
+    "I won't make this too easy for you.", "A little mystery keeps things exciting, don't you think?", "Are you always this charming under pressure?",
+    "I might let you win. Then again, I might not.", "Let's see how badly you want it.", "You certainly know how to get my attention.",
+    "I'll admit it: I enjoy keeping you guessing.", "You bring out my competitive side.", "I'm not above a little playful bargaining.",
+    "That was a bold move. I appreciate bold.", "Perhaps we could negotiate something tempting.", "I was hoping you'd come over and say hello.",
+    "Try not to blush when I win this one.", "A little flirtation never hurt a good auction.", "You and I could make quite a team. Or quite a rivalry.",
+    "Come closer, John. I want to see your face when I make my next move.",
+    "Keep looking at me like that and I'll forget what I came here to buy.",
+    "I love the way you pursue what you want. Especially when you're looking at me.",
+    "I'm feeling wonderfully distracted, and I suspect you know exactly why.",
+    "If you want my attention, darling, you have every bit of it.",
+    "Make me an offer I can think about long after the auction ends.",
+    "I could tease you all evening, but I have a feeling you'd enjoy it too much.",
+    "I like the tension between us. Let's see how long we can make it last.",
+    "You look deliciously confident. Are you going to back that up?",
+    "A little closer, darling. I have something tempting to whisper.",
+    "I'm not sure which I want more: the photo or your undivided attention.",
+    "I was hoping you'd challenge me. I love a reason to stay close.",
+    "You make it very difficult for me to behave, and I rather like it.",
+    "That smile of yours could persuade me to linger after everyone else leaves.",
+    "I'll make you work for this one. Don't worry, I'll make it enjoyable.",
+    "You've been on my mind since you walked in. Shall I tell you why?",
+    "You have a way of making even a simple bid feel wonderfully intimate.",
+    "Don't be shy with me. I like knowing exactly what you want.",
+    "Perhaps I'll let you win—if you give me a reason to keep you close.",
+    "You keep tempting me, John. I might have to return the favor.",
+    "If I win, you owe me a private celebration. If you win, perhaps I do.",
+    "I adore this little game, especially when you look at me like that.",
+    "I could whisper my bid, but I'd rather hear you ask for it.",
+    "Are we competing for the photo, or just finding excuses to flirt?",
+    "Take your time deciding. I don't mind having your eyes on me.",
+    "There's something irresistible about a little anticipation, isn't there?",
+    "I want to know what catches your eye—and what makes you stay.",
+    "I can tell you're interested. The question is, how interested?",
+    "I'm in the mood for a little mischief, and you look like excellent company.",
+    "The way you're watching me is making this auction far more interesting.",
+    "Stay beside me for this round. I promise I can make it worth your while.",
+    "I like a bold bid almost as much as a bold invitation.",
+    "You make me want to draw this moment out just a little longer.",
+    "Tell me what you want, darling. I love hearing you say it.",
+    "I was going to be sensible tonight, and then you walked over.",
+    "I hope you're ready for a little temptation, because I'm not holding back my charm.",
+    "The photo is lovely, but I keep finding reasons to look at you instead.",
+    "Let's see whether you can keep your composure when I outbid you.",
+    "You have my attention now. What are you going to do with it?",
+    "I could get used to having you this close and this eager.",
+    "I like leaving you curious about what I'll do next.",
+    "Every time you challenge me, I want to get a little closer.",
+    "You're a very tempting distraction from my perfectly respectable plans.",
+    "Keep that look in your eyes, darling. I want to remember it."
+];
+function randomAuctionDialogue() { return AUCTION_FLIRTY_DIALOGUE[Math.floor(Math.random() * AUCTION_FLIRTY_DIALOGUE.length)]; }
+const AUCTION_DINNER_DIALOGUE = [
+    "I keep coming back to this one. You have the same effect on me, and I want to take my time with both of you.",
+    "I chose this because it makes me feel a little wicked. Come closer and I'll tell you what else does.",
+    "This one makes me want to slow down, pull you close, and forget the rest of the evening.",
+    "Something about this picture gets me worked up. Are you feeling it too, gorgeous?",
+    "I saved this for us. Stay right here; I'm enjoying having you all to myself.",
+    "You look so tempting when you're paying attention. I could make this a very long tour.",
+    "I could spend all night showing you what I like—and finding out what makes you squirm.",
+    "I wanted an excuse to keep you here, close enough to whisper what I'm thinking.",
+    "This is one of my favorites. You're becoming another, and I have plans for you.",
+    "Tell me what you want, darling. I love the way you sound when you're tempted.",
+    "I like building anticipation. Let's linger here until you're asking for the next one.",
+    "If you keep looking at me like that, I might stop the tour and concentrate entirely on you.",
+    "I picked this one knowing it might make you linger. I had the same idea about our dinner.",
+    "Let me sit closer while you look. I want to see that expression on your face.",
+    "I love sharing my favorites with you, especially when the room feels this intimate.",
+    "Take your time, handsome. I'm in no hurry to have this evening end.",
+    "I chose this for the mood it creates. Tell me you can feel it too.",
+    "You look so good giving something your full attention. May I have some of it?",
+    "This one is tempting, but watching you enjoy it might be even better.",
+    "I wanted a reason to be alone with you. This picture seemed like a lovely excuse.",
+    "I've been looking forward to showing you this. Come close enough for me to whisper why.",
+    "I like the quiet moments with you. They leave so much room for anticipation.",
+    "Do you like being surprised? I have a few more ideas for us tonight.",
+    "I have a weakness for beautiful things and captivating company. Tonight I have both.",
+    "I'm enjoying the way your attention moves between the picture and me.",
+    "Don't rush. I want to savor every second you spend here with me.",
+    "I thought this would catch your eye. I was hoping to catch it too.",
+    "You're making it very hard to keep my thoughts on the collection, darling.",
+    "This one has a certain pull. So do you, and I'm not trying to resist either.",
+    "Tell me what you like about it, then come closer and tell me what you like about me.",
+    "I love watching you discover something you want. It gives me delicious ideas.",
+    "The next photo can wait. I'm enjoying having you right here.",
+    "You and I have excellent taste. I wonder what else we'd enjoy together.",
+    "I've been saving this little moment for you. Was it worth the wait?",
+    "I hope you don't mind me staring. You've been such an appealing companion.",
+    "This is the part where I lean in and make it very difficult to focus.",
+    "There's something about sharing a secret favorite that makes me feel closer to you.",
+    "I'm tempted to let the slideshow run all night if it means you'll stay with me.",
+    "Your reaction is even better than I imagined. I'd love to see it again.",
+    "I chose this one slowly, thinking about exactly how you might respond.",
+    "Let the anticipation build, darling. We have nowhere else we need to be.",
+    "I love the way you look when you're curious. It makes me want to tease you more.",
+    "Just the two of us, one of my favorites, and all the time we want. Perfect.",
+    "I can think of several things I'd like to whisper, but let's start with this picture.",
+    "The longer you stay, the less inclined I am to let you leave without a smile.",
+    "I chose this for us. The way you're looking at me is an unexpected bonus.",
+    "If you like this, wait until you see what else I've been saving for you.",
+    "There's that look again. You really do know how to make me feel wanted."
+];
+const AUCTION_DINNER_THEMES = {
+    romantic: ["Stay close, darling. I chose this one for a slower, more intimate evening.", "Sharing a favorite with you feels almost like a secret, and I want to savor it.", "This picture reminds me how much I enjoy having your full attention.", "Let me sit beside you while we enjoy this. I'm in no hurry to let you go.", "I chose this with you in mind. I love watching your face as you look.", "There's something irresistible about a quiet moment with you and a favorite photo."],
+    playful: ["I picked this to see your reaction. Don't disappoint me, gorgeous.", "Can you guess why I chose this? Come closer and I'll give you a hint.", "I thought this one might distract you. Did it work, or was that me?", "I'm enjoying keeping you guessing. Your expression is such a lovely reward.", "I have a few surprises for you tonight. You'll have to stay close to find them.", "You can look at the picture, but I'm hoping you'll look at me too."],
+    competitive: ["I chose a strong contender. Think you could pick something more tempting?", "This one ranks highly, but I think I enjoy your challenge even more.", "I like a little competition between us. Show me what catches your eye.", "Go on, tell me if your favorite can beat mine. I love your confident look.", "I'm not letting you win too easily tonight, darling. Where would be the fun in that?", "This is one of my best picks. Give me a reason to make room for yours."],
+    mysterious: ["I chose something unexpected. Come closer and I'll tell you what I see in it.", "There's more to this one than first appears. I rather like keeping you curious.", "I saved a surprise for you. Take your time; anticipation is half the pleasure.", "I won't tell you everything just yet. I want you to discover this with me.", "This one deserves a second look. So do I, if you're feeling curious.", "A little mystery gives us a reason to stay close, don't you think?"]
+};
+function nextAuctionDialogue(game, bidders, result) {
+    if (!getAuctionPersonalitySettings().dialogue || !bidders.length) return null;
+    const speaker = bidders.find((bidder) => bidder.id === result.ownerId) || bidders[Math.floor(Math.random() * bidders.length)];
+    const choices = AUCTION_FLIRTY_DIALOGUE.filter((line) => line !== game.dialogue?.text);
+    return { bidderId: speaker.id, text: choices[Math.floor(Math.random() * choices.length)] };
+}
+function currentAuctionDialogue(game) {
+    if (!getAuctionPersonalitySettings().dialogue || !game.bidders?.length || !auctionDialogueVisible(game.index || 0)) return null;
+    if (game.dialogue?.text && game.dialogue?.bidderId) return game.dialogue;
+    const hash = [...`${game.auctionId || "auction"}:${game.index}`].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 17);
+    return { bidderId: game.bidders[hash % game.bidders.length].id, text: AUCTION_FLIRTY_DIALOGUE[hash % AUCTION_FLIRTY_DIALOGUE.length] };
+}
+function getAuctionBalances(serverId = getActiveServer()?.id) {
+    const saved = state.structure.settings.auctionBalances?.[serverId];
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+}
+function getSavedAuctionSession(serverId = getActiveServer()?.id) { return state.structure.settings.auctionSessions?.[serverId] || null; }
+function isValidSavedAuctionSession(session, serverId) {
+    const money = (value) => Number.isSafeInteger(value) && value >= 0;
+    return Boolean(session && session.serverId === serverId && ["play", "reveal"].includes(session.screen) && typeof session.auctionId === "string"
+        && Array.isArray(session.sequence) && session.sequence.length > 0 && session.sequence.every((ref) => ref?.channelId && ref?.messageId && ref?.attachmentId)
+        && Number.isInteger(session.index) && (session.screen === "play" ? session.index >= 0 && session.index < session.sequence.length : session.index >= 1 && session.index <= session.sequence.length)
+        && Array.isArray(session.results) && session.results.length === session.index
+        && Array.isArray(session.bidders) && session.bidders.length > 0 && session.bidders.every((bidder) => bidder?.id && money(session.balances?.[bidder.id]))
+        && money(session.remaining) && money(session.budget));
+}
+function snapshotAuctionSession(game, overrides = {}) {
+    const current = { ...game, ...overrides };
+    return structuredClone({ screen: current.screen === "reveal" ? "reveal" : "play", serverId: current.serverId, auctionId: current.auctionId, count: current.count,
+        budget: current.budget, startBalances: current.startBalances || {}, aiCount: current.aiCount, bidders: current.bidders,
+        balances: current.balances, remaining: current.remaining, sequence: current.sequence, results: current.results, consignmentLots: current.consignmentLots || {}, consignmentFeePercent: current.consignmentFeePercent || 0,
+        index: current.index, punishmentWeighted: Boolean(current.punishmentWeighted), censoredWeighted: Boolean(current.censoredWeighted),
+        auctionFormat: current.auctionFormat || { type: "standard" }, moods: current.moods || {}, dialogue: current.dialogue || null,
+        dialogueCount: current.dialogueCount || 0, lastDialogueRound: Number.isInteger(current.lastDialogueRound) ? current.lastDialogueRound : -10, dismissedReactions: current.dismissedReactions || [], updatedAt: new Date().toISOString() });
+}
+async function resumeSavedAuction(serverId) {
+    const session = getSavedAuctionSession(serverId);
+    if (!isValidSavedAuctionSession(session, serverId)) { alert("This saved auction is incomplete or damaged. You can discard it without changing your photos or balances."); return; }
+    const current = new Map(getAuctionBidders().map((bidder) => [bidder.id, bidder]));
+    const bidders = session.bidders.map((bidder) => current.get(bidder.id) || bidder);
+    await ensureAuctionPhotoRefsLoaded([...session.sequence, ...bidders.map((bidder) => bidder.avatarRef).filter(Boolean)]);
+    if (getActiveServer()?.id !== serverId || state.activeView.type !== "blindAuction") return;
+    Object.assign(state.blindAuction, structuredClone(session), { bidders, saving: false, visibleLimit: 10, slideshow: null,
+        auctionFormat: session.auctionFormat || { type: "standard" }, moods: session.moods || {}, dialogue: session.dialogue || null,
+        dialogueCount: session.dialogueCount || 0, lastDialogueRound: Number.isInteger(session.lastDialogueRound) ? session.lastDialogueRound : -10 });
+    renderMessages();
+}
+async function discardSavedAuction(serverId) {
+    if (!confirm("Discard this unfinished auction? Completed sales and current balances stay saved. Starting another auction applies a new grant and carryover.")) return;
+    const sessions = { ...(state.structure.settings.auctionSessions || {}) }; delete sessions[serverId];
+    try { await saveAuctionChanges({ auctionSessions: sessions }); if (state.blindAuction.serverId === serverId) Object.assign(state.blindAuction, { screen: "setup", sequence: [], results: [], index: 0 }); renderMessages(); }
+    catch (error) { console.error("Could not discard saved auction:", error); alert("Could not save this change. The unfinished auction remains available."); }
+}
+function calculateAuctionStartingBalances(bidders, oldBalances, economy = getAuctionEconomy()) {
+    const isNew = (item) => item.awaitingInitialBalance && !Object.prototype.hasOwnProperty.call(oldBalances, item.id);
+    const starting = {}, existing = ["john", ...bidders.filter((item) => !isNew(item)).map((item) => item.id)];
+    existing.forEach((id) => {
+        const previous = Math.max(0, Math.floor(Number(oldBalances[id]) || 0));
+        starting[id] = Math.min(Number.MAX_SAFE_INTEGER, economy.grant + Math.floor(previous * economy.carryPercent / 100));
+    });
+    const average = existing.reduce((sum, id) => sum + starting[id], 0) / existing.length;
+    bidders.filter(isNew).forEach((item) => {
+        starting[item.id] = Math.min(Number.MAX_SAFE_INTEGER, Math.floor(average) + economy.newBidderBonus);
+    });
+    return starting;
+}
+
+async function ensureAuctionPhotoRefsLoaded(refs) {
+    const seen = new Set();
+    for (const ref of refs || []) {
+        if (!ref?.messageId || seen.has(ref.messageId) || findAttachment(ref)) continue;
+        seen.add(ref.messageId);
+        try {
+            const location = await getMessageLocation(ref.messageId, ref.channelId);
+            if (location?.message && getChannelById(location.channelId)) state.relocatedMessages.set(ref.messageId, { channelId: location.channelId, message: normalizeMessages([location.message])[0] });
+        } catch (error) { console.warn("Could not load an auction photo:", error); }
+    }
+}
+
+function auctionPersonalScore(bidder, ref, values) {
+    const base = auctionTradeValue(ref, values), personality = bidder?.personality || {}, taste = Number(personality.taste?.channels?.[ref.channelId]) || 1;
+    const goal = personality.goal?.channelId === ref.channelId ? 1.15 : 1;
+    const wish = (personality.wishlist || []).some((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref)) ? 1.18 : 1;
+    const attachment = getAuctionPersonalitySliders(bidder).attachment;
+    return base * (1 + (taste * goal * wish - 1) * (.5 + attachment / 100));
+}
+function getAuctionPersonalFavorites(bidder, ownership = getAuctionOwnership(), values = getAuctionTradeValues()) {
+    if (!bidder?.id) return [];
+    const overrides = bidder.personality?.favoriteOverrides || {}, items = ownership.filter((item) => item.ownerId === bidder.id && item.serverId === getActiveServer()?.id && item.ref && overrides[auctionPhotoKey(item.ref)] !== "excluded");
+    items.sort((a, b) => Number(overrides[auctionPhotoKey(b.ref)] === "favorite") - Number(overrides[auctionPhotoKey(a.ref)] === "favorite") || auctionPersonalScore(bidder, b.ref, values) - auctionPersonalScore(bidder, a.ref, values) || auctionPhotoKey(a.ref).localeCompare(auctionPhotoKey(b.ref)));
+    return items.slice(0, 5).map((item) => item.ref);
+}
+function getAuctionRosterSections(ownerId) {
+    const items = getAuctionOwnership().filter((item) => item.ownerId === ownerId);
+    const values = getAuctionTradeValues(), bidder = getAuctionBidders().find((item) => item.id === ownerId);
+    const ranked = [...items].sort((a, b) => auctionPersonalScore(bidder, b.ref, values) - auctionPersonalScore(bidder, a.ref, values) || auctionPhotoKey(a.ref).localeCompare(auctionPhotoKey(b.ref)));
+    const ranking = new Map(ranked.map((item, index) => [auctionPhotoKey(item.ref), index]));
+    const topCount = Math.max(1, Math.min(100, Number(state.structure.settings.auctionRosterTopCount) || 25));
+    const top = ranked.slice(0, topCount), bottom = ranked.slice(Math.max(top.length, ranked.length - 5));
+    const featured = new Set([...top, ...bottom].map((item) => auctionPhotoKey(item.ref)));
+    return { items, top, bottom, rest: items.filter((item) => !featured.has(auctionPhotoKey(item.ref))), ranking };
+}
+function getAuctionViewRefs(ownerId, tab) {
+    const avatar = getAuctionBidders().find((item) => item.id === ownerId)?.avatarRef;
+    if (tab === "trades") {
+        const ownership = getAuctionOwnership();
+        const draft = state.auctionTradeDraft?.targetId === ownerId ? state.auctionTradeDraft : {};
+        const picks = [["john", draft.givePage || 0], [ownerId, draft.wantPage || 0]].flatMap(([id, page]) => ownership.filter((item) => item.ownerId === id).slice(page * 10, page * 10 + 10).map((item) => item.ref));
+        const offers = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).slice(0, state.auctionTradeLimit || 10).flatMap((trade) => [trade.giveRef, trade.wantRef]);
+        return [avatar, ...picks, ...offers].filter(Boolean);
+    }
+    if (tab === "profile") { const bidder = getAuctionBidders().find((item) => item.id === ownerId); return [avatar, ...getAuctionPersonalFavorites(bidder), ...getPunishmentFavoriteRefs(bidder), ...(bidder?.personality?.wishlist || []).filter((item) => item.revealed).map((item) => item.ref)].filter(Boolean); }
+    const sections = getAuctionRosterSections(ownerId);
+    return [avatar, ...sections.top.map((item) => item.ref), ...sections.bottom.map((item) => item.ref)].filter(Boolean);
+}
+
+function getAuctionTradeValues() {
+    const images = getThisOrThatInsights().images;
+    return new Map(images.map((item, index) => [auctionPhotoKey(item.ref), 25 + 75 * (images.length < 2 ? 1 : 1 - index / (images.length - 1))]));
+}
+function auctionTradeValue(ref, values) { return values.get(auctionPhotoKey(ref)) ?? 62.5; }
+function auctionTradeThreshold(bidder) {
+    const factor = Number(bidder?.strategy?.factor) || 1;
+    return Math.max(.7, Math.min(1.35, 1.12 - (factor - .7) * .25 - (getAuctionPersonalitySliders(bidder).generous - 50) * .003));
+}
+function auctionTradeBotAccepts(bidder, givenRef, receivedRef, values, noise = true, counterpartyId = null, preferenceCache = null) {
+    if (!bidder) return false;
+    const variability = Math.max(0, Math.min(.4, Number(bidder.strategy?.noise) || .18));
+    const variation = noise ? (Math.random() * 2 - 1) * variability * .35 : 0;
+    const preference = (ref) => {
+        const key = `${bidder.id}:${auctionPhotoKey(ref)}`;
+        const hash = [...key].reduce((value, char) => (value * 31 + char.charCodeAt(0)) % 10007, 17);
+        return 1 + (hash / 10006 * 2 - 1) * (.12 + variability * .45);
+    };
+    const relationship = counterpartyId && getAuctionPersonalitySettings().relationshipInfluence ? getAuctionRelationship(bidder.id, counterpartyId) : null;
+    const adjustment = relationship ? Math.min(.08, (relationship.wins[counterpartyId] || 0) * .01) - Math.min(.12, relationship.trades * .03) : 0;
+    const taste = (ref) => { const key = `${bidder.id}:${auctionPhotoKey(ref)}`; if (preferenceCache?.has(key)) return preferenceCache.get(key); const value = auctionTasteMultiplier(bidder, ref); preferenceCache?.set(key, value); return value; };
+    const attachment = getAuctionPersonalitySliders(bidder).attachment;
+    const favoriteKey = `favorites:${bidder.id}`; let favorites = preferenceCache?.get(favoriteKey);
+    if (!favorites) { favorites = new Set(getAuctionPersonalFavorites(bidder).map(auctionPhotoKey)); preferenceCache?.set(favoriteKey, favorites); }
+    const holding = (1 + Math.max(0, taste(givenRef) - 1) * ((attachment - 50) / 100)) * (favorites.has(auctionPhotoKey(givenRef)) ? 1.1 + attachment / 500 : 1);
+    return auctionTradeValue(receivedRef, values) * preference(receivedRef) * taste(receivedRef) * (1 + variation) >= auctionTradeValue(givenRef, values) * preference(givenRef) * taste(givenRef) * holding * (auctionTradeThreshold(bidder) + adjustment);
+}
+function auctionTradeOwnerHas(ownership, serverId, ownerId, ref) {
+    return Boolean(ref?.messageId && ref?.attachmentId && ownership.some((item) => item.serverId === serverId && item.ownerId === ownerId && auctionPhotoKey(item.ref) === auctionPhotoKey(ref)));
+}
+function invalidateAuctionTradesForRefs(serverId, refs) {
+    const keys = new Set(refs.map(auctionPhotoKey));
+    return (state.structure.settings.auctionTrades || []).map((item) => item.serverId === serverId && item.status === "pending" && [item.giveRef, item.wantRef].some((ref) => keys.has(auctionPhotoKey(ref))) ? { ...item, status: "stale", resolvedAt: new Date().toISOString() } : item);
+}
+function makeAuctionTradeProposal(fromId, toId, ownership, pendingTrades, serverId, values = getAuctionTradeValues()) {
+    if (fromId === toId || fromId === "john") return null;
+    if (pendingTrades.some((item) => item.serverId === serverId && item.status === "pending" && ((item.fromOwnerId === fromId && item.toOwnerId === toId) || (item.fromOwnerId === toId && item.toOwnerId === fromId)))) return null;
+    const bidders = getAuctionBidders(), from = bidders.find((item) => item.id === fromId), to = bidders.find((item) => item.id === toId);
+    if (!from || (toId !== "john" && !to)) return null;
+    const fromPhotos = shuffledCopy(ownership.filter((item) => item.serverId === serverId && item.ownerId === fromId)).slice(0, 16);
+    const toPhotos = shuffledCopy(ownership.filter((item) => item.serverId === serverId && item.ownerId === toId)).slice(0, 16);
+    const preferenceCache = new Map(); let best = null, bestDifference = Infinity;
+    for (const give of fromPhotos) for (const want of toPhotos) {
+        if (auctionPhotoKey(give.ref) === auctionPhotoKey(want.ref)) continue;
+        if (!auctionTradeBotAccepts(from, give.ref, want.ref, values, false, toId, preferenceCache)) continue;
+        if (to && !auctionTradeBotAccepts(to, want.ref, give.ref, values, false, fromId, preferenceCache)) continue;
+        const difference = Math.abs(auctionTradeValue(give.ref, values) - auctionTradeValue(want.ref, values));
+        if (difference < bestDifference) { bestDifference = difference; best = { giveRef: give.ref, wantRef: want.ref }; }
+    }
+    if (!best) return null;
+    return { id: newLocalGameRecordId(), serverId, fromOwnerId: fromId, toOwnerId: toId, giveRef: structuredClone(best.giveRef), wantRef: structuredClone(best.wantRef), status: "pending", createdAt: new Date().toISOString() };
+}
+function suggestedAuctionTrades(ownership, trades, serverId) {
+    const result = [], bidders = shuffledCopy(getAuctionBidders()), values = getAuctionTradeValues();
+    for (const bidder of bidders) {
+        const offer = makeAuctionTradeProposal(bidder.id, "john", ownership, [...trades, ...result], serverId, values);
+        if (offer) result.push(offer);
+    }
+    if (state.structure.settings.allowAuctionBotTrades) {
+        for (let i = 0; i < bidders.length; i++) for (let j = i + 1; j < bidders.length; j++) {
+            const offer = makeAuctionTradeProposal(bidders[i].id, bidders[j].id, ownership, [...trades, ...result], serverId, values);
+            if (offer) result.push(offer);
+        }
+    }
+    return result;
+}
+
+async function resolveAuctionTrade(tradeId, approve) {
+    if (state.auctionTradeBusy) return;
+    const trades = state.structure.settings.auctionTrades || [], trade = trades.find((item) => item.id === tradeId && item.serverId === getActiveServer()?.id);
+    if (!trade || trade.status !== "pending") { alert("This trade is no longer pending."); return; }
+    if (approve && trade.fromOwnerId !== "john" && trade.toOwnerId !== "john" && !state.structure.settings.allowAuctionBotTrades) { alert("Turn on trades between bidders before approving this offer."); return; }
+    state.auctionTradeBusy = true;
+    try {
+        const ownership = state.structure.settings.auctionOwnership || [];
+        const valid = auctionTradeOwnerHas(ownership, trade.serverId, trade.fromOwnerId, trade.giveRef) && auctionTradeOwnerHas(ownership, trade.serverId, trade.toOwnerId, trade.wantRef) && auctionPhotoKey(trade.giveRef) !== auctionPhotoKey(trade.wantRef);
+        const status = !approve ? "declined" : valid ? "accepted" : "stale";
+        const updatedTrades = trades.map((item) => {
+            if (item.id === trade.id) return { ...item, status, resolvedAt: new Date().toISOString() };
+            if (status === "accepted" && item.serverId === trade.serverId && item.status === "pending" && [item.giveRef, item.wantRef].some((ref) => [auctionPhotoKey(trade.giveRef), auctionPhotoKey(trade.wantRef)].includes(auctionPhotoKey(ref)))) return { ...item, status: "stale", resolvedAt: new Date().toISOString() };
+            return item;
+        });
+        const changes = { auctionTrades: updatedTrades };
+        if (status === "accepted") changes.auctionOwnership = ownership.map((item) => {
+            if (item.serverId !== trade.serverId) return item;
+            const key = auctionPhotoKey(item.ref);
+            if (key === auctionPhotoKey(trade.giveRef) && item.ownerId === trade.fromOwnerId) return { ...item, ownerId: trade.toOwnerId, acquiredVia: "trade" };
+            if (key === auctionPhotoKey(trade.wantRef) && item.ownerId === trade.toOwnerId) return { ...item, ownerId: trade.fromOwnerId, acquiredVia: "trade" };
+            return item;
+        });
+        if (status === "accepted") { const milestones = auctionNewMilestones(trade.serverId, ownership, changes.auctionOwnership); if (milestones.length) changes.auctionMilestones = [...(state.structure.settings.auctionMilestones || []), ...milestones]; }
+        await saveAuctionChanges(changes);
+        state.auctionTradeNotice = status === "accepted" ? "Trade accepted and ownership updated locally." : status === "declined" ? (trade.fromOwnerId === "john" ? "Your offer was declined or withdrawn." : "Trade declined.") : "The offer expired because ownership changed.";
+        if (status === "stale") alert("This offer is no longer valid because ownership changed. No photos were moved.");
+        state.auctionTradeBusy = false; render();
+    } catch (error) { console.error("Could not save trade:", error); alert("The trade could not be saved. Ownership was not changed; try again."); }
+    finally { state.auctionTradeBusy = false; }
+}
+
+async function requestAuctionTradeOffer(fromId, toId) {
+    if (state.auctionTradeBusy) return;
+    if (toId !== "john" && !state.structure.settings.allowAuctionBotTrades) { alert("Turn on trades between bidders first."); return; }
+    const existing = state.structure.settings.auctionTrades || [];
+    const offer = makeAuctionTradeProposal(fromId, toId, state.structure.settings.auctionOwnership || [], existing, getActiveServer()?.id);
+    if (!offer) { alert("No suitable offer was found. Both participants need owned photos, and a pending offer between them must be resolved first."); return; }
+    state.auctionTradeBusy = true;
+    try { await saveAuctionChanges({ auctionTrades: [...existing, offer] }); }
+    catch (error) { console.error("Could not save proposed trade:", error); alert("The offer could not be saved locally."); state.auctionTradeBusy = false; return; }
+    try { await ensureAuctionPhotoRefsLoaded([offer.giveRef, offer.wantRef]); }
+    catch (error) { console.warn("Could not load offer photos:", error); }
+    state.auctionTradeBusy = false; render();
+}
+
+async function evaluateJohnAuctionTrade(tradeId) {
+    const trade = getAuctionTrades().find((item) => item.id === tradeId && item.status === "pending" && item.fromOwnerId === "john");
+    if (!trade) return;
+    const bidder = getAuctionBidders().find((item) => item.id === trade.toOwnerId);
+    const accepts = auctionTradeBotAccepts(bidder, trade.wantRef, trade.giveRef, getAuctionTradeValues(), true, "john");
+    await resolveAuctionTrade(trade.id, accepts);
+}
+
+async function submitJohnAuctionTrade(targetId, giveRef, wantRef) {
+    if (state.auctionTradeBusy) return;
+    const serverId = getActiveServer()?.id, ownership = state.structure.settings.auctionOwnership || [], existing = state.structure.settings.auctionTrades || [];
+    if (!getAuctionBidders().some((item) => item.id === targetId) || !auctionTradeOwnerHas(ownership, serverId, "john", giveRef) || !auctionTradeOwnerHas(ownership, serverId, targetId, wantRef)) { alert("Choose one photo currently owned by John and one owned by this bidder."); return; }
+    const offer = { id: newLocalGameRecordId(), serverId, fromOwnerId: "john", toOwnerId: targetId, giveRef: structuredClone(giveRef), wantRef: structuredClone(wantRef), status: "pending", createdAt: new Date().toISOString() };
+    state.auctionTradeBusy = true;
+    try { await saveAuctionChanges({ auctionTrades: [...existing, offer] }); }
+    catch (error) { console.error("Could not save trade offer:", error); alert("Your offer could not be saved. Nothing changed owners."); state.auctionTradeBusy = false; return; }
+    state.auctionTradeBusy = false;
+    await evaluateJohnAuctionTrade(offer.id);
+}
+
+let auctionOwnerCache = { records: null, serverId: null, map: new Map() };
+function addAuctionOwnerBadge(element, ref) {
+    if (state.structure.settings.showAuctionOwners === false) return;
+    const records = state.structure.settings.auctionOwnership || [], serverId = getActiveServer()?.id;
+    if (auctionOwnerCache.records !== records || auctionOwnerCache.serverId !== serverId) {
+        auctionOwnerCache = { records, serverId, map: new Map(records.filter((item) => item.serverId === serverId).map((item) => [auctionPhotoKey(item.ref), item])) };
+    }
+    const owner = auctionOwnerCache.map.get(auctionPhotoKey(ref));
+    if (!owner) return;
+    const hash = [...owner.ownerId].reduce((value, char) => (value * 31 + char.charCodeAt(0)) % 360, 0);
+    element.classList.add("auctionOwnedPhoto"); element.style.setProperty("--auction-owner-color", `hsl(${hash} 70% 60%)`);
+    const badge = document.createElement("span"); badge.className = "auctionOwnerBadge"; badge.textContent = `◈ ${getAuctionOwnerName(owner.ownerId)}`; element.appendChild(badge);
+}
+
+async function saveAuctionChanges(changes) {
+    await saveStructure({ ...state.structure, settings: { ...state.structure.settings, ...changes } });
+    Object.assign(state.structure.settings, changes);
+}
+
+function renderAuctionOwnerViews() {
+    const group = document.createElement("section"); group.className = "category";
+    if (!getAuctionBidders().length && !getAuctionOwnership().length) return group;
+    group.appendChild(staticCategoryHeader("Auction rosters"));
+    [{ id: "john", name: "John" }, ...getAuctionBidders()].forEach((owner) => {
+        const pending = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === owner.id || trade.toOwnerId === owner.id)).length;
+        group.appendChild(renderSmartChannelRow({ id: owner.id, type: "auctionOwner", label: pending ? `${owner.name} (${pending})` : owner.name, prefix: "◈", title: `${owner.name}'s auction photos${pending ? ` · ${pending} pending trade${pending === 1 ? "" : "s"}` : ""}` }));
+    });
+    return group;
+}
+
+async function renameAuctionBidder(id) {
+    const bidder = getAuctionBidders().find((item) => item.id === id);
+    if (!bidder) return;
+    const input = prompt("Rename this bidder (their portrait and strategy stay the same):", bidder.name);
+    if (input === null) return;
+    const name = input.trim().slice(0, 40);
+    if (!name) { alert("Please enter a name."); return; }
+    const bidders = (state.structure.settings.auctionBidders || []).map((item) => item.id === id ? { ...item, name } : item);
+    try { await saveAuctionChanges({ auctionBidders: bidders }); render(); }
+    catch (error) { console.error(error); alert("Could not save the name locally. The old name was kept."); }
+}
+
+async function shuffleAuctionBidderPortrait(id) {
+    const bidder = getAuctionBidders().find((item) => item.id === id);
+    if (!bidder) return;
+    const serverId = getActiveServer()?.id;
+    try {
+        await ensureServerMessagesLoaded();
+        if (getActiveServer()?.id !== serverId) return;
+        const choices = getThisOrThatCandidates().filter((item) => shouldShowAttachment(item.attachment) && !getChannelById(item.ref.channelId)?.hidden && !getChannelCategory(item.ref.channelId)?.hidden && auctionPhotoKey(item.ref) !== auctionPhotoKey(bidder.avatarRef));
+        if (!choices.length) { alert("Add another visible gallery photo to shuffle this portrait."); return; }
+        const avatarRef = structuredClone(choices[Math.floor(Math.random() * choices.length)].ref);
+        const bidders = (state.structure.settings.auctionBidders || []).map((item) => item.id === id ? { ...item, avatarRef } : item);
+        await saveAuctionChanges({ auctionBidders: bidders });
+        if (state.blindAuction.serverId === getActiveServer()?.id && state.blindAuction.bidders) state.blindAuction.bidders = state.blindAuction.bidders.map((item) => item.id === id ? { ...item, avatarRef } : item);
+        render();
+    } catch (error) { console.error("Could not shuffle bidder portrait:", error); alert("The portrait could not be changed. The existing portrait and identity were kept."); }
+}
+
+function auctionProfilePhoto(ref, label) {
+    const attachment = ref && findAttachment(ref);
+    if (!attachment) { const placeholder = document.createElement("span"); placeholder.className = "auctionAvatarPlaceholder"; placeholder.textContent = "◈"; return placeholder; }
+    const image = document.createElement("img"); image.className = "auctionAvatar"; image.alt = `${label} portrait`; setRenderedImageSource(image, attachment); return image;
+}
+
+async function prepareAuctionBidders(count, candidates) {
+    const existing = getAuctionBidders();
+    const needed = Math.max(0, count - existing.length);
+    if (!needed) return existing.slice(0, count);
+    const used = new Set(existing.map((item) => auctionPhotoKey(item.avatarRef)));
+    const portraits = shuffledCopy(candidates.filter((item) => !used.has(auctionPhotoKey(item.ref))));
+    if (portraits.length < needed) throw new Error(`Add at least ${needed - portraits.length} more distinct gallery photo(s) for bidder portraits.`);
+    const names = shuffledCopy(["Alice", "Amelia", "Ava", "Bella", "Chloe", "Clara", "Diana", "Elena", "Emma", "Eva", "Grace", "Hannah", "Iris", "Isabel", "Julia", "Lena", "Lily", "Maya", "Mia", "Nora", "Olivia", "Sofia", "Violet", "Zoe"]);
+    const usedNames = new Set(existing.map((item) => item.name.toLowerCase()));
+    const strategies = [{ name: "Careful", factor: .72, noise: .13 }, { name: "Balanced", factor: 1, noise: .18 }, { name: "Bold", factor: 1.3, noise: .22 }, { name: "Unpredictable", factor: .95, noise: .4 }];
+    const created = portraits.slice(0, needed).map((portrait, index) => {
+        let name = names.find((item) => !usedNames.has(item.toLowerCase())) || `Bidder ${existing.length + index + 1}`;
+        usedNames.add(name.toLowerCase());
+        return { id: newLocalGameRecordId(), serverId: getActiveServer().id, name, avatarRef: structuredClone(portrait.ref), strategy: structuredClone(strategies[Math.floor(Math.random() * strategies.length)]), awaitingInitialBalance: true };
+    });
+    await saveAuctionChanges({ auctionBidders: [...(state.structure.settings.auctionBidders || []), ...created] });
+    return [...existing, ...created].slice(0, count);
+}
+
+function auctionRankValue(ref) {
+    const images = getThisOrThatInsights().images;
+    const index = images.findIndex((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref));
+    if (index < 0) return .5;
+    return images.length < 2 ? 1 : 1 - index / (images.length - 1);
+}
+
+function auctionBotBid(bidder, remaining, roundsLeft, quality, competitors = [], ref = null, mood = null, explanation = null) {
+    if (remaining < 1) { if (explanation) Object.assign(explanation, { quality, strategy: bidder.strategy?.name || "Balanced", noise: 0, rivalry: 0, taste: 1, mood: null, reserve: 0, remaining: 0, roundsLeft, calculated: 0, goal: false }); return 0; }
+    const strategy = bidder.strategy || { factor: 1, noise: .2 };
+    const sliders = getAuctionPersonalitySliders(bidder);
+    const noise = (Math.random() * 2 - 1) * (Number(strategy.noise) || 0) * (.5 + sliders.risk / 100);
+    const settings = getAuctionPersonalitySettings(), style = settings.moneyHabits ? bidder.personality?.moneyStyle || "balanced" : "balanced";
+    const moodFactor = settings.moods ? (mood === "bold" ? 1.2 : mood === "cautious" ? .8 : 1) : 1;
+    const rivalry = auctionRivalryBoost(bidder, competitors), taste = ref ? auctionTasteMultiplier(bidder, ref) : 1;
+    const wish = settings.wishlists && ref && (bidder.personality?.wishlist || []).find((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref));
+    const competitive = .75 + sliders.competitive / 200, adjustedTaste = 1 + (taste - 1) * (.5 + sliders.attachment / 100);
+    const value = remaining / Math.max(1, roundsLeft) * (0.45 + 1.4 * quality) * strategy.factor * competitive * (1 + noise) * (1 + rivalry) * adjustedTaste * moodFactor * (wish ? 1 + .18 * (.5 + sliders.attachment / 100) : 1);
+    const factor = Number(strategy.factor) || 1;
+    const reserveRate = style === "saver" ? .7 : style === "spender" ? .1 : factor < .85 ? .55 : factor > 1.15 ? .2 : .35;
+    const reserve = Math.floor(remaining * reserveRate * (1.5 - sliders.risk / 100) * getAuctionEconomy().carryPercent / 100);
+    const bid = Math.max(0, Math.min(remaining - reserve, Math.round(value)));
+    if (explanation) Object.assign(explanation, { quality, strategy: strategy.name || "Balanced", factor: strategy.factor, noise, rivalry, taste: adjustedTaste, competitive, wishBoost: wish ? 1 + .18 * (.5 + sliders.attachment / 100) : 1, mood: settings.moods ? mood : null, wish: wish ? (wish.revealed ? "revealed" : "private") : null, reserve, remaining, roundsLeft, calculated: bid, goal: Boolean(settings.goals && ref && auctionGoalProgress(bidder)?.channelId === ref.channelId && auctionGoalProgress(bidder).count < auctionGoalProgress(bidder).target) });
+    return bid;
+}
+
+function auctionEventReaction(bids, winner) {
+    if (!getAuctionPersonalitySettings().dialogue || !getAuctionPersonalitySettings().eventReactions || !winner || Math.random() >= auctionEventChance(.35)) return null;
+    const ordered = bids.filter((bid) => bid.bid > 0).sort((a, b) => b.bid - a.bid);
+    if (ordered.length < 2 || ordered[0].bid - ordered[1].bid > Math.max(3, ordered[0].bid * .2)) return null;
+    const speaker = ordered.find((bid) => bid.id !== "john" && bid.id !== winner.id) || ordered.find((bid) => bid.id !== "john");
+    if (!speaker) return null;
+    const lines = ["That was dangerously close, darling. I like it when you make me chase you.", "You almost had me there. Come closer and I might tell you how to win me over.", "You made my heart race with that bid. Don't stop now.", "I do love a little tension between us. Shall we make the next round even hotter?", "Look at you, teasing me with a bid like that. I'm paying attention.", "You can have this one, gorgeous. But I'm not finished playing with you.", "Such a close call. I could get used to this delicious competition.", "You know exactly how to tempt me into another round, don't you?", "If you wanted my attention, darling, you certainly have it now.", "That was almost unfairly attractive. Try it again for me.", "I like how boldly you go after what you want. Show me some more.", "You and I are going to have fun together, aren't we?",
+        "That was close enough to leave me breathless. Come collect your compliment.", "You made me want that one almost as much as I want your attention.", "I love how hard you made me work. Shall we find another excuse to play?", "You have me all worked up over a single bid, darling.", "I could feel the tension between us. I hope you plan to keep it going.", "You nearly stole it from me. I might let you try stealing my attention next.", "The way you challenged me was irresistible. I want another round with you.", "You've got a talent for keeping me on edge, and I'm enjoying every second.", "If you wanted to make me think about you later, that certainly worked.", "You can have the victory, gorgeous. I still want a moment alone with you.", "You really know how to make a contest feel like foreplay to a flirtation.", "I'm smiling because of that bid—and because I know you're watching me.", "Come closer and tell me whether you enjoyed that as much as I did.", "I'm not ready to let you go yet. Give me another deliciously close round.", "You make losing my composure look dangerously appealing.", "You play with such confidence. I could watch you all night.", "I like you best when you're determined. Show me that look again.", "One more bid like that and I might ask you to stay after the auction.", "This rivalry is getting rather seductive, don't you think?", "I'll remember that little challenge when we're together later."];
+    return { bidderId: speaker.id, text: lines[Math.floor(Math.random() * lines.length)] };
+}
+
+async function resolveAuctionBid(amount, expectedIndex) {
+    const game = state.blindAuction;
+    if (game.saving || game.screen !== "play" || expectedIndex !== game.index || !Number.isInteger(amount) || amount < 0 || amount > game.remaining) return;
+    const minimum = game.auctionFormat?.type === "reserve" ? Math.max(1, Number(game.auctionFormat.minimum) || 5) : 1;
+    if (amount > 0 && amount < minimum) { alert(`This auction requires a minimum bid of $${minimum}, or you can pass.`); return; }
+    const ref = game.sequence[game.index];
+    if (!ref) return;
+    const consignment = game.consignmentLots?.[auctionPhotoKey(ref)], currentOwnership = getAuctionOwnership().find((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref));
+    if (consignment ? !currentOwnership || currentOwnership.ownerId !== consignment.sellerId : Boolean(currentOwnership)) { alert("This photo's ownership changed since the auction began. End the auction and review the listings; no bid was charged."); return; }
+    if (consignment?.sellerId === "john" && amount > 0) { alert("You cannot bid on your own consignment."); return; }
+    game.saving = true; renderMessages();
+    try {
+        const quality = auctionRankValue(ref);
+        const available = Boolean(findAttachment(ref));
+        const currentBidders = new Map(getAuctionBidders().map((bidder) => [bidder.id, bidder]));
+        const activeBidders = game.bidders.map((bidder) => currentBidders.get(bidder.id) || bidder), bidderIds = ["john", ...activeBidders.map((bidder) => bidder.id)];
+        const ranked = getAuctionTradeValues().has(auctionPhotoKey(ref));
+        const bids = [{ id: "john", bid: available && consignment?.sellerId !== "john" ? amount : 0 }, ...activeBidders.map((bidder) => { const explanation = {}; const bid = available && bidder.id !== consignment?.sellerId ? auctionBotBid(bidder, game.balances[bidder.id], game.sequence.length - game.index, quality, bidderIds.filter((id) => id !== bidder.id), ref, game.moods?.[bidder.id], explanation) : 0; return { id: bidder.id, bid: bid >= minimum ? bid : 0, explanation: { ...explanation, ranked, minimum, available, seller: bidder.id === consignment?.sellerId } }; })];
+        const ordered = shuffledCopy(bids).sort((a, b) => b.bid - a.bid);
+        const winner = ordered[0].bid > 0 ? ordered[0] : null;
+        const price = winner ? Math.min(winner.bid, Math.max(minimum, (ordered[1]?.bid || 0) + 1)) : 0;
+        const shownDialogue = currentAuctionDialogue(game);
+        const fee = winner && consignment ? Math.floor(price * (Number(game.consignmentFeePercent) || 0) / 100) : 0, proceeds = winner && consignment ? price - fee : 0;
+        const result = { id: newLocalGameRecordId(), auctionId: game.auctionId, serverId: game.serverId, ref: structuredClone(ref), ownerId: winner?.id || null, price, johnBid: amount, bids, dialogue: shownDialogue, eventReaction: auctionEventReaction(bids, winner), rankValue: quality, createdAt: new Date().toISOString(), ...(consignment ? { sellerId: consignment.sellerId, consignmentFee: fee, sellerProceeds: proceeds } : {}) };
+        const history = [...(state.structure.settings.auctionHistory || []), result];
+        const ownership = winner ? [...(state.structure.settings.auctionOwnership || []).filter((entry) => !consignment || entry.serverId !== game.serverId || auctionPhotoKey(entry.ref) !== auctionPhotoKey(ref)), { serverId: game.serverId, ownerId: winner.id, ref: structuredClone(ref), price, auctionId: game.auctionId, acquiredAt: result.createdAt, ...(consignment ? { acquiredVia: "consignment", previousOwnerId: consignment.sellerId } : {}) }] : (state.structure.settings.auctionOwnership || []);
+        const milestones = auctionNewMilestones(game.serverId, state.structure.settings.auctionOwnership || [], ownership, result);
+        if (milestones.length) result.milestones = milestones;
+        const balances = { ...getAuctionBalances(game.serverId), john: game.remaining, ...game.balances };
+        if (winner) balances[winner.id] -= price;
+        if (winner && consignment) balances[consignment.sellerId] = (Number(balances[consignment.sellerId]) || 0) + proceeds;
+        const nextBalances = { ...game.balances };
+        if (winner && winner.id !== "john") nextBalances[winner.id] -= price;
+        if (winner && consignment && consignment.sellerId !== "john" && Object.prototype.hasOwnProperty.call(nextBalances, consignment.sellerId)) nextBalances[consignment.sellerId] += proceeds;
+        const nextResults = [...game.results, result], nextIndex = game.index + 1;
+        const nextBidders = activeBidders.map((bidder) => { const updated = bidder.id === winner?.id ? evolveAuctionWinner(bidder, ref) : bidder; return winner && updated.personality?.wishlist ? { ...updated, personality: { ...updated.personality, wishlist: updated.personality.wishlist.filter((item) => auctionPhotoKey(item.ref) !== auctionPhotoKey(ref)) } } : updated; });
+        const evolvedById = new Map(nextBidders.map((bidder) => [bidder.id, bidder]));
+        const allBidders = (state.structure.settings.auctionBidders || []).map((bidder) => evolvedById.get(bidder.id) || bidder);
+        const sessions = { ...(state.structure.settings.auctionSessions || {}) };
+        sessions[game.serverId] = snapshotAuctionSession(game, { screen: "reveal", index: nextIndex, results: nextResults, remaining: balances.john, balances: nextBalances, bidders: nextBidders, dialogue: shownDialogue });
+        const changes = { auctionHistory: history, auctionOwnership: ownership, auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [game.serverId]: balances }, auctionSessions: sessions, auctionBidders: allBidders };
+        if (winner && consignment) { changes.auctionConsignments = (state.structure.settings.auctionConsignments || []).filter((item) => item.serverId !== game.serverId || auctionPhotoKey(item.ref) !== auctionPhotoKey(ref)); changes.auctionTrades = invalidateAuctionTradesForRefs(game.serverId, [ref]); }
+        if (milestones.length) changes.auctionMilestones = [...(state.structure.settings.auctionMilestones || []), ...milestones];
+        await saveAuctionChanges(changes);
+        game.remaining = balances.john; game.balances = nextBalances; game.results = nextResults; game.index = nextIndex; game.bidders = nextBidders; game.dialogue = shownDialogue; game.screen = "reveal";
+        renderChannels();
+    } catch (error) { console.error("Could not save auction round:", error); alert("The round could not be saved locally. No bid was charged; please try again."); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); if (game.screen === "reveal") revealAuctionStage(); } }
+}
+
+async function continueAuctionAfterReveal() {
+    const game = state.blindAuction;
+    if (game.saving || game.screen !== "reveal" || !game.results.length) return;
+    game.saving = true; renderMessages();
+    try {
+        const sessions = { ...(state.structure.settings.auctionSessions || {}) }, finished = game.index >= game.sequence.length;
+        let dialogue = null, dialogueCount = game.dialogueCount || 0, lastDialogueRound = game.lastDialogueRound;
+        if (finished) delete sessions[game.serverId];
+        else {
+            dialogue = nextAuctionDialogue(game, game.bidders, game.results[game.results.length - 1]);
+            if (dialogue) { dialogueCount += 1; lastDialogueRound = game.index; }
+            sessions[game.serverId] = snapshotAuctionSession(game, { screen: "play", dialogue, dialogueCount, lastDialogueRound });
+        }
+        const changes = { auctionSessions: sessions };
+        if (finished) changes.auctionSeasonCompletions = recordAuctionSeasonCompletion(game);
+        if (finished && game.serverId === getActiveServer()?.id) {
+            try { const existing = state.structure.settings.auctionTrades || []; changes.auctionTrades = [...existing, ...suggestedAuctionTrades(state.structure.settings.auctionOwnership || [], existing, game.serverId)]; }
+            catch (error) { console.warn("Could not prepare suggested trades:", error); }
+        }
+        await saveAuctionChanges(changes);
+        game.screen = finished ? "results" : "play"; game.dialogue = dialogue; game.dialogueCount = dialogueCount; game.lastDialogueRound = lastDialogueRound;
+        renderChannels();
+    } catch (error) { console.error("Could not continue auction:", error); alert("Could not save the next step. The completed sale is saved, and you can try again."); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); revealAuctionStage(); } }
+}
+
+function recordAuctionSeasonCompletion(game) {
+    const records = Array.isArray(state.structure.settings.auctionSeasonCompletions) ? state.structure.settings.auctionSeasonCompletions : [];
+    if (records.some((item) => item.serverId === game.serverId && item.auctionId === game.auctionId)) return records;
+    const local = records.filter((item) => item.serverId === game.serverId), previous = local[local.length - 1];
+    const currentCount = previous ? local.filter((item) => item.seasonNumber === previous.seasonNumber).length : 0;
+    const nextSeason = !previous || currentCount >= previous.seasonSize;
+    const configured = Number(state.structure.settings.auctionSeasonSizes?.[game.serverId]);
+    const seasonSize = nextSeason ? (Number.isInteger(configured) && configured >= 1 && configured <= 50 ? configured : 5) : previous.seasonSize;
+    return [...records, { serverId: game.serverId, auctionId: game.auctionId, seasonNumber: previous ? previous.seasonNumber + (nextSeason ? 1 : 0) : 1, seasonSize, startedAt: game.results[0]?.createdAt || new Date().toISOString(), finishedAt: new Date().toISOString(), startBalances: structuredClone(game.startBalances || {}), endBalances: { ...game.balances, john: game.remaining } }];
+}
+
+function renderAuctionSeasons() {
+    const serverId = getActiveServer()?.id, page = document.createElement("section"); page.className = "blindAuction auctionExtraPage";
+    const heading = document.createElement("h3"); heading.textContent = "Auction seasons"; page.appendChild(heading);
+    const help = document.createElement("p"); help.textContent = "Completed auctions are grouped into seasons. Ending early does not count. Records begin with this update; nothing is reset when a season ends."; page.appendChild(help);
+    const label = document.createElement("label"); label.textContent = "Auctions per new season (1–50)"; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "50"; input.inputMode = "numeric"; input.value = String(state.structure.settings.auctionSeasonSizes?.[serverId] || 5); label.appendChild(input);
+    const save = document.createElement("button"); save.textContent = "Save season size"; save.addEventListener("click", async () => { const value = Number(input.value); if (!input.value.trim() || !Number.isInteger(value) || value < 1 || value > 50) { alert("Choose a whole number from 1 to 50."); return; } save.disabled = true; try { await saveAuctionChanges({ auctionSeasonSizes: { ...(state.structure.settings.auctionSeasonSizes || {}), [serverId]: value } }); save.textContent = "Saved for the next new season"; } catch (error) { console.error(error); alert("Could not save season settings."); } finally { save.disabled = false; } }); page.append(label, save);
+    const records = (Array.isArray(state.structure.settings.auctionSeasonCompletions) ? state.structure.settings.auctionSeasonCompletions : []).filter((item) => item.serverId === serverId), numbers = [...new Set(records.map((item) => item.seasonNumber))].sort((a, b) => b - a);
+    if (!numbers.length) page.appendChild(emptyPanel("Finish an auction to start your first season."));
+    numbers.forEach((number, index) => { const entries = records.filter((item) => item.seasonNumber === number), ids = new Set(entries.map((item) => item.auctionId)), rounds = getAuctionHistory().filter((item) => ids.has(item.auctionId)), sold = rounds.filter((item) => item.ownerId), biggest = sold.reduce((best, item) => !best || item.price > best.price ? item : best, null), start = entries[0].startedAt, end = entries[entries.length - 1].finishedAt;
+        const trades = getAuctionTrades().filter((trade) => trade.status === "accepted" && trade.resolvedAt && trade.resolvedAt >= start && trade.resolvedAt <= end);
+        const contests = new Map(); rounds.forEach((round) => { const participants = (round.bids || []).filter((bid) => bid.bid > 0).map((bid) => bid.id); for (let i = 0; i < participants.length; i++) for (let j = i + 1; j < participants.length; j++) { const pair = [participants[i], participants[j]].sort().join("|"); contests.set(pair, (contests.get(pair) || 0) + 1); } });
+        const strongest = [...contests.entries()].sort((a, b) => b[1] - a[1])[0];
+        const box = document.createElement("details"); box.className = "auctionSeasonCard"; box.open = index === 0; const summary = document.createElement("summary"); summary.textContent = `Season ${number} · ${entries.length}/${entries[0].seasonSize} auctions${entries.length >= entries[0].seasonSize ? " · complete" : " · in progress"}`; box.appendChild(summary);
+        const acquisitions = new Map(); sold.forEach((item) => acquisitions.set(item.ownerId, (acquisitions.get(item.ownerId) || 0) + 1));
+        const info = document.createElement("p"); info.textContent = `${sold.length} auction acquisitions · ${trades.length} accepted trades during auction dates. ${biggest ? `Biggest purchase: ${getAuctionOwnerName(biggest.ownerId)}, $${biggest.price}.` : "No purchases yet."}`; box.appendChild(info);
+        const owners = document.createElement("p"); owners.textContent = acquisitions.size ? `Acquisitions: ${[...acquisitions].map(([id, count]) => `${getAuctionOwnerName(id)} ${count}`).join(" · ")}.` : "No acquisitions yet."; box.appendChild(owners);
+        const relations = document.createElement("p"); relations.textContent = strongest ? `Most shared bidding: ${strongest[0].split("|").map(getAuctionOwnerName).join(" & ")} (${strongest[1]} rounds). Accepted trades indicate added trust.` : "No shared bidding recorded yet."; box.appendChild(relations); page.appendChild(box);
+    }); els.messages.appendChild(page);
+}
+
+function getRelationshipTimeline(a, b) {
+    const events = [], serverId = getActiveServer()?.id;
+    getAuctionHistory().forEach((round) => { const ids = new Set((round.bids || []).filter((bid) => Number(bid.bid) > 0).map((bid) => bid.id)); if (ids.has(a) && ids.has(b)) events.push({ at: round.createdAt, type: "bids", text: round.ownerId ? `Both bid; ${getAuctionOwnerName(round.ownerId)} won.` : "Both placed bids." }); });
+    getAuctionTrades().forEach((trade) => { if (trade.status === "accepted" && [trade.fromOwnerId, trade.toOwnerId].includes(a) && [trade.fromOwnerId, trade.toOwnerId].includes(b)) events.push({ at: trade.resolvedAt, type: "trades", text: "Completed a trade." }); });
+    (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId).forEach((item) => { const participants = new Set(["john", item.ownerId, ...(Array.isArray(item.guestIds) ? item.guestIds : [])]); if (participants.has(a) && participants.has(b)) events.push({ at: item.finishedAt, type: "dinners", text: `Shared dinner hosted by ${getAuctionOwnerName(item.ownerId)} · ${item.photoCount || 0} photos.` }); });
+    (state.structure.settings.auctionExhibitionHistory || []).filter((item) => item.serverId === serverId).forEach((item) => { const participants = new Set((item.lineups || []).map((lineup) => lineup.ownerId)); if (participants.has(a) && participants.has(b)) events.push({ at: item.createdAt, type: "exhibitions", text: `Both showed collections at exhibition night; ${getAuctionOwnerName(item.winnerId)} won.` }); });
+    return events.sort((x, y) => String(y.at || "").localeCompare(String(x.at || "")));
+}
+function renderRelationshipMap() {
+    const page = document.createElement("section"); page.className = "blindAuction auctionExtraPage"; const title = document.createElement("h3"); title.textContent = "Relationship map"; page.appendChild(title);
+    const people = [{ id: "john", name: "John" }, ...getAuctionBidders()], serverId = getActiveServer()?.id;
+    if (people.length < 2) { page.appendChild(emptyPanel("Create a bidder in an auction to explore relationships.")); els.messages.appendChild(page); return; }
+    if (!state.relationshipMap || state.relationshipMap.serverId !== serverId) state.relationshipMap = { serverId, a: "john", b: people[1].id };
+    const mapState = state.relationshipMap; if (!people.some((item) => item.id === mapState.a)) mapState.a = "john"; if (!people.some((item) => item.id === mapState.b) || mapState.a === mapState.b) mapState.b = people.find((item) => item.id !== mapState.a).id;
+    const help = document.createElement("p"); help.textContent = "Lines show shared bidding and accepted trades. The map highlights up to 12 people; choose any two below to inspect their timeline or adjust their relationship. Adjustments change game influence, not historical records."; page.appendChild(help);
+    const filterLabel = document.createElement("label"); filterLabel.textContent = "Show connections "; const filter = document.createElement("select"); [["all", "All connections"], ["friendly", "Trade partners"], ["rival", "Shared bidding"], ["mixed", "Both"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = (mapState.filter || "all") === value; filter.appendChild(option); }); filter.addEventListener("change", () => { mapState.filter = filter.value; renderMessages(); }); filterLabel.appendChild(filter); page.appendChild(filterLabel);
+    const ordered = [mapState.a, mapState.b, ...people.map((item) => item.id)].filter((id, index, all) => all.indexOf(id) === index).slice(0, 12), svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.classList.add("relationshipNetwork"); svg.setAttribute("viewBox", "0 0 600 420"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Relationship map. Choose people below for details.");
+    const coords = new Map(ordered.map((id, index) => { const angle = (index / ordered.length) * Math.PI * 2 - Math.PI / 2; return [id, { x: 300 + 225 * Math.cos(angle), y: 210 + 150 * Math.sin(angle) }]; }));
+    ordered.forEach((a, i) => ordered.slice(i + 1).forEach((b) => { const relation = getAuctionRelationship(a, b); if (!relation.contests && !relation.trades) return; if (mapState.filter === "friendly" && !relation.trades || mapState.filter === "rival" && !relation.contests || mapState.filter === "mixed" && !(relation.contests && relation.trades)) return; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"), hit = document.createElementNS("http://www.w3.org/2000/svg", "line"), p = coords.get(a), q = coords.get(b); [line, hit].forEach((element) => { element.setAttribute("x1", p.x); element.setAttribute("y1", p.y); element.setAttribute("x2", q.x); element.setAttribute("y2", q.y); }); line.setAttribute("stroke", relation.trades && relation.contests ? "#dfbd78" : relation.trades ? "#6dcda7" : "#e7a0b8"); line.setAttribute("stroke-width", String(Math.min(6, 1.5 + (relation.contests + relation.trades) * .3))); hit.setAttribute("stroke", "transparent"); hit.setAttribute("stroke-width", "22"); hit.setAttribute("tabindex", "0"); hit.setAttribute("role", "button"); hit.setAttribute("aria-label", `Inspect ${getAuctionOwnerName(a)} and ${getAuctionOwnerName(b)}`); const selectPair = () => { mapState.a = a; mapState.b = b; renderMessages(); }; hit.addEventListener("click", selectPair); hit.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectPair(); } }); svg.append(line, hit); }));
+    ordered.forEach((id) => { const p = coords.get(id), circle = document.createElementNS("http://www.w3.org/2000/svg", "circle"), text = document.createElementNS("http://www.w3.org/2000/svg", "text"); circle.setAttribute("cx", p.x); circle.setAttribute("cy", p.y); circle.setAttribute("r", id === mapState.a || id === mapState.b ? "13" : "10"); circle.setAttribute("fill", id === mapState.a || id === mapState.b ? "#f1c580" : "#bd9aca"); text.setAttribute("x", p.x); text.setAttribute("y", p.y + 27); text.setAttribute("text-anchor", "middle"); text.textContent = (people.find((item) => item.id === id)?.name || "Former bidder").slice(0, 14); svg.append(circle, text); }); page.appendChild(svg);
+    const legend = document.createElement("p"); legend.textContent = "Pink: shared bidding · Green: trades · Gold lines: both · Gold circles: selected people."; page.appendChild(legend);
+    const selectors = document.createElement("div"); selectors.className = "blindAuctionSetup"; [["a", "First person"], ["b", "Second person"]].forEach(([key, labelText]) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); people.forEach((person) => { const option = document.createElement("option"); option.value = person.id; option.textContent = person.name; option.selected = mapState[key] === person.id; select.appendChild(option); }); select.addEventListener("change", () => { mapState[key] = select.value; const other = key === "a" ? "b" : "a"; if (mapState[other] === select.value) mapState[other] = people.find((item) => item.id !== select.value).id; renderMessages(); }); label.appendChild(select); selectors.appendChild(label); }); page.appendChild(selectors);
+    const key = JSON.stringify([mapState.a, mapState.b].sort()), actual = getAuctionRelationshipRecords().get(key) || { contests: 0, trades: 0, wins: {} }, relation = getAuctionRelationship(mapState.a, mapState.b), override = state.structure.settings.auctionRelationshipOverrides?.[serverId]?.[key] || {};
+    const detail = document.createElement("p"); detail.textContent = `${getAuctionOwnerName(mapState.a)} & ${getAuctionOwnerName(mapState.b)}: ${actual.contests} recorded shared bidding rounds · ${actual.trades} recorded trades. Current influence: rivalry ${relation.contests}, trust ${relation.trades}${relation.manuallyAdjusted ? " (adjusted)" : ""}.`; page.appendChild(detail);
+    const events = getRelationshipTimeline(mapState.a, mapState.b), history = document.createElement("details"), historyLabel = document.createElement("summary"); historyLabel.textContent = `Shared timeline (${events.length})`; history.appendChild(historyLabel); const typeLabel = document.createElement("label"); typeLabel.textContent = "Event type "; const typeSelect = document.createElement("select"); [["all", "All events"], ["bids", "Shared bids"], ["trades", "Trades"], ["dinners", "Dinners"], ["exhibitions", "Exhibitions"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; typeSelect.appendChild(option); }); typeLabel.appendChild(typeSelect); const eventList = document.createElement("div"); const drawEvents = () => { eventList.replaceChildren(); const filtered = events.filter((event) => typeSelect.value === "all" || event.type === typeSelect.value); if (!filtered.length) { const empty = document.createElement("p"); empty.textContent = "No recorded events of this type for this pair."; eventList.appendChild(empty); } filtered.slice(0, 10).forEach((event) => { const row = document.createElement("p"); row.textContent = `${event.at ? new Date(event.at).toLocaleDateString() : "Date unavailable"} · ${event.text}`; eventList.appendChild(row); }); if (filtered.length > 10) { const more = document.createElement("small"); more.textContent = `Showing 10 of ${filtered.length} events.`; eventList.appendChild(more); } }; typeSelect.addEventListener("change", drawEvents); drawEvents(); history.append(typeLabel, eventList); page.appendChild(history);
+    const fields = document.createElement("div"); fields.className = "blindAuctionSetup"; const inputField = (labelText, value) => { const label = document.createElement("label"); label.textContent = labelText; const input = document.createElement("input"); input.type = "number"; input.min = "-1000"; input.max = "1000"; input.step = "1"; input.value = String(value || 0); label.appendChild(input); fields.appendChild(label); return input; }; const rivalry = inputField("Rivalry adjustment (rounds)", override.contests), trust = inputField("Trust adjustment (trades)", override.trades); page.appendChild(fields);
+    const saveOverride = async (value, button) => { if (state.relationshipMapSaving) return; state.relationshipMapSaving = true; button.disabled = true; try { const all = { ...(state.structure.settings.auctionRelationshipOverrides || {}) }, local = { ...(all[serverId] || {}) }; if (value === null) delete local[key]; else local[key] = value; all[serverId] = local; await saveAuctionChanges({ auctionRelationshipOverrides: all }); if (state.activeView.type === "relationshipMap") renderMessages(); } catch (error) { console.error(error); button.disabled = false; alert("Could not save the relationship setting."); } finally { state.relationshipMapSaving = false; } };
+    const actions = document.createElement("div"); actions.className = "blindAuctionActions"; const save = document.createElement("button"); save.textContent = "Save adjustments"; save.addEventListener("click", () => { const c = Number(rivalry.value), t = Number(trust.value); if (!rivalry.value.trim() || !trust.value.trim() || !Number.isInteger(c) || !Number.isInteger(t) || Math.abs(c) > 1000 || Math.abs(t) > 1000) { alert("Use whole numbers between -1000 and 1000."); return; } saveOverride({ ...override, contests: c, trades: t }, save); }); const reset = document.createElement("button"); reset.textContent = "Reset relationship from now"; reset.addEventListener("click", () => { if (!confirm("Reset this pair’s relationship influence from now on? Auction and trade history will remain, and new interactions will count.")) return; saveOverride({ baseline: structuredClone(actual), contests: 0, trades: 0 }, reset); }); const restore = document.createElement("button"); restore.textContent = "Use full history"; restore.addEventListener("click", () => saveOverride(null, restore)); actions.append(save, reset, restore); page.appendChild(actions); els.messages.appendChild(page);
+}
+
+// Read only bounded samples of lightweight photo references; do not retain
+// every image Blob or write any hosted-game rounds to normal game history.
+async function samplePersonalityGamePhotos(server, perChannel = 16, allowedChannelIds = null) {
+    const output = [];
+    for (const channel of allChannels(server).filter((item) => (!allowedChannelIds || allowedChannelIds.has(item.id)) && !item.hidden && !getChannelCategory(item.id)?.hidden)) {
+        const sample = []; let seen = 0;
+        const inspect = (message) => { if (!message?.id) return; (message.attachments || []).forEach((attachment) => { if (!attachment?.id || !attachment.type?.startsWith("image/") || !shouldShowAttachment(attachment)) return; seen += 1; const candidate = { ref: { channelId: channel.id, messageId: message.id, attachmentId: attachment.id }, message: { tags: message.tags || [], reactions: message.reactions || [] } }; if (sample.length < perChannel) sample.push(candidate); else { const index = Math.floor(Math.random() * seen); if (index < perChannel) sample[index] = candidate; } }); };
+        try {
+            if (db.objectStoreNames.contains("messageItems")) await new Promise((resolve, reject) => { const tx = db.transaction("messageItems", "readonly"), store = tx.objectStore("messageItems"), indexed = store.indexNames.contains("channel"), request = indexed ? store.index("channel").openCursor(IDBKeyRange.only(channel.id)) : store.openCursor(); request.onsuccess = () => { const cursor = request.result; if (!cursor) { resolve(); return; } if (indexed || cursor.value.channel === channel.id) inspect(cursor.value.message); cursor.continue(); }; request.onerror = () => reject(request.error); tx.onabort = () => reject(tx.error || new Error("Could not read local photos")); });
+            else (await getLegacyChannelMessages(channel.id)).forEach(inspect);
+        } catch (error) { console.warn("Could not sample channel; trying its normal reader:", error); (await getChannelMessages(channel.id)).forEach(inspect); }
+        output.push(...sample);
+    }
+    return output;
+}
+function choosePersonalityGamePhotos(candidates, host, count, excluded = new Set()) {
+    const pool = candidates.filter((item) => !excluded.has(auctionPhotoKey(item.ref))), result = [], favorites = new Set(getAuctionPersonalFavorites(host).map(auctionPhotoKey)), punishment = new Set(getPunishmentFavoriteRefs(host).map(auctionPhotoKey));
+    while (pool.length && result.length < count) { const weights = pool.map((item) => auctionTasteMultiplier(host, item.ref, item.message) * (favorites.has(auctionPhotoKey(item.ref)) ? 1.35 : 1) * (punishment.has(auctionPhotoKey(item.ref)) ? 1.5 : 1)); let roll = Math.random() * weights.reduce((sum, value) => sum + value, 0), index = weights.findIndex((weight) => (roll -= weight) <= 0); if (index < 0) index = pool.length - 1; result.push(pool.splice(index, 1)[0]); }
+    return result;
+}
+function clearPersonalityGamePhotoCache(game, keep = []) {
+    if (!game?.gameCachedIds) return; const retained = new Set(keep.map((ref) => ref.messageId));
+    for (const id of game.gameCachedIds) if (!retained.has(id)) { state.relocatedMessages.delete(id); game.gameCachedIds.delete(id); }
+}
+async function loadPersonalityGamePhotos(game, refs) {
+    clearPersonalityGamePhotoCache(game, refs); const before = new Set(state.relocatedMessages.keys()); await ensureAuctionPhotoRefsLoaded(refs); game.gameCachedIds ||= new Set(); refs.forEach((ref) => { if (!before.has(ref.messageId) && state.relocatedMessages.has(ref.messageId)) game.gameCachedIds.add(ref.messageId); }); if (state.activeView.type !== "personalityGames" || state.personalityGame !== game) clearPersonalityGamePhotoCache(game);
+}
+async function preparePersonalityGameRound(game) {
+    if (game.mode === "quiz") {
+        const photo = choosePersonalityGamePhotos(game.candidates, game.host, 1)[0], channels = [...new Set(game.candidates.map((item) => item.ref.channelId))], wrong = shuffledCopy(channels.filter((id) => id !== photo.ref.channelId)).slice(0, 3);
+        game.current = [photo.ref]; game.answers = shuffledCopy([photo.ref.channelId, ...wrong]);
+    } else if (game.mode === "thisOrThat") game.current = choosePersonalityGamePhotos(game.candidates, game.host, 2).map((item) => item.ref);
+    else game.current = game.round.slice(game.matchIndex, game.matchIndex + 2);
+    game.feedback = null; await loadPersonalityGamePhotos(game, game.current);
+}
+async function startPersonalityGame() {
+    const game = state.personalityGame, server = getActiveServer(), host = getAuctionBidders().find((item) => item.id === game?.hostId);
+    if (!game || game.busy || !host || !server || game.serverId !== server.id) return;
+    game.busy = true; renderMessages();
+    try {
+        const candidates = await samplePersonalityGamePhotos(server), channels = new Set(candidates.map((item) => item.ref.channelId));
+        if (state.personalityGame !== game || state.activeView.type !== "personalityGames" || getActiveServer()?.id !== game.serverId) return;
+        if (game.mode === "quiz" && channels.size < 2) { alert("The channel quiz needs photos in at least two visible channels."); return; }
+        if (game.mode !== "quiz" && candidates.length < (game.mode === "tournament" ? 4 : 2)) { alert(game.mode === "tournament" ? "The tournament needs at least four visible photos." : "This or That needs at least two visible photos."); return; }
+        game.host = host; game.candidates = candidates; game.rounds = 0; game.score = 0; game.feedback = null; game.screen = "play";
+        if (game.mode === "tournament") { const size = candidates.length >= 8 ? 8 : 4; game.round = choosePersonalityGamePhotos(candidates, host, size).map((item) => item.ref); game.nextRound = []; game.matchIndex = 0; }
+        await preparePersonalityGameRound(game);
+    } catch (error) { console.error("Could not prepare personality game:", error); game.screen = "setup"; alert("Could not read the local photos for this game."); }
+    finally { game.busy = false; if (state.personalityGame === game && state.activeView.type === "personalityGames") renderMessages(); }
+}
+async function nextPersonalityGameRound(game) {
+    if (game.busy || game.screen !== "play") return; game.busy = true;
+    try { await preparePersonalityGameRound(game); } catch (error) { console.error(error); alert("Could not load the next photos."); }
+    finally { game.busy = false; if (state.personalityGame === game && state.activeView.type === "personalityGames") renderMessages(); }
+}
+async function choosePersonalityTournamentPhoto(game, ref) {
+    if (game.busy || game.screen !== "play" || game.mode !== "tournament") return; game.busy = true;
+    try { game.nextRound.push(ref); game.rounds += 1; game.matchIndex += 2; if (game.matchIndex >= game.round.length) { game.round = game.nextRound; game.nextRound = []; game.matchIndex = 0; } if (game.round.length === 1) { game.winner = game.round[0]; game.screen = "finished"; await loadPersonalityGamePhotos(game, [game.winner]); } else await preparePersonalityGameRound(game); }
+    catch (error) { console.error(error); alert("Could not load the next match."); }
+    finally { game.busy = false; if (state.personalityGame === game && state.activeView.type === "personalityGames") renderMessages(); }
+}
+function renderPersonalityGames() {
+    const serverId = getActiveServer()?.id; if (!state.personalityGame || state.personalityGame.serverId !== serverId) state.personalityGame = { serverId, screen: "setup", hostId: "", mode: "quiz" };
+    const game = state.personalityGame, page = document.createElement("section"); page.className = `blindAuction auctionExtraPage personalityGamesPage${game.screen === "play" ? " is-playing" : ""}`;
+    const title = document.createElement("h3"); title.textContent = "Personality games"; page.appendChild(title);
+    const info = document.createElement("p"); info.className = "personalityGameInfo"; info.textContent = game.screen === "setup" ? "These are temporary, unranked sessions. No answers, choices, scores or tournament results are added to your normal game statistics or histories. Photos come from visible channels in this server; her tastes influence the draw." : "Unranked · not saved to game statistics"; page.appendChild(info);
+    if (game.screen === "setup") {
+        const bidders = getAuctionBidders(); if (!bidders.length) { page.appendChild(emptyPanel("Create a bidder in an auction first.")); els.messages.appendChild(page); return; }
+        if (!bidders.some((bidder) => bidder.id === game.hostId)) game.hostId = bidders[0].id;
+        const fields = document.createElement("div"); fields.className = "blindAuctionSetup";
+        const hostLabel = document.createElement("label"); hostLabel.textContent = "Host"; const host = document.createElement("select"); bidders.forEach((bidder) => { const option = document.createElement("option"); option.value = bidder.id; option.textContent = bidder.name; option.selected = bidder.id === game.hostId; host.appendChild(option); }); host.addEventListener("change", () => { game.hostId = host.value; }); hostLabel.appendChild(host);
+        const modeLabel = document.createElement("label"); modeLabel.textContent = "Game"; const mode = document.createElement("select"); [["quiz", "Channel guessing quiz"], ["thisOrThat", "This or That"], ["tournament", "Photo tournament"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = value === game.mode; mode.appendChild(option); }); mode.addEventListener("change", () => { game.mode = mode.value; }); modeLabel.appendChild(mode); fields.append(hostLabel, modeLabel); page.appendChild(fields);
+        const start = document.createElement("button"); start.className = "adventurePrimary"; start.textContent = game.busy ? "Finding photos…" : "Start unranked game"; start.disabled = game.busy; start.addEventListener("click", startPersonalityGame); page.appendChild(start);
+    } else if (game.screen === "finished") { const heading = document.createElement("h4"); heading.textContent = "Tournament winner · unranked"; page.appendChild(heading); if (game.winner) page.appendChild(auctionImageCard(game.winner, "Your winner")); }
+    else {
+        const hostLine = document.createElement("p"); hostLine.className = "auctionDialogue"; hostLine.textContent = `${game.host.name}: “${game.mode === "quiz" ? "Can you guess which channel this is from, darling?" : game.mode === "thisOrThat" ? "Choose the one you like best. I'm curious about your taste." : "Pick the one you'd like to send through, gorgeous."}”`; page.appendChild(hostLine);
+        const counter = document.createElement("p"); counter.textContent = game.mode === "quiz" ? `Session only: ${game.score}/${game.rounds} correct` : game.mode === "tournament" ? `Round of ${game.round.length} · match ${Math.floor(game.matchIndex / 2) + 1} of ${game.round.length / 2}` : `Session choices: ${game.rounds}`; page.appendChild(counter);
+        if (game.mode === "quiz") { page.appendChild(auctionImageCard(game.current[0], "Tap to expand")); const answers = document.createElement("div"); answers.className = "personalityGameAnswers"; game.answers.forEach((id) => { const button = document.createElement("button"); button.textContent = `#${getChannelById(id)?.name || "unavailable channel"}`; button.disabled = Boolean(game.feedback) || game.busy; button.addEventListener("click", () => { if (game.feedback) return; const correct = id === game.current[0].channelId; game.rounds += 1; if (correct) game.score += 1; game.feedback = correct ? "Correct. You know my collection beautifully." : `Not quite. It came from #${getChannelById(game.current[0].channelId)?.name || "the original channel"}.`; renderMessages(); }); answers.appendChild(button); }); page.appendChild(answers); }
+        else { const choices = document.createElement("div"); choices.className = "personalityGameChoices"; game.current.forEach((ref) => { const button = document.createElement("button"); button.type = "button"; button.disabled = Boolean(game.feedback) || game.busy; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo choice"; button.appendChild(image); } const label = document.createElement("span"); label.textContent = "Choose this photo"; button.appendChild(label); button.addEventListener("click", () => { if (game.mode === "tournament") choosePersonalityTournamentPhoto(game, ref); else { game.rounds += 1; game.feedback = "A tempting choice. Shall we see another pair?"; renderMessages(); } }); choices.appendChild(button); }); page.appendChild(choices); }
+        if (game.feedback) { const feedback = document.createElement("p"); feedback.className = "auctionDialogue"; feedback.textContent = `${game.host.name}: “${game.feedback}”`; page.appendChild(feedback); const next = document.createElement("button"); next.textContent = "Next round"; next.disabled = game.busy; next.addEventListener("click", () => nextPersonalityGameRound(game)); page.appendChild(next); }
+    }
+    if (game.screen !== "setup") { const end = document.createElement("button"); end.textContent = game.screen === "finished" ? "Play again" : "End game"; end.disabled = game.busy; end.addEventListener("click", () => { clearPersonalityGamePhotoCache(game); state.personalityGame = { serverId, hostId: game.hostId, mode: game.mode, screen: "setup" }; renderMessages(); }); page.appendChild(end); } els.messages.appendChild(page);
+}
+
+function getAuctionCompareBidders() {
+    const bidders = getAuctionBidders(), serverId = getActiveServer()?.id;
+    if (!state.auctionCompare || state.auctionCompare.serverId !== serverId) state.auctionCompare = { serverId, ids: [bidders[0]?.id, bidders[1]?.id || bidders[0]?.id] };
+    return state.auctionCompare.ids.map((id) => bidders.find((item) => item.id === id) || bidders[0]).filter(Boolean);
+}
+function renderAuctionCompare() {
+    const page = document.createElement("section"); page.className = "blindAuction auctionExtraPage"; const heading = document.createElement("h3"); heading.textContent = "Compare personalities"; page.appendChild(heading);
+    const bidders = getAuctionBidders(); if (!bidders.length) { page.appendChild(emptyPanel("Start an auction to create bidder profiles first.")); els.messages.appendChild(page); return; }
+    const picks = getAuctionCompareBidders(), help = document.createElement("p"); help.textContent = "Compare tastes, strategy, collection size and relationships. Changing the selection does not change the profiles."; page.appendChild(help);
+    const grid = document.createElement("div"); grid.className = "auctionCompareGrid";
+    [0, 1].forEach((slot) => { const bidder = picks[slot] || bidders[0], card = document.createElement("article"); card.className = "auctionCompareCard";
+        const label = document.createElement("label"); label.textContent = slot ? "Second personality" : "First personality"; const select = document.createElement("select"); bidders.forEach((item) => { const option = document.createElement("option"); option.value = item.id; option.textContent = item.name; option.selected = item.id === bidder.id; select.appendChild(option); }); select.addEventListener("change", async () => { state.auctionCompare.ids[slot] = select.value; await ensureAuctionPhotoRefsLoaded(getAuctionCompareBidders().map((item) => item.avatarRef).filter(Boolean)); if (state.activeView.type === "auctionCompare") renderMessages(); }); label.appendChild(select); card.appendChild(label);
+        if (bidder.avatarRef) card.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name));
+        const taste = bidder.personality?.taste || {}, interests = [...Object.entries(taste.channels || {}).map(([id, value]) => [`#${getChannelById(id)?.name || "channel"}`, value]), ...Object.entries(taste.tags || {}).map(([key, value]) => [`tag ${key}`, value]), ...Object.entries(taste.emojis || {}).map(([key, value]) => [`${key} reaction`, value])].sort((a, b) => b[1] - a[1]).slice(0, 4);
+        const info = document.createElement("p"); const goal = auctionGoalProgress(bidder), sliders = getAuctionPersonalitySliders(bidder), relation = getAuctionRelationship(bidder.id, "john");
+        info.textContent = `Strategy: ${bidder.strategy?.name || "Balanced"} · ${getAuctionOwnership().filter((item) => item.ownerId === bidder.id).length} owned · balance ${getAuctionBalances()[bidder.id] == null ? "not funded" : `$${getAuctionBalances()[bidder.id]}`}. Interests: ${interests.map(([name]) => name).join(", ") || "none yet"}. ${goal ? `Goal: ${goal.count}/${goal.target} in #${getChannelById(goal.channelId)?.name || "channel"}.` : "No current goal."} With John: ${relation.manuallyAdjusted ? `${relation.actualContests} recorded bidding rounds, ${relation.actualTrades} trades (influence adjusted)` : `${relation.contests} shared bidding rounds, ${relation.trades} trades`}. Competitiveness ${sliders.competitive}, flirtiness ${sliders.flirty}, risk ${sliders.risk}, generosity ${sliders.generous}, attachment ${sliders.attachment}.`; card.appendChild(info);
+        const open = document.createElement("button"); open.textContent = "Open profile"; open.addEventListener("click", async () => { await openView("auctionOwner", bidder.id); state.auctionOwnerTab = "profile"; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(bidder.id, "profile")); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) renderMessages(); }); card.appendChild(open); grid.appendChild(card);
+    });
+    page.appendChild(grid); if (picks.length === 2 && picks[0].id !== picks[1].id) { const relation = getAuctionRelationship(picks[0].id, picks[1].id), pair = document.createElement("p"); pair.textContent = `Together: ${relation.manuallyAdjusted ? relation.actualContests : relation.contests} recorded shared bidding rounds · ${relation.manuallyAdjusted ? relation.actualTrades : relation.trades} completed trades${relation.manuallyAdjusted ? " (influence adjusted)" : ""}.`; page.appendChild(pair); } els.messages.appendChild(page);
+}
+
+function getAuctionScrapbookEvents() {
+    const serverId = getActiveServer()?.id, events = [], add = (type, id, date, text, ref = null) => events.push({ key: `${serverId}:${type}:${id}`, type, date, text, ref });
+    getAuctionHistory().forEach((round, index) => { if (round.ownerId && Number(round.price) >= 25) add("purchase", round.id || `${round.auctionId}-${index}`, round.createdAt, `${getAuctionOwnerName(round.ownerId)} bought a photo for $${round.price}.`, round.ref); });
+    getAuctionTrades().forEach((trade, index) => { if (trade.status === "accepted") add("trade", trade.id || index, trade.resolvedAt, `${getAuctionOwnerName(trade.fromOwnerId)} and ${getAuctionOwnerName(trade.toOwnerId)} completed a trade.`, trade.giveRef); });
+    (state.structure.settings.auctionExhibitionHistory || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("exhibition", item.id || index, item.createdAt, `${getAuctionOwnerName(item.winnerId)} won exhibition night.`, item.lineups?.find((lineup) => lineup.ownerId === item.winnerId)?.refs?.[0]));
+    (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("dinner", item.id || index, item.finishedAt, `Dinner with ${getAuctionOwnerName(item.ownerId)} · ${item.photoCount} photos.`, item.ref));
+    (state.structure.settings.auctionMilestones || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("milestone", item.id || index, item.createdAt, `${getAuctionOwnerName(item.bidderId)} · ${auctionMilestoneTitle(item)}.`, item.ref));
+    return events.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+}
+function renderAuctionScrapbook() {
+    const page = document.createElement("section"); page.className = "blindAuction auctionExtraPage"; const heading = document.createElement("h3"); heading.textContent = "Private scrapbook"; page.appendChild(heading);
+    const help = document.createElement("p"); help.textContent = "Dinners, exhibition winners, milestones, accepted trades and purchases of $25 or more appear here. Hiding an entry never deletes its original record or photo. Dinners and milestones begin with this update."; page.appendChild(help);
+    const edits = state.structure.settings.auctionScrapbookEdits || {}, all = getAuctionScrapbookEvents(), showHidden = Boolean(state.auctionScrapbookShowHidden), events = all.filter((event) => showHidden || !edits[event.key]?.hidden), limit = state.auctionScrapbookLimit || 10;
+    const hiddenLabel = document.createElement("label"), hiddenToggle = document.createElement("input"); hiddenToggle.type = "checkbox"; hiddenToggle.checked = showHidden; hiddenLabel.append(hiddenToggle, document.createTextNode(" Show hidden scrapbook entries")); hiddenToggle.addEventListener("change", async () => { state.auctionScrapbookShowHidden = hiddenToggle.checked; state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getAuctionScrapbookEvents().filter((event) => hiddenToggle.checked || !edits[event.key]?.hidden).slice(0, 10).map((item) => item.ref).filter(Boolean)); if (state.activeView.type === "auctionScrapbook") renderMessages(); }); page.appendChild(hiddenLabel);
+    const update = async (event, change, button) => { if (state.auctionScrapbookSaving) return; state.auctionScrapbookSaving = true; button.disabled = true; try { const current = state.structure.settings.auctionScrapbookEdits || {}; await saveAuctionChanges({ auctionScrapbookEdits: { ...current, [event.key]: { ...(current[event.key] || {}), ...change } } }); if (state.activeView.type === "auctionScrapbook") renderMessages(); } catch (error) { console.error(error); alert("Could not save the scrapbook change."); button.disabled = false; } finally { state.auctionScrapbookSaving = false; } };
+    if (!events.length) page.appendChild(emptyPanel("No scrapbook entries yet."));
+    events.slice(0, limit).forEach((event) => { const card = document.createElement("article"); card.className = "auctionScrapbookCard"; const title = document.createElement("strong"); title.textContent = `${event.type.toUpperCase()}${edits[event.key]?.hidden ? " · HIDDEN" : ""}`; const date = document.createElement("small"); date.textContent = event.date ? new Date(event.date).toLocaleString() : "Date unavailable"; const text = document.createElement("p"); text.textContent = event.text; card.append(title, date, text);
+        if (event.ref && findAttachment(event.ref)) card.appendChild(auctionImageCard(event.ref, "Tap to expand"));
+        const label = document.createElement("label"); label.textContent = "Your note"; const note = document.createElement("textarea"); note.maxLength = 1000; note.value = edits[event.key]?.note || ""; note.rows = 2; label.appendChild(note); const save = document.createElement("button"); save.textContent = "Save note"; save.addEventListener("click", () => update(event, { note: note.value.slice(0, 1000) }, save)); const hide = document.createElement("button"); hide.textContent = edits[event.key]?.hidden ? "Restore entry" : "Hide entry"; hide.addEventListener("click", () => update(event, { hidden: !edits[event.key]?.hidden }, hide)); card.append(label, save, hide); page.appendChild(card); });
+    if (events.length > limit) { const more = document.createElement("button"); more.textContent = "Show 10 more"; more.addEventListener("click", async () => { more.disabled = true; const next = limit + 10; await ensureAuctionPhotoRefsLoaded(events.slice(limit, next).map((item) => item.ref).filter(Boolean)); state.auctionScrapbookLimit = next; if (state.activeView.type === "auctionScrapbook") renderMessages(); }); page.appendChild(more); } els.messages.appendChild(page);
+}
+
+function renderAuctionExhibition() {
+    const serverId = getActiveServer()?.id, page = document.createElement("section"); page.className = "blindAuction auctionExtraPage";
+    const title = document.createElement("h3"); title.textContent = "Exhibition night"; page.appendChild(title);
+    const show = state.auctionExhibition;
+    if (!show || show.serverId !== serverId) {
+        const intro = document.createElement("p"); intro.textContent = "Each participant displays a few of their owned photos. Browse the showcases and choose your winner. Originals and ownership stay unchanged."; page.appendChild(intro);
+        const label = document.createElement("label"); label.textContent = "Photos per participant (1–6)"; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "6"; input.inputMode = "numeric"; input.value = "3"; label.appendChild(input); page.appendChild(label);
+        const start = document.createElement("button"); start.className = "adventurePrimary"; start.textContent = "Prepare showcases";
+        start.addEventListener("click", async () => { const count = Number(input.value); if (!input.value.trim() || !Number.isInteger(count) || count < 1 || count > 6) { alert("Choose from 1 to 6 photos."); return; }
+            const ownership = getAuctionOwnership(), values = getAuctionTradeValues(), lineups = [{ id: "john" }, ...getAuctionBidders()].map((owner) => { const ranked = ownership.filter((item) => item.ownerId === owner.id).sort((a, b) => auctionPersonalScore(owner, b.ref, values) - auctionPersonalScore(owner, a.ref, values)); return { ownerId: owner.id, refs: shuffledCopy(ranked.slice(0, Math.max(count, count * 2))).slice(0, count).map((item) => structuredClone(item.ref)) }; }).filter((entry) => entry.refs.length);
+            if (!lineups.length) { alert("Auction or transfer a photo to a participant first."); return; }
+            start.disabled = true; await ensureAuctionPhotoRefsLoaded([lineups[0].refs[0]]); if (state.activeView.type !== "auctionExhibition" || getActiveServer()?.id !== serverId) return;
+            state.auctionExhibition = { id: newLocalGameRecordId(), serverId, lineups, ownerIndex: 0, photoIndex: 0, winnerId: null }; renderMessages(); }); page.appendChild(start);
+    } else {
+        const lineup = show.lineups[show.ownerIndex], ref = lineup.refs[show.photoIndex];
+        const label = document.createElement("p"); label.textContent = `${getAuctionOwnerName(lineup.ownerId)} · exhibitor ${show.ownerIndex + 1}/${show.lineups.length} · photo ${show.photoIndex + 1}/${lineup.refs.length}`; page.appendChild(label);
+        page.appendChild(auctionImageCard(ref, "Tap to expand"));
+        const controls = document.createElement("div"); controls.className = "blindAuctionActions";
+        const navigate = async (ownerStep, photoStep) => { show.ownerIndex = (show.ownerIndex + ownerStep + show.lineups.length) % show.lineups.length; if (ownerStep) show.photoIndex = 0; else show.photoIndex = (show.photoIndex + photoStep + lineup.refs.length) % lineup.refs.length; await ensureAuctionPhotoRefsLoaded([show.lineups[show.ownerIndex].refs[show.photoIndex]]); if (state.activeView.type === "auctionExhibition" && state.auctionExhibition === show) renderMessages(); };
+        [["Previous exhibitor", -1, 0], ["Next exhibitor", 1, 0], ["Previous photo", 0, -1], ["Next photo", 0, 1]].forEach(([text, ownerStep, photoStep]) => { const button = document.createElement("button"); button.textContent = text; button.disabled = ownerStep ? show.lineups.length < 2 : lineup.refs.length < 2; button.addEventListener("click", () => navigate(ownerStep, photoStep)); controls.appendChild(button); }); page.appendChild(controls);
+        if (show.winnerId) { const winner = document.createElement("p"); winner.textContent = `Winner: ${getAuctionOwnerName(show.winnerId)}. Your choice was saved locally.`; page.appendChild(winner); const recap = document.createElement("details"), summary = document.createElement("summary"), info = document.createElement("p"); summary.textContent = "Event recap"; info.textContent = `Showcases: ${show.lineups.map((entry) => `${getAuctionOwnerName(entry.ownerId)} (${entry.refs.length} photos)`).join(" · ")}. Winner: ${getAuctionOwnerName(show.winnerId)}. This event does not change trade trust or bidding rivalry.`; recap.append(summary, info); page.appendChild(recap); }
+        else { const choose = document.createElement("button"); choose.className = "adventurePrimary"; choose.textContent = `Choose ${getAuctionOwnerName(lineup.ownerId)} as winner`; choose.addEventListener("click", async () => { choose.disabled = true; try { const events = Array.isArray(state.structure.settings.auctionExhibitionHistory) ? state.structure.settings.auctionExhibitionHistory : []; await saveAuctionChanges({ auctionExhibitionHistory: [...events, { id: show.id, serverId, winnerId: lineup.ownerId, createdAt: new Date().toISOString(), lineups: structuredClone(show.lineups) }] }); show.winnerId = lineup.ownerId; renderMessages(); } catch (error) { console.error(error); choose.disabled = false; alert("Could not save the winner."); } }); page.appendChild(choose); }
+        const reset = document.createElement("button"); reset.textContent = "Prepare a new exhibition"; reset.addEventListener("click", () => { if (!show.winnerId && !confirm("Leave this showcase without choosing a winner?")) return; state.auctionExhibition = null; renderMessages(); }); page.appendChild(reset);
+    } els.messages.appendChild(page);
+}
+
+let punishmentChallengeTimer;
+function stopPunishmentChallenge() {
+    window.clearTimeout(punishmentChallengeTimer); punishmentChallengeTimer = undefined;
+    const session = state.punishmentChallenge;
+    if (session?.musicStarted) { session.musicStarted = false; els.metronomeBpm.value = String(session.previousBpm); state.structure.settings.metronomeBpm = Number(session.previousBpm) || 120; if (session.previousRunning) startMetronome(); else stopMetronome(); void saveStructure(state.structure).catch((error) => console.warn("Could not restore metronome:", error)); }
+}
+function schedulePunishmentChallenge(session, milliseconds) {
+    window.clearTimeout(punishmentChallengeTimer); session.remainingMs = Math.max(0, milliseconds); session.endsAt = Date.now() + session.remainingMs;
+    punishmentChallengeTimer = window.setTimeout(() => advancePunishmentChallenge(session.index + 1), session.remainingMs);
+}
+async function advancePunishmentChallenge(index) {
+    const session = state.punishmentChallenge; if (!session || session.loading || session.screen !== "play" || state.activeView.type !== "punishmentChallenge") return;
+    window.clearTimeout(punishmentChallengeTimer);
+    if (index >= session.refs.length) { stopPunishmentChallenge(); session.screen = "finished"; renderMessages(); return; }
+    session.index = index; session.paused = false; session.loading = true; try { await ensureAuctionPhotoRefsLoaded([session.refs[index]]); } finally { session.loading = false; }
+    if (state.punishmentChallenge !== session || session.screen !== "play" || state.activeView.type !== "punishmentChallenge" || session.index !== index) return;
+    els.metronomeBpm.value = String(session.bpm); startMetronome(); renderMessages(); schedulePunishmentChallenge(session, session.seconds * 1000);
+}
+function renderPunishmentChallenge() {
+    const bidder = getAuctionBidders().find((item) => item.id === state.activeView.id), session = state.punishmentChallenge, page = document.createElement("section"); page.className = "blindAuction auctionExtraPage";
+    if (!session || !bidder || session.serverId !== getActiveServer()?.id || !getAuctionPersonalitySettings().punishmentFavorites) { page.appendChild(emptyPanel("Enable punishment-photo favorites in Settings and open a personality profile to start.")); els.messages.appendChild(page); return; }
+    const heading = document.createElement("h3"); heading.textContent = `Favorite-photo challenge with ${bidder.name}`; page.appendChild(heading);
+    const back = document.createElement("button"); back.type = "button"; back.textContent = "End and return to profile"; back.addEventListener("click", async () => { await openView("auctionOwner", bidder.id); state.auctionOwnerTab = "profile"; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(bidder.id, "profile")); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) renderMessages(); });
+    if (session.screen === "setup") {
+        const refs = getPunishmentFavoriteRefs(bidder), help = document.createElement("p"); help.textContent = "A short, unranked slideshow of her punishment-photo favorites. You control the duration and BPM; pause or end at any time. It does not change game statistics or the original photos."; page.appendChild(help);
+        const fields = document.createElement("div"); fields.className = "blindAuctionSetup"; const field = (text, value, min, max) => { const label = document.createElement("label"); label.textContent = text; const input = document.createElement("input"); input.type = "number"; input.inputMode = "numeric"; input.min = String(min); input.max = String(max); input.value = String(value); label.appendChild(input); fields.appendChild(label); return input; }; const seconds = field("Seconds per photo (1–300)", 10, 1, 300), bpm = field("Metronome BPM (20–300)", 120, 20, 300); page.appendChild(fields);
+        const start = document.createElement("button"); start.className = "adventurePrimary"; start.textContent = "Start challenge"; start.disabled = !refs.length; start.addEventListener("click", () => { const duration = Number(seconds.value), speed = Number(bpm.value); if (!seconds.value.trim() || !bpm.value.trim() || !Number.isInteger(duration) || duration < 1 || duration > 300 || !Number.isInteger(speed) || speed < 20 || speed > 300) { alert("Choose whole-number seconds from 1–300 and BPM from 20–300."); return; } start.disabled = true; session.refs = shuffledCopy(refs); session.seconds = duration; session.bpm = speed; session.previousBpm = els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120; session.previousRunning = Boolean(metronomeTimer); session.musicStarted = true; session.screen = "play"; advancePunishmentChallenge(0); }); page.appendChild(start); if (!refs.length) page.appendChild(emptyPanel("Choose punishment-photo favorites on this profile first."));
+    } else if (session.screen === "finished") { const done = document.createElement("p"); done.textContent = "Challenge complete. No statistics were recorded."; page.appendChild(done); }
+    else { const ref = session.refs[session.index], info = document.createElement("p"); info.textContent = `${session.index + 1}/${session.refs.length} · ${session.seconds} seconds · ${session.bpm} BPM${session.paused ? " · paused" : ""}`; page.append(info, auctionImageCard(ref, "Tap to expand")); if (getAuctionPersonalitySettings().dialogue) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${bidder.name}: “${punishmentFavoriteDialogue(bidder, ref)}”`; page.appendChild(line); }
+        const actions = document.createElement("div"); actions.className = "blindAuctionActions"; const pause = document.createElement("button"); pause.textContent = session.paused ? "Resume" : "Pause"; pause.addEventListener("click", () => { if (session.loading) return; if (session.paused) { session.paused = false; els.metronomeBpm.value = String(session.bpm); startMetronome(); schedulePunishmentChallenge(session, session.remainingMs); } else { session.remainingMs = Math.max(0, session.endsAt - Date.now()); window.clearTimeout(punishmentChallengeTimer); stopMetronome(); session.paused = true; } renderMessages(); }); const next = document.createElement("button"); next.textContent = session.index === session.refs.length - 1 ? "Finish" : "Next photo"; next.addEventListener("click", () => advancePunishmentChallenge(session.index + 1)); actions.append(pause, next); page.appendChild(actions); }
+    page.appendChild(back); els.messages.appendChild(page);
+}
+
+let auctionDinnerTimer;
+function getAuctionDinnerJealousy(bidder) {
+    const settings = getAuctionPersonalitySettings();
+    if (!bidder || !settings.dinnerJealousy || !settings.dialogue) return null;
+    const history = (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === getActiveServer()?.id && item.finishedAt).slice().sort((a, b) => String(b.finishedAt).localeCompare(String(a.finishedAt)));
+    const latest = history[0];
+    if (!latest || latest.ownerId === bidder.id || (latest.guestIds || []).includes(bidder.id)) return null;
+    const other = getAuctionBidders().find((item) => item.id === latest.ownerId);
+    if (!other) return null;
+    const lines = [
+        `I heard you had dinner with ${other.name}. I hope you saved some of that irresistible attention for me.`,
+        `${other.name} had you all to herself? Now I'm imagining how much more fun we could have together.`,
+        `So ${other.name} got a dinner date with you. I'm just jealous enough to want you closer tonight.`,
+        `I won't pretend I'm not a little jealous of ${other.name}. Make it up to me with a little private attention?`,
+        `Was dinner with ${other.name} as tempting as it sounds? Come sit beside me and let me make you forget it.`,
+        `${other.name} has been keeping you busy, hasn't she? I have a few delicious ideas for stealing you away.`,
+        `I heard about your evening with ${other.name}. Now I want my turn to make you blush, darling.`,
+        `If ${other.name} gets to charm you over dinner, I think I deserve the chance to be even more distracting.`
+    ];
+    const hash = [...`${bidder.id}:${latest.id || latest.finishedAt}`].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) >>> 0, 7);
+    return { otherId: other.id, line: lines[hash % lines.length] };
+}
+function prepareAuctionDinnerGuest(host, allowed, count, existingRefs, values) {
+    if (!allowed || !getAuctionPersonalitySettings().dinnerGuests || Math.random() >= auctionEventChance(.35)) return null;
+    const ownership = getAuctionOwnership(), used = new Set(existingRefs.map(auctionPhotoKey));
+    const candidates = getAuctionBidders().filter((guest) => guest.id !== host.id && getAuctionRelationship(host.id, guest.id).trades > 0 && ownership.some((item) => item.ownerId === guest.id && item.ref && !used.has(auctionPhotoKey(item.ref))));
+    if (!candidates.length) return null;
+    const guest = shuffledCopy(candidates)[0], limit = Math.max(1, Math.min(5, Math.floor(Number(count) || 1)));
+    const refs = ownership.filter((item) => item.ownerId === guest.id && item.ref && !used.has(auctionPhotoKey(item.ref))).sort((a, b) => auctionPersonalScore(guest, b.ref, values) - auctionPersonalScore(guest, a.ref, values)).slice(0, limit).map((item) => structuredClone(item.ref));
+    return refs.length ? { guest, refs } : null;
+}
+const AUCTION_DINNER_GUEST_LINES = [
+    "She invited me to join you, darling. I hope you can handle a little extra temptation.",
+    "I brought a favorite of my own. Come closer and tell me if my taste makes you blush.",
+    "She said you were charming, but she didn't mention quite how tempting you'd be in person.",
+    "Don't look so surprised. I thought sharing this evening with you sounded delicious.",
+    "I chose this for you. Keep looking at me like that and I may get wonderfully distracted.",
+    "Your host and I have rather good taste, don't we? Let's see which of us can hold your attention.",
+    "I couldn't resist her invitation, especially when I heard you'd be here looking so irresistible.",
+    "Here's one of my favorites. Sit close and let me show you exactly why I picked it.",
+    "I hope there's room for me beside you. I brought something lovely and a few wicked thoughts.",
+    "She promised me a charming dinner companion. I can see why she wanted to keep you to herself."
+];
+function stopAuctionDinner() {
+    window.clearTimeout(auctionDinnerTimer); auctionDinnerTimer = undefined;
+    const show = state.auctionDinner;
+    if (show?.musicStarted) { show.musicStarted = false; els.metronomeBpm.value = String(show.previousBpm); state.structure.settings.metronomeBpm = Number(show.previousBpm) || 120; if (show.previousRunning) startMetronome(); else stopMetronome(); void saveStructure(state.structure).catch((error) => console.warn("Could not restore metronome:", error)); }
+}
+async function advanceAuctionDinner(index) {
+    const show = state.auctionDinner; if (!show || show.screen !== "tour" || state.activeView.type !== "auctionDinner") return;
+    window.clearTimeout(auctionDinnerTimer); auctionDinnerTimer = undefined;
+    if (index >= show.items.length) {
+        if (show.finishing) return; show.finishing = true; show.finishError = ""; renderMessages();
+        try { const history = Array.isArray(state.structure.settings.auctionDinnerHistory) ? state.structure.settings.auctionDinnerHistory : []; if (!history.some((item) => item.id === show.dinnerId && item.serverId === show.serverId)) await saveAuctionChanges({ auctionDinnerHistory: [...history, { id: show.dinnerId, serverId: show.serverId, ownerId: show.ownerId, guestIds: show.guestIds || [], guestPhotoCount: show.guestPhotoCount || 0, photoCount: show.items.length, ref: structuredClone(show.items[0].ref), finishedAt: new Date().toISOString() }] }); stopAuctionDinner(); show.screen = "end"; }
+        catch (error) { console.error("Could not save dinner:", error); show.finishError = "Could not save this dinner locally. Tap Finish tour to retry, or return to the profile without saving it."; }
+        finally { show.finishing = false; if (state.activeView.type === "auctionDinner" && state.auctionDinner === show) renderMessages(); } return;
+    }
+    show.index = Math.max(0, index); show.paused = false; show.conversation = null; show.photoChoice = null;
+    const item = show.items[show.index]; await ensureAuctionPhotoRefsLoaded([item.ref]);
+    if (state.auctionDinner !== show || show.screen !== "tour" || state.activeView.type !== "auctionDinner" || show.index !== index) return;
+    els.metronomeBpm.value = String(item.bpm); startMetronome();
+    show.conversationSeen ||= [];
+    if (show.conversationsEnabled && show.index % 3 === 0 && !show.conversationSeen.includes(show.index)) { show.conversationSeen.push(show.index); show.conversation = { response: null, saving: false }; }
+    renderMessages();
+    if (!show.conversation) auctionDinnerTimer = window.setTimeout(requestNextAuctionDinnerPhoto, item.seconds * 1000);
+}
+function auctionDinnerCallback(bidder) {
+    const callbacks = [], serverId = getActiveServer()?.id;
+    const dinners = (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId && item.ownerId === bidder.id);
+    if (dinners.length) callbacks.push("I've been thinking about our last dinner, darling. I'm glad I get you to myself again.", "I remember the way you looked at me over dinner. I've been hoping you'd come back for more of my attention.", "Our last evening together left me wanting another. Come sit a little closer this time.");
+    const trade = [...getAuctionTrades()].reverse().find((item) => item.status === "accepted" && [item.fromOwnerId, item.toOwnerId].includes("john") && [item.fromOwnerId, item.toOwnerId].includes(bidder.id));
+    if (trade) callbacks.push("I still remember the trade we made. You negotiate so charmingly; perhaps we should do it again.", "I've been thinking about our trade—and the way you persuaded me. You can try that charm on me again tonight.", "That trade of ours was tempting. I'd love to see what else you can talk me into.");
+    const contest = [...getAuctionHistory()].reverse().find((item) => { const yours = (item.bids || []).find((bid) => bid.id === "john" && bid.bid > 0), hers = (item.bids || []).find((bid) => bid.id === bidder.id && bid.bid > 0); return yours && hers && Math.abs(yours.bid - hers.bid) <= Math.max(3, Math.max(yours.bid, hers.bid) * .2); });
+    if (contest) callbacks.push("Remember how close our bids were? That little rivalry made me want more of your attention.", "I've been replaying our close auction in my head. You looked irresistible when you challenged me.", "Our bidding rivalry had me on the edge of my seat. I'm enjoying having you a little closer now.");
+    return callbacks.length && Math.random() < .6 ? callbacks[Math.floor(Math.random() * callbacks.length)] : null;
+}
+async function requestNextAuctionDinnerPhoto() {
+    const show = state.auctionDinner; if (!show || show.screen !== "tour" || show.finishing || show.photoChoice?.saving || state.activeView.type !== "auctionDinner") return;
+    window.clearTimeout(auctionDinnerTimer); auctionDinnerTimer = undefined;
+    const index = show.index; show.photoChoiceSeen ||= [];
+    if (index % 3 === 0 && index + 2 < show.items.length && !show.photoChoiceSeen.includes(index)) {
+        show.photoChoiceSeen.push(index); show.conversation = null; show.photoChoice = { indices: [index + 1, index + 2], saving: false }; show.paused = false;
+        await ensureAuctionPhotoRefsLoaded(show.photoChoice.indices.map((i) => show.items[i].ref));
+        if (state.auctionDinner === show && show.index === index && state.activeView.type === "auctionDinner") renderMessages();
+    } else await advanceAuctionDinner(index + 1);
+}
+async function chooseAuctionDinnerPhoto(chosenIndex) {
+    const show = state.auctionDinner, selection = show?.photoChoice, index = show?.index;
+    if (!selection || selection.saving || !selection.indices.includes(chosenIndex) || state.activeView.type !== "auctionDinner") return;
+    const bidder = getAuctionBidders().find((item) => item.id === show.ownerId); if (!bidder) return;
+    const old = bidder.dinnerMemory || {}, ref = show.items[chosenIndex].ref, channels = { ...(old.photoChannels || {}) }; channels[ref.channelId] = (Number(channels[ref.channelId]) || 0) + 1;
+    selection.saving = true; renderMessages();
+    try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, dinnerMemory: { ...old, photoChannels: channels } } : item) }); if (state.auctionDinner !== show || show.index !== index || state.activeView.type !== "auctionDinner") return; [show.items[index + 1], show.items[chosenIndex]] = [show.items[chosenIndex], show.items[index + 1]]; await advanceAuctionDinner(index + 1); }
+    catch (error) { console.error(error); alert("Could not save your photo choice locally. Please try again or let her choose."); }
+    finally { selection.saving = false; if (state.activeView.type === "auctionDinner" && state.auctionDinner === show) renderMessages(); }
+}
+function auctionDinnerResponse(bidder, choice, ref) {
+    const memory = bidder.dinnerMemory || {}, bold = getAuctionPersonalitySliders(bidder).flirty >= 65;
+    const channel = getChannelById(ref?.channelId)?.name || "this collection";
+    const pick = (lines) => lines[Math.floor(Math.random() * lines.length)];
+    if (choice === "curious") return memory.lastChoice === "curious" ? pick([`You're curious again. I love that you pay attention: #${channel} always draws my eye—and so do you.`, `Asking me again? I love showing you #${channel}, especially when it brings you this close.`, `Curious again, darling? #${channel} catches my eye, but you're becoming my favorite distraction.`]) : pick([`I have a soft spot for #${channel}. But watching you take an interest might be my favorite part.`, `Something about #${channel} draws me in. The way you're watching me now is just as tempting.`, `I chose this from #${channel} because I wanted to share a favorite with someone irresistible.`]);
+    if (choice === "flirt") return bold ? (memory.lastChoice === "flirt" ? pick(["There you go tempting me again. Come closer; I intend to make this worth your while.", "Flirting again? Keep that up and I may not want to let you go tonight.", "You're drawing me in again, gorgeous. Stay close and see how much I enjoy it."]) : pick(["Come closer, gorgeous. If you keep tempting me, I may want you all to myself tonight.", "Mmm, come here. I've been hoping you'd give me an excuse to get closer.", "You have no idea how tempting you sound. Stay beside me and let me enjoy it."])) : (memory.lastChoice === "flirt" ? pick(["Flirting with me again? I was hoping you would. Stay close, darling.", "There you go charming me again. I could get used to having you this near.", "You're teasing me again, and I'm enjoying every moment."]) : pick(["Mmm, I like your confidence. Come a little closer and keep me company.", "I'd love to. Stay close enough that I can tell you exactly what I'm thinking.", "Careful, darling. If you invite me closer, I might not want to move away."]));
+    return memory.lastChoice === "compliment" ? pick(["Another compliment? Careful, darling—I'm starting to expect your attention, and I love it.", "Sweet-talking me again? I could listen to you all night.", "Another lovely compliment. You're giving me excellent reasons to keep you close."]) : pick(["You like my taste? Wait until you see what else I chose to share with you.", "You have wonderful taste yourself, darling. After all, you chose to spend the evening with me.", "Keep talking to me like that and I may have to reward you with another favorite."]);
+}
+async function answerAuctionDinner(choice) {
+    const show = state.auctionDinner, index = show?.index, conversation = show?.conversation;
+    if (!show || !conversation || conversation.saving || conversation.response || state.activeView.type !== "auctionDinner") return;
+    const bidder = getAuctionBidders().find((item) => item.id === show.ownerId); if (!bidder) return;
+    const response = auctionDinnerResponse(bidder, choice, show.items[index].ref), old = bidder.dinnerMemory || {};
+    const memory = { ...old, lastChoice: choice, counts: { ...(old.counts || {}), [choice]: (Number(old.counts?.[choice]) || 0) + 1 }, updatedAt: new Date().toISOString() };
+    conversation.saving = true; renderMessages();
+    try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, dinnerMemory: memory } : item) }); if (state.auctionDinner === show && show.index === index && show.conversation === conversation) conversation.response = response; }
+    catch (error) { console.error(error); alert("Could not save this reply locally. Please try again or skip."); }
+    finally { conversation.saving = false; if (state.activeView.type === "auctionDinner" && state.auctionDinner === show) renderMessages(); }
+}
+function continueAuctionDinnerConversation() {
+    const show = state.auctionDinner; if (!show?.conversation || show.conversation.saving || state.activeView.type !== "auctionDinner") return;
+    show.conversation = null; show.paused = false; const item = show.items[show.index]; renderMessages();
+    auctionDinnerTimer = window.setTimeout(requestNextAuctionDinnerPhoto, item.seconds * 1000);
+}
+function renderAuctionDinner() {
+    const show = state.auctionDinner, bidder = getAuctionBidders().find((item) => item.id === state.activeView.id), page = document.createElement("section"); page.className = "auctionDinner";
+    if (!show || !bidder || show.serverId !== getActiveServer()?.id) { page.appendChild(emptyPanel("This dinner is no longer available. Open the bidder’s profile to start again.")); els.messages.appendChild(page); return; }
+    const exit = document.createElement("button"); exit.textContent = "Back to profile"; exit.disabled = Boolean(show.conversation?.saving || show.photoChoice?.saving || show.finishing); exit.addEventListener("click", async () => { await openView("auctionOwner", bidder.id); state.auctionOwnerTab = "profile"; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(bidder.id, "profile")); if (state.activeView.type === "auctionOwner" && state.activeView.id === bidder.id) renderMessages(); });
+    if (show.screen === "setup" || show.screen === "end") {
+        const table = document.createElement("div"); table.className = "auctionDinnerTable"; const title = document.createElement("h3"); title.textContent = show.screen === "end" ? "Until next time…" : `Dinner with ${bidder.name}`; table.appendChild(title);
+        if (bidder.avatarRef) table.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name));
+        const line = document.createElement("p"); line.textContent = show.screen === "end" ? (show.guestIds?.length ? `“I loved sharing this evening with you. Come back soon, darling.”` : `“I loved having you all to myself. Come back soon, darling.”`) : `“Sit close, darling. I have a few favorites I’d love to show you.”`; table.appendChild(line); page.appendChild(table);
+        if (show.screen === "end") { const recap = document.createElement("details"), summary = document.createElement("summary"), info = document.createElement("p"); summary.textContent = "Dinner recap"; const guest = show.guestIds?.length ? ` Guest: ${show.guestIds.map(getAuctionOwnerName).join(", ")} (${show.guestPhotoCount} contributed photos).` : " No guest joined."; info.textContent = `${show.items.length} photos shown with ${bidder.name}.${guest} This dinner is recorded locally; it does not change trade trust or bidding rivalry.`; recap.append(summary, info); page.appendChild(recap); }
+        if (show.screen === "setup") {
+            const items = getAuctionRosterSections(bidder.id).items, help = document.createElement("p"); help.textContent = `${bidder.name} will choose from her owned photos, set each photo’s duration and BPM, and guide you through them. Sometimes you can pick the next photo; the source channels you choose can influence later tours. The metronome is restored when you leave.`; page.appendChild(help);
+            const label = document.createElement("label"); label.textContent = "Tour length (1–50 photos; leave blank for her choice)"; const count = document.createElement("input"); count.type = "number"; count.min = "1"; count.max = "50"; count.inputMode = "numeric"; count.placeholder = "Her choice"; label.appendChild(count); page.appendChild(label);
+            const themeLabel = document.createElement("label"); themeLabel.textContent = "Dinner mood"; const theme = document.createElement("select"); [["mixed", "Mixed"], ["romantic", "Romantic"], ["playful", "Playful"], ["competitive", "Competitive"], ["mysterious", "Mysterious"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; theme.appendChild(option); }); themeLabel.appendChild(theme); page.appendChild(themeLabel);
+            const conversationLabel = document.createElement("label"), conversationToggle = document.createElement("input"); conversationLabel.className = "auctionDinnerConversationToggle"; conversationToggle.type = "checkbox"; conversationToggle.checked = true; conversationLabel.append(conversationToggle, document.createTextNode(" Occasional conversation choices")); page.appendChild(conversationLabel);
+            const inviteToggle = document.createElement("input"), guestCount = document.createElement("input"); inviteToggle.type = "checkbox"; inviteToggle.checked = getAuctionPersonalitySettings().dinnerGuests; guestCount.type = "number"; guestCount.inputMode = "numeric"; guestCount.min = "1"; guestCount.max = "5"; guestCount.value = "2";
+            if (getAuctionPersonalitySettings().dinnerGuests) { const inviteLabel = document.createElement("label"); inviteLabel.className = "auctionDinnerConversationToggle"; inviteLabel.append(inviteToggle, document.createTextNode(" Allow an occasional invited guest")); const guestLabel = document.createElement("label"); guestLabel.textContent = "Extra guest photos (1–5)"; guestLabel.appendChild(guestCount); const guestHelp = document.createElement("p"); guestHelp.textContent = "A guest is occasionally invited if she has an accepted trade (or positive relationship adjustment) with the host and owns photos. Her photos are added to the tour, not transferred."; page.append(inviteLabel, guestLabel, guestHelp); guestCount.disabled = !inviteToggle.checked; inviteToggle.addEventListener("change", () => { guestCount.disabled = !inviteToggle.checked; }); }
+            const specialRefs = getPunishmentFavoriteRefs(bidder), specialToggle = document.createElement("input"); specialToggle.type = "checkbox"; specialToggle.checked = Boolean(specialRefs.length); if (specialRefs.length) { const specialLabel = document.createElement("label"); specialLabel.className = "auctionDinnerConversationToggle"; specialLabel.append(specialToggle, document.createTextNode(" Include her punishment-photo favorites")); page.appendChild(specialLabel); }
+            const begin = document.createElement("button"); begin.className = "adventurePrimary"; begin.textContent = "Begin the tour"; begin.disabled = !items.length && !specialRefs.length;
+            begin.addEventListener("click", () => { const entered = count.value.trim(); if (entered && (!Number.isInteger(Number(entered)) || Number(entered) < 1 || Number(entered) > 50)) { alert("Enter a number from 1 to 50, or leave it blank."); return; } if (inviteToggle.checked && (!guestCount.value.trim() || !Number.isInteger(Number(guestCount.value)) || Number(guestCount.value) < 1 || Number(guestCount.value) > 5)) { alert("Choose 1 to 5 guest photos."); return; } const values = getAuctionTradeValues(), requested = entered ? Number(entered) : (3 + Math.floor(Math.random() * 6)), favoriteKeys = new Set(getAuctionPersonalFavorites(bidder, items, values).map(auctionPhotoKey)); const specialKeys = new Set((specialToggle.checked ? specialRefs : []).map(auctionPhotoKey)); const combined = [...items]; if (specialToggle.checked) specialRefs.forEach((ref) => { if (!combined.some((item) => auctionPhotoKey(item.ref) === auctionPhotoKey(ref))) combined.push({ ref }); }); if (!combined.length) { alert("Choose at least one available photo for the tour."); return; } const preference = (ref) => 1 + Math.min(5, Number(bidder.dinnerMemory?.photoChannels?.[ref.channelId]) || 0) * .05; const noise = new Map(combined.map((item) => [auctionPhotoKey(item.ref), Math.random() * 50])); const score = (item) => { const base = auctionPersonalScore(bidder, item.ref, values) * preference(item.ref) * (favoriteKeys.has(auctionPhotoKey(item.ref)) ? 1.25 : 1), rank = auctionTradeValue(item.ref, values); return theme.value === "competitive" ? base + rank * .4 : theme.value === "mysterious" ? base * .4 + (100 - rank) : theme.value === "playful" ? base * .7 + noise.get(auctionPhotoKey(item.ref)) : base; }; const ranked = [...combined].sort((a, b) => score(b) - score(a)); const selected = ranked.slice(0, Math.min(requested, ranked.length)); if (specialKeys.size && !selected.some((item) => specialKeys.has(auctionPhotoKey(item.ref)))) selected[selected.length - 1] = ranked.find((item) => specialKeys.has(auctionPhotoKey(item.ref))); const factor = Number(bidder.strategy?.factor) || 1;
+                const lines = shuffledCopy(AUCTION_DINNER_THEMES[theme.value] || AUCTION_DINNER_DIALOGUE);
+                show.items = selected.map((item, index) => ({ ref: structuredClone(item.ref), isFavorite: favoriteKeys.has(auctionPhotoKey(item.ref)), seconds: Math.max(5, Math.min(25, Math.round(7 + factor * 3 + (index % 4) * 2))), bpm: Math.max(50, Math.min(200, Math.round(75 + factor * 30 + (index % 5) * 8))), line: specialKeys.has(auctionPhotoKey(item.ref)) ? punishmentFavoriteDialogue(bidder, item.ref) : lines[(index + (bidder.personality?.bioVariant || 0)) % lines.length] }));
+                const invitation = prepareAuctionDinnerGuest(bidder, inviteToggle.checked, guestCount.value, show.items.map((item) => item.ref), values); show.guestIds = invitation ? [invitation.guest.id] : []; show.guestPhotoCount = invitation?.refs.length || 0; show.guestIntro = invitation ? `I invited ${invitation.guest.name} to join us, darling. I thought we might enjoy sharing your attention.` : "";
+                if (invitation) { const guestFactor = Number(invitation.guest.strategy?.factor) || 1, guestLines = shuffledCopy(AUCTION_DINNER_GUEST_LINES), total = show.items.length; invitation.refs.forEach((ref, index) => { show.items.splice(Math.min(show.items.length, Math.floor((index + 1) * (total + 1) / (invitation.refs.length + 1)) + index), 0, { ref, speakerId: invitation.guest.id, seconds: Math.max(5, Math.min(25, Math.round(7 + guestFactor * 3 + (index % 4) * 2))), bpm: Math.max(50, Math.min(200, Math.round(75 + guestFactor * 30 + (index % 5) * 8))), line: guestLines[index % guestLines.length] }); }); }
+                show.theme = theme.value; show.index = 0; show.dinnerId = newLocalGameRecordId(); show.callback = getAuctionDinnerJealousy(bidder)?.line || auctionDinnerCallback(bidder); show.photoChoiceSeen = []; show.conversationsEnabled = conversationToggle.checked; show.conversationSeen = []; show.previousBpm = els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120; show.previousRunning = Boolean(metronomeTimer); show.musicStarted = true; show.screen = "tour"; advanceAuctionDinner(0); });
+            if (!items.length && !specialRefs.length) page.appendChild(emptyPanel("This bidder needs an owned photo before she can lead a tour.")); page.appendChild(begin);
+        }
+    } else {
+        const item = show.items[show.index], heading = document.createElement("h3"); heading.textContent = `${bidder.name}’s favorites · ${show.index + 1}/${show.items.length}`; page.appendChild(heading);
+        const frame = document.createElement("div"); frame.className = "auctionDinnerFrame"; frame.appendChild(auctionImageCard(item.ref, `${item.seconds} seconds · ${item.bpm} BPM`)); page.appendChild(frame);
+        if (show.guestIds?.length) { const guestNotice = document.createElement("p"); guestNotice.textContent = `Guest: ${getAuctionOwnerName(show.guestIds[0])} · ${show.guestPhotoCount} additional photo${show.guestPhotoCount === 1 ? "" : "s"}`; page.appendChild(guestNotice); }
+        if (getAuctionPersonalitySettings().dialogue && (item.speakerId || auctionDialogueVisible(show.index))) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${item.speakerId ? getAuctionOwnerName(item.speakerId) : bidder.name}: “${item.isFavorite ? "This is one of my personal favorites. " : ""}${item.line}”`; page.appendChild(line); }
+        if (show.index === 0 && show.guestIntro && getAuctionPersonalitySettings().dialogue) { const intro = document.createElement("p"); intro.className = "auctionDinnerCallback"; intro.textContent = `${bidder.name}: “${show.guestIntro}”`; page.appendChild(intro); }
+        if (show.index === 0 && show.callback) { const callback = document.createElement("p"); callback.className = "auctionDinnerCallback"; callback.textContent = `${bidder.name}: “${show.callback}”`; page.appendChild(callback); }
+        if (show.conversation) { const conversation = document.createElement("section"); conversation.className = "auctionDinnerConversation"; const prompt = document.createElement("strong"); prompt.textContent = show.conversation.response ? `${bidder.name} replies` : "What would you like to say? The slideshow is waiting for you."; conversation.appendChild(prompt);
+            if (show.conversation.response) { const response = document.createElement("p"); response.textContent = `“${show.conversation.response}”`; conversation.appendChild(response); const proceed = document.createElement("button"); proceed.className = "adventurePrimary"; proceed.textContent = "Continue tour"; proceed.addEventListener("click", continueAuctionDinnerConversation); conversation.appendChild(proceed); }
+            else { [["curious", "Why did you choose this?"], ["flirt", "Come a little closer."], ["compliment", "You have wonderful taste."]].forEach(([choice, text]) => { const button = document.createElement("button"); button.textContent = text; button.disabled = show.conversation.saving; button.addEventListener("click", () => answerAuctionDinner(choice)); conversation.appendChild(button); }); const skip = document.createElement("button"); skip.textContent = "Skip conversation"; skip.disabled = show.conversation.saving; skip.addEventListener("click", continueAuctionDinnerConversation); conversation.appendChild(skip); }
+            page.appendChild(conversation); }
+        if (show.photoChoice) { const selection = document.createElement("section"); selection.className = "auctionDinnerSelection"; const question = document.createElement("strong"); question.textContent = `${bidder.name}: “Which one would you like to see next?”`; selection.appendChild(question); const choices = document.createElement("div"); choices.className = "auctionDinnerChoiceGrid";
+            show.photoChoice.indices.forEach((index) => { const ref = show.items[index].ref, button = document.createElement("button"); button.type = "button"; button.disabled = show.photoChoice.saving; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo option"; button.appendChild(image); } const text = document.createElement("span"); text.textContent = `Choose photo from #${getChannelById(ref.channelId)?.name || "channel"}`; button.appendChild(text); button.addEventListener("click", () => chooseAuctionDinnerPhoto(index)); choices.appendChild(button); }); selection.appendChild(choices); const skip = document.createElement("button"); skip.textContent = "Let her choose"; skip.disabled = show.photoChoice.saving; skip.addEventListener("click", () => advanceAuctionDinner(show.index + 1)); selection.appendChild(skip); page.appendChild(selection); }
+        if (show.finishError) { const error = document.createElement("p"); error.textContent = show.finishError; page.appendChild(error); }
+        const controls = document.createElement("div"); controls.className = "blindAuctionActions";
+        const previous = document.createElement("button"); previous.textContent = "Previous"; previous.disabled = show.index === 0 || Boolean(show.conversation?.saving || show.photoChoice || show.finishing); previous.addEventListener("click", () => advanceAuctionDinner(show.index - 1));
+        const pause = document.createElement("button"); pause.textContent = show.paused ? "Resume" : "Pause"; pause.disabled = Boolean(show.conversation || show.photoChoice || show.finishing); pause.addEventListener("click", () => { if (show.paused) advanceAuctionDinner(show.index); else { window.clearTimeout(auctionDinnerTimer); auctionDinnerTimer = undefined; stopMetronome(); show.paused = true; renderMessages(); } });
+        const next = document.createElement("button"); next.textContent = show.finishing ? "Saving dinner…" : show.index === show.items.length - 1 ? "Finish tour" : "Next"; next.disabled = Boolean(show.conversation?.saving || show.photoChoice || show.finishing); next.addEventListener("click", requestNextAuctionDinnerPhoto); controls.append(previous, pause, next); page.appendChild(controls);
+    }
+    page.appendChild(exit); els.messages.appendChild(page);
+}
+
+function getAuctionPhotoHistory(ref) {
+    const key = auctionPhotoKey(ref), events = [];
+    getAuctionHistory().filter((item) => auctionPhotoKey(item.ref) === key).forEach((item) => events.push({ date: item.createdAt, text: item.ownerId ? `Auction: ${getAuctionOwnerName(item.ownerId)} acquired it for $${item.price}.${item.sellerId ? ` Consigned by ${getAuctionOwnerName(item.sellerId)}; proceeds $${item.sellerProceeds}, fee $${item.consignmentFee}.` : ""}` : item.sellerId ? `Consignment: no sale; ${getAuctionOwnerName(item.sellerId)} retained it.` : "Auction: no sale." }));
+    getAuctionTrades().filter((item) => item.status === "accepted" && [item.giveRef, item.wantRef].some((r) => r && auctionPhotoKey(r) === key)).forEach((item) => { const giving = auctionPhotoKey(item.giveRef) === key; events.push({ date: item.resolvedAt, text: `Trade: ${getAuctionOwnerName(giving ? item.fromOwnerId : item.toOwnerId)} → ${getAuctionOwnerName(giving ? item.toOwnerId : item.fromOwnerId)}.` }); });
+    (state.structure.settings.auctionOwnershipEvents || []).filter((item) => item.serverId === getActiveServer()?.id && item.ref && auctionPhotoKey(item.ref) === key).forEach((item) => events.push({ date: item.createdAt, text: item.type === "release" ? `Admin released it from ${getAuctionOwnerName(item.fromOwnerId)} for re-auction.` : `Admin transferred it: ${getAuctionOwnerName(item.fromOwnerId)} → ${getAuctionOwnerName(item.toOwnerId)}.` }));
+    return events.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+}
+
+function openAuctionPhotoHistory(ref) {
+    const events = getAuctionPhotoHistory(ref), overlay = document.createElement("div"); overlay.className = "auctionHistoryOverlay";
+    const dialog = document.createElement("section"); dialog.className = "auctionHistoryDialog"; dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); dialog.setAttribute("aria-label", "Photo history");
+    const heading = document.createElement("h3"); heading.textContent = "Photo history"; const help = document.createElement("p"); help.textContent = "Recorded sales and accepted trades are shown. Admin moves are recorded from this update onward; older admin changes may be missing.";
+    const list = document.createElement("div"), close = document.createElement("button"); close.type = "button"; close.textContent = "Close"; let shown = 0;
+    const more = document.createElement("button"); more.textContent = "Show 20 more"; const load = () => { events.slice(shown, shown + 20).forEach((item) => { const line = document.createElement("p"); line.textContent = `${item.date ? new Date(item.date).toLocaleString() : "Date unavailable"} · ${item.text}`; list.appendChild(line); }); shown += 20; more.hidden = shown >= events.length; }; more.addEventListener("click", load);
+    if (!events.length) list.appendChild(emptyPanel("No recorded auction events for this photo.")); else load();
+    const dismiss = () => { document.removeEventListener("keydown", keydown); overlay.remove(); }; const keydown = (event) => { if (event.key === "Escape") dismiss(); }; close.addEventListener("click", dismiss); overlay.addEventListener("click", (event) => { if (event.target === overlay) dismiss(); }); document.addEventListener("keydown", keydown);
+    dialog.append(heading, help, close, list, more); overlay.appendChild(dialog); document.body.appendChild(overlay); close.focus();
+}
+
+function stopAuctionSlideshow(restore = true) {
+    window.clearTimeout(auctionSlideshowTimer); auctionSlideshowTimer = undefined;
+    const show = state.blindAuction.slideshow;
+    if (show && restore) {
+        els.metronomeBpm.value = String(show.previousBpm);
+        state.structure.settings.metronomeBpm = Number(show.previousBpm) || 120;
+        void saveStructure(state.structure).catch((error) => console.warn("Could not restore the metronome setting:", error));
+        if (show.previousRunning) startMetronome(); else stopMetronome(false);
+    }
+    state.blindAuction.slideshow = null;
+    if (state.blindAuction.screen === "slideshow") state.blindAuction.screen = "results";
+}
+
+function advanceAuctionSlideshow() {
+    const game = state.blindAuction, show = game.slideshow;
+    if (!show || state.activeView.type !== "blindAuction" || game.screen !== "slideshow") return;
+    if (show.index >= show.items.length) { stopAuctionSlideshow(); renderMessages(); return; }
+    const quality = auctionRankValue(show.items[show.index].ref);
+    show.seconds = Math.round(4 + quality * 8); show.bpm = Math.round(70 + quality * 90);
+    els.metronomeBpm.value = String(show.bpm); startMetronome();
+    renderMessages();
+    auctionSlideshowTimer = window.setTimeout(() => { show.index += 1; advanceAuctionSlideshow(); }, show.seconds * 1000);
+}
+
+function startAuctionSlideshow() {
+    const game = state.blindAuction, items = game.results.filter((item) => item.ownerId && findAttachment(item.ref));
+    if (!items.length) { alert("There are no available sold photos in this auction to play."); return; }
+    game.slideshow = { items: shuffledCopy(items), index: 0, previousBpm: els.metronomeBpm.value || state.structure.settings.metronomeBpm || 120, previousRunning: Boolean(metronomeTimer) };
+    game.screen = "slideshow"; advanceAuctionSlideshow();
+}
+
+function auctionImageCard(ref, caption) {
+    const card = document.createElement("article"); card.className = "blindAuctionResult";
+    const attachment = findAttachment(ref);
+    if (attachment) { const img = document.createElement("img"); setRenderedImageSource(img, attachment); img.alt = attachment.note || attachment.name || "Auction photo"; img.addEventListener("click", () => openImageViewer(attachment, img.alt)); card.appendChild(img); }
+    else card.appendChild(emptyPanel("The original photo could not be found."));
+    const label = document.createElement("strong"); label.textContent = caption; card.appendChild(label); addAuctionOwnerBadge(card, ref); return card;
+}
+
+function renderAuctionTradePicker(ownerId, draft, side, items) {
+    const container = document.createElement("section"); container.className = "auctionTradePicker";
+    const heading = document.createElement("strong"); heading.textContent = side === "give" ? "John gives" : `${getAuctionOwnerName(ownerId)} gives`; container.appendChild(heading);
+    if (!items.length) { container.appendChild(emptyPanel("No owned photos available.")); return container; }
+    const pageKey = `${side}Page`, selectedKey = `${side}Key`;
+    const pages = Math.ceil(items.length / 10); draft[pageKey] = Math.max(0, Math.min(pages - 1, draft[pageKey] || 0));
+    const grid = document.createElement("div"); grid.className = "auctionTradePickGrid";
+    items.slice(draft[pageKey] * 10, (draft[pageKey] + 1) * 10).forEach((item) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "auctionTradePick";
+        const key = auctionPhotoKey(item.ref); button.setAttribute("aria-pressed", String(draft[selectedKey] === key));
+        const attachment = findAttachment(item.ref);
+        if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Auction photo"; button.appendChild(image); }
+        const label = document.createElement("span"); label.textContent = attachment?.note || attachment?.name || "Unavailable photo"; button.appendChild(label);
+        button.addEventListener("click", () => { draft[selectedKey] = key; renderMessages(); }); grid.appendChild(button);
+    });
+    const nav = document.createElement("div"); nav.className = "auctionTradeNav";
+    const changePage = async (page) => { draft[pageKey] = page; await ensureAuctionPhotoRefsLoaded(items.slice(page * 10, page * 10 + 10).map((item) => item.ref)); renderMessages(); };
+    const prev = document.createElement("button"); prev.textContent = "Previous"; prev.disabled = draft[pageKey] === 0; prev.addEventListener("click", () => changePage(draft[pageKey] - 1));
+    const page = document.createElement("span"); page.textContent = `${draft[pageKey] + 1} / ${pages}`;
+    const next = document.createElement("button"); next.textContent = "Next"; next.disabled = draft[pageKey] >= pages - 1; next.addEventListener("click", () => changePage(draft[pageKey] + 1));
+    nav.append(prev, page, next); container.append(grid, nav); return container;
+}
+
+function renderAuctionTradeInbox(ownerId) {
+    const section = document.createElement("section"); section.className = "auctionTradeInbox";
+    const heading = document.createElement("h4"); heading.textContent = "Pending trades"; section.appendChild(heading);
+    const info = document.createElement("p"); info.textContent = "One photo for one photo. Values use This or That ranking; unranked photos use a middle value. The bidder’s personality influences their offers and responses. Original files stay in their source channels."; section.appendChild(info);
+    if (state.auctionTradeNotice) { const notice = document.createElement("p"); notice.setAttribute("role", "status"); notice.textContent = state.auctionTradeNotice; section.appendChild(notice); }
+    if (ownerId !== "john") {
+        const ask = document.createElement("button"); ask.type = "button"; ask.textContent = `Ask ${getAuctionOwnerName(ownerId)} for an offer`; ask.addEventListener("click", () => requestAuctionTradeOffer(ownerId, "john")); section.appendChild(ask);
+        const draft = state.auctionTradeDraft?.targetId === ownerId ? state.auctionTradeDraft : (state.auctionTradeDraft = { targetId: ownerId, givePage: 0, wantPage: 0 });
+        const yours = getAuctionOwnership().filter((item) => item.ownerId === "john"), theirs = getAuctionOwnership().filter((item) => item.ownerId === ownerId);
+        const compose = document.createElement("details"); compose.className = "auctionTradeCompose"; compose.open = Boolean(draft.open);
+        compose.addEventListener("toggle", () => { draft.open = compose.open; });
+        const summary = document.createElement("summary"); summary.textContent = "Propose a trade"; compose.appendChild(summary);
+        const pickers = document.createElement("div"); pickers.className = "auctionTradePickers";
+        pickers.append(renderAuctionTradePicker(ownerId, draft, "give", yours), renderAuctionTradePicker(ownerId, draft, "want", theirs)); compose.appendChild(pickers);
+        const give = yours.find((item) => auctionPhotoKey(item.ref) === draft.giveKey), want = theirs.find((item) => auctionPhotoKey(item.ref) === draft.wantKey);
+        const values = getAuctionTradeValues(), summaryValue = document.createElement("p");
+        summaryValue.textContent = give && want ? `John offers value ${Math.round(auctionTradeValue(give.ref, values))}; asks for value ${Math.round(auctionTradeValue(want.ref, values))}.` : "Choose one photo from each side.";
+        const send = document.createElement("button"); send.type = "button"; send.className = "adventurePrimary"; send.textContent = "Send offer to bidder"; send.disabled = !give || !want || Boolean(state.auctionTradeBusy); send.addEventListener("click", () => submitJohnAuctionTrade(ownerId, give.ref, want.ref));
+        compose.append(summaryValue, send); section.appendChild(compose);
+        const inter = document.createElement("label"); inter.className = "auctionTradeToggle"; const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = Boolean(state.structure.settings.allowAuctionBotTrades);
+        inter.append(toggle, document.createTextNode(" Allow proposed trades between bidders (your approval required)"));
+        toggle.addEventListener("change", async () => { const value = toggle.checked; toggle.disabled = true; try { await saveAuctionChanges({ allowAuctionBotTrades: value }); render(); } catch (error) { console.error(error); toggle.checked = !value; alert("Could not save this setting locally."); } finally { toggle.disabled = false; } }); section.appendChild(inter);
+        if (state.structure.settings.allowAuctionBotTrades) {
+            const targets = getAuctionBidders().filter((item) => item.id !== ownerId);
+            if (targets.length) { const label = document.createElement("label"); label.textContent = "Suggest a trade with "; const select = document.createElement("select"); targets.forEach((target) => { const option = document.createElement("option"); option.value = target.id; option.textContent = target.name; select.appendChild(option); }); label.appendChild(select); const suggest = document.createElement("button"); suggest.type = "button"; suggest.textContent = "Suggest bidder trade"; suggest.addEventListener("click", () => requestAuctionTradeOffer(ownerId, select.value)); section.append(label, suggest); }
+        }
+    }
+    const trades = getAuctionTrades().filter((item) => item.fromOwnerId === ownerId || item.toOwnerId === ownerId), values = getAuctionTradeValues();
+    const pending = trades.filter((item) => item.status === "pending");
+    if (!pending.length) section.appendChild(emptyPanel("No pending trades for this profile."));
+    pending.slice(0, state.auctionTradeLimit || 10).forEach((trade) => {
+        const card = document.createElement("article"); card.className = "auctionTradeOffer";
+        const title = document.createElement("strong"); title.textContent = `${getAuctionOwnerName(trade.fromOwnerId)} offers ${getAuctionOwnerName(trade.toOwnerId)}`; card.appendChild(title);
+        const photos = document.createElement("div"); photos.className = "blindAuctionResults";
+        photos.append(auctionImageCard(trade.giveRef, `${getAuctionOwnerName(trade.fromOwnerId)} gives · value ${Math.round(auctionTradeValue(trade.giveRef, values))}`), auctionImageCard(trade.wantRef, `${getAuctionOwnerName(trade.toOwnerId)} gives · value ${Math.round(auctionTradeValue(trade.wantRef, values))}`)); card.appendChild(photos);
+        const actions = document.createElement("div"); actions.className = "blindAuctionActions";
+        const accept = document.createElement("button"); accept.type = "button"; accept.className = "adventurePrimary";
+        if (trade.fromOwnerId === "john") { accept.textContent = "Ask bidder to respond"; accept.addEventListener("click", () => evaluateJohnAuctionTrade(trade.id)); }
+        else { accept.textContent = trade.toOwnerId === "john" ? "Accept trade" : "Approve bidder trade"; accept.addEventListener("click", () => resolveAuctionTrade(trade.id, true)); }
+        const decline = document.createElement("button"); decline.type = "button"; decline.textContent = trade.fromOwnerId === "john" ? "Withdraw offer" : "Decline"; decline.addEventListener("click", () => resolveAuctionTrade(trade.id, false)); actions.append(accept, decline); card.appendChild(actions); section.appendChild(card);
+    });
+    if (pending.length > (state.auctionTradeLimit || 10)) { const more = document.createElement("button"); more.textContent = "Show 10 more offers"; more.addEventListener("click", async () => { const oldLimit = state.auctionTradeLimit || 10; state.auctionTradeLimit = oldLimit + 10; await ensureAuctionPhotoRefsLoaded(pending.slice(oldLimit, oldLimit + 10).flatMap((trade) => [trade.giveRef, trade.wantRef])); renderMessages(); }); section.appendChild(more); }
+    const completed = trades.filter((item) => item.status !== "pending").slice(-10).reverse();
+    if (completed.length) { const history = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Recent trade decisions"; history.appendChild(summary); completed.forEach((item) => { const line = document.createElement("p"); line.textContent = `${getAuctionOwnerName(item.fromOwnerId)} ↔ ${getAuctionOwnerName(item.toOwnerId)} · ${item.status}`; history.appendChild(line); }); section.appendChild(history); }
+    return section;
+}
+
+function createAuctionRosterCard(item, ownerId, favoriteKeys = null) {
+    const card = auctionImageCard(item.ref, item.acquiredVia === "trade" ? "Acquired in a trade" : item.acquiredVia === "admin" ? "Transferred by admin" : `Won for $${item.price}`);
+    const bidder = getAuctionBidders().find((entry) => entry.id === ownerId);
+    if (bidder) { const fit = auctionInterestMatches(bidder, item.ref), details = document.createElement("details"); details.className = "auctionPhotoFit"; const summary = document.createElement("summary"); summary.textContent = `Taste fit: ${fit.factor >= 1.3 ? "strong" : fit.factor > 1 ? "some interest" : "no known match"} · ×${fit.factor.toFixed(2)}`; const text = document.createElement("p"); text.textContent = `${fit.matches.length ? `Matching interests: ${fit.matches.map((match) => `${match.label} (+${Math.round((match.weight - 1) * 100)}%)`).join(" · ")}.` : "No saved interests match the available information."}${fit.metadataLoaded ? "" : " Tags and reactions could not be checked until the original note loads."} This describes tastes, not the full bid or roster score.`; details.append(summary, text); card.appendChild(details); }
+    if (bidder) { const key = auctionPhotoKey(item.ref), favorites = favoriteKeys || new Set(getAuctionPersonalFavorites(bidder).map(auctionPhotoKey)), selected = favorites.has(key), favorite = document.createElement("button"); favorite.type = "button"; favorite.textContent = selected ? "★ Remove personal favorite" : "☆ Make personal favorite"; favorite.setAttribute("aria-pressed", String(selected)); favorite.addEventListener("click", async () => { const current = getAuctionBidders().find((entry) => entry.id === ownerId); if (!current || !getAuctionOwnership().some((entry) => entry.ownerId === ownerId && auctionPhotoKey(entry.ref) === key)) return; const overrides = { ...(current.personality?.favoriteOverrides || {}) }, ownedKeys = new Set(getAuctionOwnership().filter((entry) => entry.ownerId === ownerId).map((entry) => auctionPhotoKey(entry.ref))); if (!selected && Object.entries(overrides).filter(([id, value]) => ownedKeys.has(id) && value === "favorite").length >= 5) { alert("Up to five photos can be manually pinned as favorites. Unpin one first."); return; } overrides[key] = selected ? "excluded" : "favorite"; favorite.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((entry) => entry.id === ownerId ? { ...entry, personality: { ...(entry.personality || {}), favoriteOverrides: overrides } } : entry) }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); favorite.disabled = false; alert("Could not save this favorite."); } }); card.appendChild(favorite); }
+    const source = document.createElement("button"); source.type = "button"; source.textContent = "Open source"; source.addEventListener("click", () => openPhotoSource(item.ref)); card.appendChild(source);
+    const historyButton = document.createElement("button"); historyButton.type = "button"; historyButton.textContent = "Photo history"; historyButton.addEventListener("click", () => openAuctionPhotoHistory(item.ref)); card.appendChild(historyButton);
+    if (getAuctionConsignmentSettings().enabled) { const key = auctionPhotoKey(item.ref), listing = getAuctionConsignments(item.serverId).find((entry) => auctionPhotoKey(entry.ref) === key && entry.sellerId === ownerId), button = document.createElement("button"); button.type = "button"; button.textContent = listing ? "Remove consignment listing" : "List for consignment"; button.disabled = Boolean(getSavedAuctionSession(item.serverId)); button.title = button.disabled ? "Finish or discard the current auction before changing listings." : ""; button.addEventListener("click", async () => { if (getSavedAuctionSession(item.serverId) || state.auctionConsignmentBusy) return; if (!getAuctionOwnership().some((entry) => entry.serverId === item.serverId && entry.ownerId === ownerId && auctionPhotoKey(entry.ref) === key)) { alert("This photo is no longer owned by this seller."); return; } const entries = (state.structure.settings.auctionConsignments || []).filter((entry) => entry.serverId !== item.serverId || auctionPhotoKey(entry.ref) !== key); if (!listing) entries.push({ serverId: item.serverId, sellerId: ownerId, ref: structuredClone(item.ref), listedAt: new Date().toISOString() }); state.auctionConsignmentBusy = true; button.disabled = true; try { await saveAuctionChanges({ auctionConsignments: entries }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); alert("Could not save the listing; ownership was not changed."); button.disabled = false; } finally { state.auctionConsignmentBusy = false; } }); card.appendChild(button); }
+    const transfer = document.createElement("select"); transfer.setAttribute("aria-label", "Transfer photo to");
+    [{ id: "", name: "Admin: transfer to…" }, { id: "john", name: "John" }, ...getAuctionBidders()].filter((target) => target.id !== ownerId).forEach((target) => { const option = document.createElement("option"); option.value = target.id; option.textContent = target.name; transfer.appendChild(option); });
+    transfer.addEventListener("change", async () => {
+        if (!transfer.value) return;
+        const ownership = (state.structure.settings.auctionOwnership || []).map((entry) => entry === item ? { ...entry, ownerId: transfer.value, acquiredVia: "admin" } : entry);
+        const event = { serverId: item.serverId, ref: structuredClone(item.ref), type: "transfer", fromOwnerId: ownerId, toOwnerId: transfer.value, createdAt: new Date().toISOString() };
+        try { await saveAuctionChanges({ auctionOwnership: ownership, auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); } catch (error) { console.error(error); alert("Transfer could not be saved. Ownership was not changed."); transfer.value = ""; }
+    });
+    const release = document.createElement("button"); release.type = "button"; release.textContent = "Release for re-auction";
+    release.addEventListener("click", async () => {
+        if (!confirm("Release this photo so it can be auctioned again? The original and auction history will remain.")) return;
+        const event = { serverId: item.serverId, ref: structuredClone(item.ref), type: "release", fromOwnerId: ownerId, createdAt: new Date().toISOString() };
+        try { await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((entry) => entry !== item), auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); }
+        catch (error) { console.error(error); alert("Could not release this photo. Ownership was not changed."); }
+    });
+    card.append(transfer, release); return card;
+}
+
+function renderAuctionPersonalitySliders(bidder) {
+    const section = document.createElement("details"); section.className = "auctionSliderPanel";
+    const heading = document.createElement("summary"); heading.textContent = "Personality sliders"; section.appendChild(heading);
+    const help = document.createElement("p"); help.textContent = "50 preserves her current behavior. These adjust her existing strategy without changing her identity or photo."; section.appendChild(help);
+    const values = getAuctionPersonalitySliders(bidder), fields = {};
+    [["competitive", "Competitiveness", "Higher bids more assertively."], ["flirty", "Flirtiness", "Changes the tone of dinner replies."], ["risk", "Risk-taking", "Higher varies bids more and holds less in reserve."], ["generous", "Generosity", "Higher is more willing to accept trades."], ["attachment", "Attachment to favorites", "Higher puts more value on favorite photos in bids, trades and personal rankings."]].forEach(([key, title, description]) => { const label = document.createElement("label"); label.className = "auctionSlider"; const name = document.createElement("span"); name.textContent = title; const value = document.createElement("output"); value.textContent = String(values[key]); const input = document.createElement("input"); input.type = "range"; input.min = "0"; input.max = "100"; input.step = "1"; input.value = String(values[key]); input.setAttribute("aria-label", title); input.addEventListener("input", () => { value.textContent = input.value; }); const note = document.createElement("small"); note.textContent = description; label.append(name, value, input, note); section.appendChild(label); fields[key] = input; });
+    const save = document.createElement("button"); save.type = "button"; save.textContent = "Save personality sliders"; save.addEventListener("click", async () => { if (state.auctionPersonalityBusy) return; const current = getAuctionBidders().find((item) => item.id === bidder.id); if (!current?.personality) return; const sliders = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, Math.max(0, Math.min(100, Number(input.value)))])); const next = { ...current.personality, sliders }; state.auctionPersonalityBusy = true; save.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, personality: next } : item) }); save.textContent = "Saved locally"; } catch (error) { console.error(error); alert("Could not save the sliders; the previous values remain."); } finally { state.auctionPersonalityBusy = false; save.disabled = false; } }); section.appendChild(save); return section;
+}
+
+function renderAuctionPersonalityControls(bidder) {
+    const section = document.createElement("section"); section.className = "auctionPersonality";
+    const heading = document.createElement("h4"); heading.textContent = "Taste & collection goal"; section.appendChild(heading);
+    const personality = bidder.personality;
+    if (!personality) { const info = document.createElement("p"); info.textContent = "A personal taste will be seeded automatically when the profile or next auction loads."; section.appendChild(info); return section; }
+    const taste = personality.taste || {}, entries = [];
+    Object.entries(taste.channels || {}).forEach(([id, weight]) => entries.push(`#${getChannelById(id)?.name || "unavailable channel"} (+${Math.max(0, Math.round((Number(weight) - 1) * 100))}%)`));
+    Object.entries(taste.tags || {}).forEach(([tag, weight]) => entries.push(`tag ${tag} (+${Math.max(0, Math.round((Number(weight) - 1) * 100))}%)`));
+    Object.entries(taste.emojis || {}).forEach(([emoji, weight]) => entries.push(`${emoji} reaction (+${Math.max(0, Math.round((Number(weight) - 1) * 100))}%)`));
+    const tastes = document.createElement("p"); tastes.textContent = `Preferences: ${entries.length ? entries.join(" · ") : "none yet"}. ${personality.evolutionPaused ? "Automatic learning paused." : "Learns gradually from auction wins."}`; section.appendChild(tastes);
+    const learned = document.createElement("small"); learned.textContent = personality.lastLearned || "No auction wins learned from yet."; section.appendChild(learned);
+    const progress = auctionGoalProgress(bidder), goal = document.createElement("p");
+    goal.textContent = progress ? `Goal: collect ${progress.target} from #${getChannelById(progress.channelId)?.name || "unavailable channel"} · ${progress.count}/${progress.target}${progress.count >= progress.target ? " complete" : ""}.` : personality.goalPending ? "A collection goal will be chosen at the next auction." : "No active collection goal."; section.appendChild(goal);
+    const interestEditor = document.createElement("details"); interestEditor.className = "auctionInterestEditor"; const interestSummary = document.createElement("summary"); interestSummary.textContent = "Review, adjust or lock individual interests"; interestEditor.appendChild(interestSummary);
+    const interestHelp = document.createElement("p"); interestHelp.textContent = "Strength is the bonus used for a matching channel, tag or reaction. Locked interests do not change through automatic learning; you can still edit or remove them here."; interestEditor.appendChild(interestHelp);
+    const interestFields = [];
+    [["channels", "Channel"], ["tags", "Tag"], ["emojis", "Reaction"]].forEach(([kind, kindLabel]) => Object.entries(taste[kind] || {}).forEach(([key, weight]) => {
+        const row = document.createElement("div"); row.className = "auctionInterestRow"; const name = document.createElement("strong"); name.textContent = `${kindLabel}: ${kind === "channels" ? `#${getChannelById(key)?.name || "unavailable channel"}` : key}`;
+        const label = document.createElement("label"); label.textContent = "Bonus %"; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "50"; input.inputMode = "numeric"; input.value = String(Math.max(1, Math.min(50, Math.round(((Number(weight) || 1) - 1) * 100)))); label.appendChild(input);
+        const lockLabel = document.createElement("label"), lock = document.createElement("input"); lock.type = "checkbox"; lock.checked = (personality.lockedInterests?.[kind] || []).includes(key); lockLabel.append(lock, document.createTextNode(" Lock"));
+        const removeLabel = document.createElement("label"), remove = document.createElement("input"); remove.type = "checkbox"; removeLabel.append(remove, document.createTextNode(" Remove")); row.append(name, label, lockLabel, removeLabel); interestEditor.appendChild(row); interestFields.push({ kind, key, input, lock, remove });
+    }));
+    if (!interestFields.length) { const empty = document.createElement("p"); empty.textContent = "No interests yet. Add some under Adjust personality, or let her learn from auction wins."; interestEditor.appendChild(empty); }
+    else { const saveInterests = document.createElement("button"); saveInterests.type = "button"; saveInterests.textContent = "Save interests"; saveInterests.addEventListener("click", async () => { if (state.auctionPersonalityBusy) return; if (interestFields.some(({ input, remove }) => !remove.checked && (!input.value.trim() || !Number.isInteger(Number(input.value)) || Number(input.value) < 1 || Number(input.value) > 50))) { alert("Set each interest bonus to a whole number from 1 to 50."); return; } const current = getAuctionBidders().find((item) => item.id === bidder.id); if (!current?.personality) return; const next = structuredClone(current.personality); next.taste ||= {}; next.lockedInterests ||= {}; interestFields.forEach(({ kind, key, input, lock, remove }) => { next.taste[kind] ||= {}; const locks = new Set(next.lockedInterests[kind] || []); if (remove.checked) { delete next.taste[kind][key]; locks.delete(key); } else { next.taste[kind][key] = 1 + Number(input.value) / 100; if (lock.checked) locks.add(key); else locks.delete(key); } next.lockedInterests[kind] = [...locks]; }); next.lastLearned = "Interests adjusted by you."; state.auctionPersonalityBusy = true; saveInterests.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, personality: next } : item) }); renderMessages(); } catch (error) { console.error(error); saveInterests.disabled = false; alert("Could not save interests; the previous values remain."); } finally { state.auctionPersonalityBusy = false; } }); interestEditor.appendChild(saveInterests); }
+    section.appendChild(interestEditor);
+    const session = getSavedAuctionSession(), mood = session?.moods?.[bidder.id] || (state.blindAuction.screen === "play" ? state.blindAuction.moods?.[bidder.id] : null);
+    const moodLine = document.createElement("small"); moodLine.textContent = mood ? `Current phase: ${mood} for this auction.` : "No temporary phase right now."; section.appendChild(moodLine);
+    const edit = document.createElement("details"); edit.className = "auctionPersonalityEditor"; const summary = document.createElement("summary"); summary.textContent = "Adjust personality"; edit.appendChild(summary);
+    const fields = document.createElement("div"); fields.className = "blindAuctionSetup";
+    const channelLabel = document.createElement("label"); channelLabel.textContent = "Add or boost a preferred channel"; const channel = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "Leave unchanged"; channel.appendChild(none);
+    allChannels(getActiveServer()).filter((item) => !item.hidden).forEach((item) => { const option = document.createElement("option"); option.value = item.id; option.textContent = `#${item.name}`; channel.appendChild(option); }); channelLabel.appendChild(channel);
+    const tagLabel = document.createElement("label"); tagLabel.textContent = "Add a preferred tag"; const tag = document.createElement("input"); tag.type = "text"; tag.maxLength = 40; tag.placeholder = "Optional"; tagLabel.appendChild(tag);
+    const emojiLabel = document.createElement("label"); emojiLabel.textContent = "Add a preferred reaction"; const emoji = document.createElement("input"); emoji.type = "text"; emoji.maxLength = 16; emoji.placeholder = "Optional emoji"; emojiLabel.appendChild(emoji);
+    const moneyLabel = document.createElement("label"); moneyLabel.textContent = "Money habit"; const money = document.createElement("select"); [["saver", "Saver"], ["balanced", "Balanced"], ["spender", "Spender"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = value === (personality.moneyStyle || "balanced"); money.appendChild(option); }); moneyLabel.appendChild(money);
+    const goalLabel = document.createElement("label"); goalLabel.textContent = "Collection goal channel"; const goalChannel = document.createElement("select"); const noGoal = document.createElement("option"); noGoal.value = ""; noGoal.textContent = "No goal"; goalChannel.appendChild(noGoal);
+    allChannels(getActiveServer()).filter((item) => !item.hidden).forEach((item) => { const option = document.createElement("option"); option.value = item.id; option.textContent = `#${item.name}`; option.selected = item.id === personality.goal?.channelId; goalChannel.appendChild(option); }); goalLabel.appendChild(goalChannel);
+    if (personality.goal?.channelId && !allChannels(getActiveServer()).some((item) => !item.hidden && item.id === personality.goal.channelId)) { const option = document.createElement("option"); option.value = personality.goal.channelId; option.textContent = "Current goal (hidden or unavailable channel)"; option.selected = true; goalChannel.appendChild(option); }
+    const targetLabel = document.createElement("label"); targetLabel.textContent = "Goal number of photos"; const target = document.createElement("input"); target.type = "number"; target.min = "1"; target.max = "100"; target.value = String(personality.goal?.target || 3); target.inputMode = "numeric"; targetLabel.appendChild(target);
+    fields.append(channelLabel, tagLabel, emojiLabel, moneyLabel, goalLabel, targetLabel); edit.appendChild(fields);
+    const pauseLabel = document.createElement("label"), pause = document.createElement("input"); pause.type = "checkbox"; pause.checked = Boolean(personality.evolutionPaused); pauseLabel.append(pause, document.createTextNode(" Pause automatic taste learning")); edit.appendChild(pauseLabel);
+    const save = document.createElement("button"); save.type = "button"; save.textContent = "Save personality changes";
+    save.addEventListener("click", async () => {
+        const amount = Number(target.value); if (goalChannel.value && (!Number.isInteger(amount) || amount < 1 || amount > 100)) { alert("Choose a goal from 1 to 100 photos."); return; }
+        const current = getAuctionBidders().find((item) => item.id === bidder.id); if (!current?.personality) return;
+        const next = structuredClone(current.personality); next.taste ||= { channels: {}, tags: {}, emojis: {} }; next.taste.channels ||= {}; next.taste.tags ||= {}; next.taste.emojis ||= {};
+        if (channel.value) next.taste.channels[channel.value] = 1.3;
+        if (tag.value.trim()) next.taste.tags[tag.value.trim().replace(/^#/, "").toLowerCase().slice(0, 40)] = 1.2;
+        if (emoji.value.trim()) next.taste.emojis[emoji.value.trim().slice(0, 16)] = 1.2;
+        next.evolutionPaused = pause.checked; next.moneyStyle = money.value;
+        const oldGoal = current.personality.goal;
+        if ((oldGoal?.channelId || "") !== goalChannel.value || (goalChannel.value && Number(oldGoal?.target) !== amount)) { next.goal = goalChannel.value ? { channelId: goalChannel.value, target: amount, origin: "manual" } : null; next.goalPending = false; }
+        next.lastLearned = "Personality adjusted by you.";
+        const updated = (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, personality: next } : item);
+        save.disabled = true; try { await saveAuctionChanges({ auctionBidders: updated }); renderMessages(); } catch (error) { console.error(error); alert("Could not save personality changes; the previous settings remain."); save.disabled = false; }
+    });
+    const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "Clear learned preferences";
+    clear.addEventListener("click", async () => { if (!confirm("Clear this bidder’s channel, tag, and reaction preferences, including locks? Her identity, goal, and auction history will remain.")) return; const updated = (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, personality: { ...item.personality, taste: { channels: {}, tags: {}, emojis: {} }, lockedInterests: { channels: [], tags: [], emojis: [] }, lastLearned: "Preferences cleared by you." } } : item); try { await saveAuctionChanges({ auctionBidders: updated }); renderMessages(); } catch (error) { console.error(error); alert("Could not clear preferences. Nothing changed."); } });
+    const reroll = document.createElement("button"); reroll.type = "button"; reroll.textContent = "Choose a new automatic goal";
+    reroll.addEventListener("click", async () => { reroll.disabled = true; try { await ensureServerMessagesLoaded(); const current = getAuctionBidders().find((item) => item.id === bidder.id); if (!current) return; const goal = buildAuctionGoal(current, getThisOrThatCandidates()); const updated = (state.structure.settings.auctionBidders || []).map((item) => item.id === bidder.id ? { ...item, personality: { ...item.personality, goal, goalPending: false } } : item); await saveAuctionChanges({ auctionBidders: updated }); renderMessages(); } catch (error) { console.error(error); alert("Could not choose a goal locally."); } finally { reroll.disabled = false; } });
+    edit.append(save, clear, reroll); section.appendChild(edit); return section;
+}
+
+const AUCTION_BIO_FLIRT = [
+    "She likes holding your gaze just a little too long, especially when she knows you want the same photo.",
+    "She has a habit of leaning in close to bargain, then smiling as if she already knows your answer.",
+    "She enjoys a slow, teasing challenge and has a soft spot for someone bold enough to answer it.",
+    "She'll compliment your taste, steal your favorite photo, and look far too pleased with herself afterward.",
+    "She likes making you guess what she's thinking—and enjoys it even more when you get close.",
+    "A whispered compliment and a mischievous smile are her favorite ways to distract the competition.",
+    "She makes no secret of enjoying your attention, though she rarely gives away exactly what she wants.",
+    "She has a weakness for bold offers, lingering looks, and anyone willing to flirt back.",
+    "She likes to play innocent after making an outrageously tempting offer. You needn't believe her.",
+    "She'll draw out a negotiation simply because she's enjoying the conversation with you.",
+    "Her favorite kind of rivalry comes with plenty of teasing and an excuse to get a little closer.",
+    "She knows how to make a compliment sound like a dare, and she hopes you'll take it.",
+    "She loves catching your eye across the room, then making you wonder whether her next bid is for you.",
+    "She's charming when she wants something and even more charming when she knows you do too.",
+    "She enjoys a little tension, a clever comeback, and the moment just before someone gives in.",
+    "She'll offer a sweet smile and a tempting bargain, but she expects you to make her work for yours.",
+    "She likes to keep her intentions just ambiguous enough to make the next conversation interesting.",
+    "She has a playful streak and a talent for turning even a routine trade into a private joke.",
+    "She is generous with compliments, sparing with secrets, and delighted when you try to uncover them.",
+    "She enjoys being pursued almost as much as she enjoys surprising you with a daring move of her own.",
+    "She likes to draw a conversation out until you're both smiling and neither of you wants to leave.",
+    "She knows precisely how to make a whispered compliment linger in your thoughts.",
+    "She's happiest when a little rivalry gives her an excuse to lean closer and tease you.",
+    "She loves finding out what catches your eye, then making sure she has your attention too.",
+    "She enjoys anticipation, private jokes, and watching your confidence slip when she flirts back.",
+    "She has a warm smile, a mischievous streak, and a habit of inviting you to stay a little longer.",
+    "She likes to seem composed, but a bold compliment can make her forget her next move.",
+    "She turns a close auction into an excuse for a lingering look and a tempting invitation.",
+    "She is particularly fond of good company, late evenings, and making you wonder what she's thinking.",
+    "She likes a little tension in a bargain and makes sure you enjoy every moment of it.",
+    "She will happily share a favorite photo if it means she can keep you beside her.",
+    "She enjoys charming her rivals almost as much as winning against them."
+];
+
+function getAuctionBiography(bidder) {
+    const serverBidders = getAuctionBidders(), position = serverBidders.findIndex((item) => item.id === bidder.id);
+    const variant = Number.isInteger(bidder.personality?.bioVariant) ? bidder.personality.bioVariant : Math.max(0, position);
+    const flourish = AUCTION_BIO_FLIRT[((variant % AUCTION_BIO_FLIRT.length) + AUCTION_BIO_FLIRT.length) % AUCTION_BIO_FLIRT.length];
+    const style = String(bidder.strategy?.name || "Balanced").toLowerCase(), habit = bidder.personality?.moneyStyle || "balanced";
+    const money = habit === "saver" ? "likes to keep a reserve" : habit === "spender" ? "is willing to spend for the right photo" : "balances spending with saving";
+    const channels = Object.entries(bidder.personality?.taste?.channels || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+    const favorite = channels.length ? ` She has a particular eye for #${getChannelById(channels[0][0])?.name || "a favorite channel"}.` : " Her tastes are still taking shape.";
+    const others = [{ id: "john", name: "John" }, ...serverBidders].filter((item) => item.id !== bidder.id).map((item) => ({ ...item, relation: getAuctionRelationship(bidder.id, item.id) }));
+    const rival = others.filter((item) => item.relation.contests > 0).sort((a, b) => b.relation.contests - a.relation.contests)[0];
+    const partner = others.filter((item) => item.relation.trades > 0).sort((a, b) => b.relation.trades - a.relation.trades)[0];
+    const relationships = rival ? ` Her most frequent bidding rival so far is ${rival.name}.` : partner ? ` She has built a trading connection with ${partner.name}.` : " She is still getting to know the other bidders.";
+    return `${flourish} At auction, she uses a ${style} strategy and ${money}.${favorite}${relationships}`;
+}
+
+function renderAuctionOwnerChannel() {
+    const ownerId = state.activeView.id, items = getAuctionOwnership().filter((item) => item.ownerId === ownerId);
+    const page = document.createElement("section"); page.className = "blindAuction auctionOwnerPage";
+    const title = document.createElement("h3"); title.textContent = `${getAuctionOwnerName(ownerId)}’s roster · ${items.length} photos`; page.appendChild(title);
+    const intro = document.createElement("p"); intro.textContent = "These are references to original photos, not copies. Admin transfers and releases do not delete the original."; page.appendChild(intro);
+    if (ownerId !== "john") { const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Rename bidder"; rename.addEventListener("click", () => renameAuctionBidder(ownerId)); page.appendChild(rename); }
+    const tabs = document.createElement("div"); tabs.className = "blindAuctionActions auctionOwnerTabs";
+    const pendingCount = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).length;
+    [["roster", "Roster"], ["profile", "Profile & stats"], ["trades", `Pending trades${pendingCount ? ` (${pendingCount})` : ""}`]].forEach(([value, text]) => { const button = document.createElement("button"); button.type = "button"; button.textContent = text; button.setAttribute("aria-pressed", String((state.auctionOwnerTab || "roster") === value)); button.addEventListener("click", async () => { state.auctionOwnerTab = value; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(ownerId, value)); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); }); tabs.appendChild(button); });
+    page.appendChild(tabs);
+    if (state.auctionOwnerTab === "trades") { page.appendChild(renderAuctionTradeInbox(ownerId)); els.messages.appendChild(page); return; }
+    if (state.auctionOwnerTab === "profile") {
+        const bidder = getAuctionBidders().find((item) => item.id === ownerId), history = getAuctionHistory();
+        const participated = history.filter((round) => (round.bids || []).some((bid) => bid.id === ownerId));
+        const wins = history.filter((round) => round.ownerId === ownerId);
+        const profile = document.createElement("section"); profile.className = "auctionProfileDetail auctionCharacterProfile";
+        const hero = document.createElement("header"); hero.className = "auctionCharacterHero";
+        if (bidder?.avatarRef) hero.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name));
+        const identity = document.createElement("div"); identity.className = "auctionCharacterIdentity";
+        const kicker = document.createElement("span"); kicker.className = "auctionCharacterKicker"; kicker.textContent = bidder ? "MEET THE BIDDER" : "YOUR AUCTION PROFILE";
+        const heading = document.createElement("h4"); heading.textContent = getAuctionOwnerName(ownerId);
+        const balance = getAuctionBalances()[ownerId];
+        const balanceDisplay = document.createElement("strong"); balanceDisplay.className = "auctionProfileBalance"; balanceDisplay.textContent = balance === undefined ? "Auction balance: Not funded yet" : `Auction balance: $${balance}`;
+        identity.append(kicker, heading, balanceDisplay); hero.appendChild(identity); profile.appendChild(hero);
+        const profileActions = document.createElement("div"); profileActions.className = "auctionCharacterActions";
+        if (bidder) { const shuffle = document.createElement("button"); shuffle.type = "button"; shuffle.textContent = "Shuffle profile photo"; shuffle.addEventListener("click", async () => { shuffle.disabled = true; await shuffleAuctionBidderPortrait(ownerId); shuffle.disabled = false; }); profileActions.appendChild(shuffle); }
+        if (bidder) { const dinner = document.createElement("button"); dinner.type = "button"; dinner.className = "adventurePrimary"; dinner.textContent = `Dinner with ${bidder.name}`; dinner.addEventListener("click", () => { state.auctionDinner = { serverId: getActiveServer()?.id, ownerId, screen: "setup" }; openView("auctionDinner", ownerId); }); profileActions.appendChild(dinner); }
+        if (bidder) { const play = document.createElement("button"); play.type = "button"; play.textContent = `Play with ${bidder.name}`; play.addEventListener("click", () => { state.personalityGame = { serverId: getActiveServer()?.id, hostId: bidder.id, mode: "quiz", screen: "setup" }; openView("personalityGames", "personality-games"); }); profileActions.appendChild(play); }
+        if (bidder && getAuctionPersonalitySettings().dialogue) { const talk = document.createElement("button"); talk.type = "button"; talk.textContent = `Talk to ${bidder.name}`; const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.hidden = true; talk.addEventListener("click", () => { line.textContent = `${bidder.name}: “${randomAuctionDialogue()}”`; line.hidden = false; }); profileActions.append(talk, line); }
+        if (profileActions.children.length) profile.appendChild(profileActions);
+        if (bidder) { const reactions = document.createElement("section"); reactions.className = "auctionProfileReactions"; const title = document.createElement("strong"); title.textContent = "Your reactions"; reactions.appendChild(title); ["❤️", "😍", "🔥", "😘", "✨", "😊"].forEach((emoji) => { const button = document.createElement("button"); button.type = "button"; button.textContent = emoji; button.setAttribute("aria-label", `React ${emoji}`); button.setAttribute("aria-pressed", String((bidder.profileReactions || []).includes(emoji))); button.addEventListener("click", async () => { const current = getAuctionBidders().find((item) => item.id === ownerId); if (!current) return; const old = Array.isArray(current.profileReactions) ? current.profileReactions : [], next = old.includes(emoji) ? old.filter((item) => item !== emoji) : [...old, emoji]; button.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === ownerId ? { ...item, profileReactions: next } : item) }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); button.disabled = false; alert("Could not save the reaction."); } }); reactions.appendChild(button); }); profile.appendChild(reactions); }
+        if (bidder) { const biography = document.createElement("article"); biography.className = "auctionCharacterBio"; const label = document.createElement("span"); label.className = "auctionCharacterKicker"; label.textContent = "A LITTLE ABOUT HER"; const copy = document.createElement("p"); copy.textContent = getAuctionBiography(bidder); biography.append(label, copy); profile.appendChild(biography); }
+        const jealousy = getAuctionDinnerJealousy(bidder); if (jealousy) { const note = document.createElement("p"); note.className = "auctionDialogue"; note.textContent = `${bidder.name}: “${jealousy.line}”`; profile.appendChild(note); }
+        const strategy = document.createElement("p"); strategy.textContent = bidder ? `Strategy: ${bidder.strategy?.name || "Balanced"}. Bids reflect the photo’s This or That ranking, this bidder’s fixed aggressiveness, their remaining budget, and random variation.` : "Your bids are controlled by you."; profile.appendChild(strategy);
+        const acceptedTrades = getAuctionTrades().filter((trade) => trade.status === "accepted" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).length;
+        const stats = document.createElement("p"); stats.className = "auctionCharacterStats"; stats.textContent = `${new Set(participated.map((round) => round.auctionId)).size} auctions · ${participated.length} rounds · ${wins.length} historical wins · $${wins.reduce((sum, round) => sum + (Number(round.price) || 0), 0)} spent · ${items.length} currently owned · ${acceptedTrades} accepted trades`; profile.appendChild(stats);
+        const relationships = document.createElement("section"); relationships.className = "auctionRelationships";
+        const relationTitle = document.createElement("h4"); relationTitle.textContent = "Relationships"; relationships.appendChild(relationTitle);
+        const relationHelp = document.createElement("p"); relationHelp.textContent = "Shared bids build rivalry; completed trades build trust. These can influence bids and trade decisions."; relationships.appendChild(relationHelp);
+        [{ id: "john", name: "John" }, ...getAuctionBidders()].filter((other) => other.id !== ownerId).forEach((other) => {
+            const relation = getAuctionRelationship(ownerId, other.id);
+            const kind = relation.trades && relation.contests >= 3 ? "Trade partners & rivals" : relation.trades ? "Trade partners" : relation.contests >= 3 ? "Rivals" : "Neutral";
+            const row = document.createElement("div"); row.className = "auctionRelationship";
+            const name = document.createElement("strong"); name.textContent = `${other.name} · ${kind}`;
+            const detail = document.createElement("span"); detail.textContent = relation.manuallyAdjusted ? `${relation.actualContests} recorded shared bids · ${relation.actualTrades} recorded trades · adjusted rivalry ${relation.contests}, trust ${relation.trades}` : `${relation.contests} shared bid${relation.contests === 1 ? "" : "s"} · ${relation.wins[ownerId] || 0} won / ${relation.wins[other.id] || 0} lost against them · ${relation.trades} completed trade${relation.trades === 1 ? "" : "s"}`;
+            row.append(name, detail); relationships.appendChild(row);
+        });
+        if (bidder) {
+            profile.appendChild(renderAuctionPersonalitySliders(bidder));
+            profile.appendChild(renderAuctionPersonalityControls(bidder));
+            if (getAuctionPersonalitySettings().punishmentFavorites) {
+                const special = document.createElement("section"); special.className = "auctionWishlist"; const heading = document.createElement("h4"); heading.textContent = "Favorite punishment photos"; const help = document.createElement("p"); help.textContent = "Up to three local favorites from this server’s visible #punishment channel. Originals stay in place; you can refresh her selection."; special.append(heading, help);
+                const refs = getPunishmentFavoriteRefs(bidder); if (refs.length) { const grid = document.createElement("div"); grid.className = "auctionWishlistGrid"; refs.forEach((ref) => { const card = auctionImageCard(ref, "Favorite punishment photo"); if (getAuctionPersonalitySettings().dialogue) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${bidder.name}: “${punishmentFavoriteDialogue(bidder, ref)}”`; card.appendChild(line); } card.appendChild(punishmentFavoriteNoteEditor(bidder, ref)); grid.appendChild(card); }); special.appendChild(grid); const challenge = document.createElement("button"); challenge.type = "button"; challenge.textContent = "Start favorite-photo challenge"; challenge.addEventListener("click", () => { state.punishmentChallenge = { serverId: getActiveServer()?.id, ownerId, screen: "setup" }; openView("punishmentChallenge", ownerId); }); special.appendChild(challenge); } else special.appendChild(emptyPanel("No favorites chosen yet. Choose some from #punishment below."));
+                const choose = document.createElement("button"); choose.type = "button"; choose.textContent = refs.length ? "Refresh punishment favorites" : "Choose punishment favorites"; choose.addEventListener("click", async () => { if (state.auctionPersonalityBusy) return; const server = getActiveServer(), ids = new Set(allChannels(server).filter((channel) => !channel.hidden && !getChannelCategory(channel.id)?.hidden && normalizeChannelName(channel.name) === "punishment").map((channel) => channel.id)); if (!ids.size) { alert("Add a visible #punishment channel in this workspace first."); return; } state.auctionPersonalityBusy = true; choose.disabled = true; try { const candidates = await samplePersonalityGamePhotos(server, 32, ids), current = getAuctionBidders().find((item) => item.id === ownerId); if (!current || getActiveServer()?.id !== server.id) return; if (!candidates.length) { alert("There are no visible images in #punishment yet."); return; } const updated = refreshPunishmentFavorites(current, candidates); await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === ownerId ? updated : item) }); await ensureAuctionPhotoRefsLoaded(getPunishmentFavoriteRefs(updated)); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); alert("Could not choose favorites locally. Existing favorites were not changed."); } finally { state.auctionPersonalityBusy = false; choose.disabled = false; } }); special.appendChild(choose); profile.appendChild(special);
+            }
+            const favoriteRefs = getAuctionPersonalFavorites(bidder), favorites = document.createElement("section"); favorites.className = "auctionWishlist"; const favoriteHeading = document.createElement("h4"); favoriteHeading.textContent = "Personal favorites"; const favoriteHelp = document.createElement("p"); favoriteHelp.textContent = "Up to five owned photos are chosen using her tastes and rankings. You can pin or remove favorites from her roster; favorites receive extra weight in dinners and trade decisions."; favorites.append(favoriteHeading, favoriteHelp); if (favoriteRefs.length) { const grid = document.createElement("div"); grid.className = "auctionWishlistGrid"; favoriteRefs.forEach((ref) => { const card = auctionImageCard(ref, "Personal favorite"); card.appendChild(punishmentFavoriteNoteEditor(bidder, ref, "personal")); grid.appendChild(card); }); favorites.appendChild(grid); } else { const empty = document.createElement("p"); empty.textContent = "No owned photos available as favorites yet."; favorites.appendChild(empty); } profile.appendChild(favorites);
+            const milestones = (state.structure.settings.auctionMilestones || []).filter((item) => item.serverId === getActiveServer()?.id && item.bidderId === bidder.id), awards = document.createElement("section"); awards.className = "auctionMilestones"; const awardTitle = document.createElement("h4"); awardTitle.textContent = "Milestones"; awards.appendChild(awardTitle);
+            if (!milestones.length) { const empty = document.createElement("p"); empty.textContent = "New collection goals and contested wins will appear here as they happen."; awards.appendChild(empty); }
+            else milestones.slice(-10).reverse().forEach((item) => { const badge = document.createElement("p"); badge.textContent = `✦ ${auctionMilestoneTitle(item)} · “${item.reaction}”`; awards.appendChild(badge); }); profile.appendChild(awards);
+            const wishlist = document.createElement("section"); wishlist.className = "auctionWishlist";
+            const heading = document.createElement("h4"); heading.textContent = "Wishlist"; wishlist.appendChild(heading);
+            const wishes = bidder.personality?.wishlist || [], visible = wishes.filter((item) => item.revealed), hiddenCount = wishes.length - visible.length;
+            const copy = document.createElement("p"); copy.textContent = !getAuctionPersonalitySettings().wishlists ? "Wishlists are paused in settings." : wishes.length ? `${hiddenCount} more ${hiddenCount === 1 ? "wish is" : "wishes are"} private. Wishes influence bids and refresh between auctions.` : "A wishlist will be chosen when the next auction starts."; wishlist.appendChild(copy);
+            if (getAuctionPersonalitySettings().wishlists && visible.length) { const grid = document.createElement("div"); grid.className = "auctionWishlistGrid"; visible.forEach((item) => grid.appendChild(auctionImageCard(item.ref, "Revealed wish"))); wishlist.appendChild(grid); }
+            profile.appendChild(wishlist);
+        }
+        profile.appendChild(relationships);
+        page.appendChild(profile); els.messages.appendChild(page); return;
+    }
+    const sections = getAuctionRosterSections(ownerId);
+    const favoriteKeys = new Set(getAuctionPersonalFavorites(getAuctionBidders().find((entry) => entry.id === ownerId)).map(auctionPhotoKey));
+    const rankingHelp = document.createElement("p"); rankingHelp.textContent = ownerId === "john" ? "Featured photos use This or That rankings; unranked photos have a neutral score. Remaining photos are in source-channel folders." : "Her personal ranking combines This or That with her source-channel tastes, collection goal and wishlist. Unranked photos start at a neutral score. Remaining photos are in source-channel folders."; page.appendChild(rankingHelp);
+    const tools = document.createElement("div"); tools.className = "auctionRosterControls";
+    const limitLabel = document.createElement("label"); limitLabel.textContent = "Top photos shown"; const limit = document.createElement("select");
+    [5, 10, 25, 50, 100].forEach((value) => { const option = document.createElement("option"); option.value = String(value); option.textContent = String(value); option.selected = value === (Number(state.structure.settings.auctionRosterTopCount) || 25); limit.appendChild(option); });
+    limit.addEventListener("change", async () => { const value = Number(limit.value); try { await saveAuctionChanges({ auctionRosterTopCount: value }); await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(ownerId, "roster")); renderMessages(); } catch (error) { console.error(error); alert("Could not save the display setting."); } }); limitLabel.appendChild(limit);
+    const sortLabel = document.createElement("label"); sortLabel.textContent = "Sort within sections"; const sort = document.createElement("select");
+    [["rank", "Best ranked first"], ["reverse", "Lowest ranked first"], ["newest", "Newest acquired"], ["oldest", "Oldest acquired"], ["price", "Highest auction price"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = value === (state.auctionRosterSort || "rank"); sort.appendChild(option); });
+    sort.addEventListener("change", () => { state.auctionRosterSort = sort.value; renderMessages(); }); sortLabel.appendChild(sort); tools.append(limitLabel, sortLabel); page.appendChild(tools);
+    const bySort = (a, b) => {
+        const aRank = sections.ranking.get(auctionPhotoKey(a.ref)) ?? Infinity, bRank = sections.ranking.get(auctionPhotoKey(b.ref)) ?? Infinity;
+        switch (state.auctionRosterSort) {
+            case "reverse": return (Number.isFinite(aRank) ? -aRank : Infinity) - (Number.isFinite(bRank) ? -bRank : Infinity);
+            case "newest": return String(b.acquiredAt || "").localeCompare(String(a.acquiredAt || ""));
+            case "oldest": return String(a.acquiredAt || "").localeCompare(String(b.acquiredAt || ""));
+            case "price": return (Number(b.price) || 0) - (Number(a.price) || 0);
+            default: return aRank - bRank;
+        }
+    };
+    const feature = (titleText, entries) => { if (!entries.length) return; const heading = document.createElement("h4"); heading.textContent = `${titleText} (${entries.length})`; page.appendChild(heading); const grid = document.createElement("div"); grid.className = "blindAuctionResults"; [...entries].sort(bySort).forEach((item) => grid.appendChild(createAuctionRosterCard(item, ownerId, favoriteKeys))); page.appendChild(grid); };
+    feature("Top ranked", sections.top); feature("Bottom ranked", sections.bottom);
+    if (sections.rest.length) {
+        const heading = document.createElement("h4"); heading.textContent = "More photos by source channel"; page.appendChild(heading);
+        const groups = new Map(); sections.rest.forEach((item) => { const id = item.ref.channelId; if (!groups.has(id)) groups.set(id, []); groups.get(id).push(item); });
+        [...groups.entries()].sort((a, b) => (getChannelById(a[0])?.name || "").localeCompare(getChannelById(b[0])?.name || "")).forEach(([channelId, groupItems]) => {
+            const folder = document.createElement("details"); folder.className = "auctionRosterFolder"; const summary = document.createElement("summary"); summary.textContent = `# ${getChannelById(channelId)?.name || "original channel"} · ${groupItems.length} photos`; folder.appendChild(summary);
+            const contents = document.createElement("div"); contents.className = "blindAuctionResults"; const more = document.createElement("button"); more.type = "button"; more.textContent = "Load 10 more"; let loaded = 0, loading = false;
+            const loadMore = async () => { if (loading) return; loading = true; more.disabled = true; const batch = [...groupItems].sort(bySort).slice(loaded, loaded + 10); await ensureAuctionPhotoRefsLoaded(batch.map((item) => item.ref)); batch.forEach((item) => contents.appendChild(createAuctionRosterCard(item, ownerId, favoriteKeys))); loaded += batch.length; more.hidden = loaded >= groupItems.length; loading = false; more.disabled = false; };
+            folder.addEventListener("toggle", () => { if (folder.open && !loaded) void loadMore(); }); more.addEventListener("click", loadMore); folder.append(contents, more); page.appendChild(folder);
+        });
+    }
+    if (!items.length) page.appendChild(emptyPanel("No photos owned yet."));
+    els.messages.appendChild(page);
+}
+
+function revealAuctionStage() {
+    requestAnimationFrame(() => {
+        if (state.activeView.type === "blindAuction") document.querySelector(".auctionStage")?.scrollIntoView({ block: "start", inline: "nearest", behavior: "smooth" });
+    });
+}
+
+async function prepareAuctionPreview(desired, aiCount, serverId, consignmentMode = false) {
+    const game = state.blindAuction;
+    if (game.saving) return;
+    if (getSavedAuctionSession(serverId)) { alert("Resume or discard the unfinished auction first."); return; }
+    if (!Number.isInteger(desired) || desired < (consignmentMode ? 1 : 2) || desired > 100 || !Number.isInteger(aiCount) || aiCount < 1 || aiCount > 8) { alert(`Choose ${consignmentMode ? "1" : "2"}–100 photos and 1–8 opponents.`); return; }
+    if (consignmentMode && !getAuctionConsignmentSettings().enabled) { alert("Enable consignment in auction settings first."); return; }
+    game.saving = true;
+    try {
+        await ensureServerMessagesLoaded();
+        if (game.serverId !== getActiveServer()?.id || state.activeView.type !== "blindAuction") return;
+        const all = getThisOrThatCandidates().filter((item) => shouldShowAttachment(item.attachment) && !getChannelById(item.ref.channelId)?.hidden && !getChannelCategory(item.ref.channelId)?.hidden);
+        const owned = new Set(getAuctionOwnership().map((item) => auctionPhotoKey(item.ref)));
+        const candidates = all.filter((item) => !owned.has(auctionPhotoKey(item.ref)));
+        const punishmentWeighted = !consignmentMode && Boolean(game.punishmentWeighted), censoredWeighted = !consignmentMode && Boolean(game.censoredWeighted);
+        const auctionFormat = consignmentMode ? { type: "standard" } : chooseAuctionFormat(candidates, desired, punishmentWeighted || censoredWeighted);
+        const drawCandidates = auctionFormat.type === "theme" ? candidates.filter((item) => item.ref.channelId === auctionFormat.channelId) : candidates;
+        const ordinary = getGameOrdinaryCandidates(drawCandidates, punishmentWeighted, censoredWeighted).map((item) => item.ref);
+        if (consignmentMode) { const available = new Set(all.map((item) => auctionPhotoKey(item.ref))); const lots = getValidAuctionConsignments(serverId).filter((item) => available.has(auctionPhotoKey(item.ref))); if (lots.length < desired) throw new Error(`Only ${lots.length} valid visible consignment listings are available. List more photos in their owners' rosters, or lower the count.`); }
+        else buildWeightedGameSelection(drawCandidates, ordinary, desired, punishmentWeighted, censoredWeighted);
+        game.count = desired; game.aiCount = aiCount;
+        game.pendingAuction = { serverId, desired, aiCount, auctionFormat, punishmentWeighted, censoredWeighted, consignmentMode, feePercent: consignmentMode ? getAuctionConsignmentSettings().feePercent : 0, vetoed: false };
+        game.screen = "preview";
+    } catch (error) { console.error(error); alert(error.message || "Could not prepare this auction."); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); if (game.screen === "preview") revealAuctionStage(); } }
+}
+
+function vetoAuctionPreview(serverId) {
+    const game = state.blindAuction, plan = game.pendingAuction;
+    if (game.saving || game.screen !== "preview" || !plan || plan.serverId !== serverId || plan.auctionFormat.type === "standard") return;
+    game.pendingAuction = { ...plan, auctionFormat: { type: "standard" }, vetoed: true };
+    renderMessages(); revealAuctionStage();
+}
+
+async function acceptAuctionPreview(serverId) {
+    const game = state.blindAuction, plan = game.pendingAuction;
+    if (game.saving || game.screen !== "preview" || !plan || plan.serverId !== serverId) return;
+    if (getSavedAuctionSession(serverId)) { alert("Resume or discard the unfinished auction first."); return; }
+    if (plan.consignmentMode && (!getAuctionConsignmentSettings().enabled || getAuctionConsignmentSettings().feePercent !== plan.feePercent)) { alert("Consignment settings changed. Return to setup and review the auction again."); return; }
+    if (plan.auctionFormat.type !== "standard" && !getAuctionPersonalitySettings().specialFormats) {
+        game.pendingAuction = { ...plan, auctionFormat: { type: "standard" }, vetoed: true };
+        alert("Special auctions are now disabled, so the preview has switched to a standard auction. Review it before starting."); renderMessages(); return;
+    }
+    game.saving = true; renderMessages();
+    try {
+        await ensureServerMessagesLoaded();
+        if (game.serverId !== getActiveServer()?.id || state.activeView.type !== "blindAuction") return;
+        const all = getThisOrThatCandidates().filter((item) => shouldShowAttachment(item.attachment) && !getChannelById(item.ref.channelId)?.hidden && !getChannelCategory(item.ref.channelId)?.hidden);
+        const owned = new Set(getAuctionOwnership().map((item) => auctionPhotoKey(item.ref)));
+        const candidates = all.filter((item) => !owned.has(auctionPhotoKey(item.ref)));
+        const drawCandidates = plan.auctionFormat.type === "theme" ? candidates.filter((item) => item.ref.channelId === plan.auctionFormat.channelId) : candidates;
+        const ordinary = getGameOrdinaryCandidates(drawCandidates, plan.punishmentWeighted, plan.censoredWeighted).map((item) => item.ref);
+        let selection, consignmentLots = {};
+        if (plan.consignmentMode) { const available = new Set(all.map((item) => auctionPhotoKey(item.ref))), lots = shuffledCopy(getValidAuctionConsignments(serverId).filter((item) => available.has(auctionPhotoKey(item.ref)))).slice(0, plan.desired); if (lots.length < plan.desired) throw new Error("Some listings are no longer available. Return to setup and review them."); selection = { refs: lots.map((item) => structuredClone(item.ref)) }; consignmentLots = Object.fromEntries(lots.map((item) => [auctionPhotoKey(item.ref), { sellerId: item.sellerId }])); }
+        else selection = buildWeightedGameSelection(drawCandidates, ordinary, plan.desired, plan.punishmentWeighted, plan.censoredWeighted);
+        const bidders = await prepareAuctionBidders(plan.aiCount, all);
+        if (game.serverId !== getActiveServer()?.id || state.activeView.type !== "blindAuction") return;
+        const prepared = bidders.map((bidder) => { let next = seedAuctionPersonality(bidder, all); const progress = auctionGoalProgress(next); if (next.personality?.goalPending || (progress && progress.count >= progress.target && progress.origin === "automatic")) next = { ...next, personality: { ...next.personality, goal: buildAuctionGoal(next, all), goalPending: false } }; return refreshPunishmentFavorites(refreshAuctionWishlist(next, candidates), all); });
+        const starting = calculateAuctionStartingBalances(prepared, getAuctionBalances(serverId));
+        const bidderIds = new Set(prepared.map((item) => item.id)), byId = new Map(prepared.map((item) => [item.id, item]));
+        const updatedBidders = (state.structure.settings.auctionBidders || []).map((item) => bidderIds.has(item.id) ? { ...byId.get(item.id), awaitingInitialBalance: false } : item);
+        const balances = { ...getAuctionBalances(serverId), ...starting };
+        const moods = {}; if (getAuctionPersonalitySettings().moods) prepared.forEach((bidder) => { if (Math.random() < auctionEventChance(.18)) moods[bidder.id] = Math.random() < .5 ? "bold" : "cautious"; });
+        const activeBidders = updatedBidders.filter((item) => bidderIds.has(item.id));
+        const dialogue = nextAuctionDialogue({ dialogue: null }, activeBidders, {});
+        const newGame = { serverId, count: plan.desired, budget: starting.john, startBalances: starting, aiCount: plan.aiCount, bidders: activeBidders, balances: Object.fromEntries(prepared.map((item) => [item.id, starting[item.id]])), auctionId: newLocalGameRecordId(), sequence: selection.refs, consignmentLots, consignmentFeePercent: plan.feePercent || 0, results: [], index: 0, remaining: starting.john, punishmentWeighted: plan.punishmentWeighted, censoredWeighted: plan.censoredWeighted, auctionFormat: structuredClone(plan.auctionFormat), moods, dialogue, dialogueCount: dialogue ? 1 : 0, lastDialogueRound: dialogue ? 0 : -10, visibleLimit: 10, pendingAuction: null, screen: "play" };
+        await saveAuctionChanges({ auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [serverId]: balances }, auctionBidders: updatedBidders, auctionSessions: { ...(state.structure.settings.auctionSessions || {}), [serverId]: snapshotAuctionSession(newGame) } });
+        if (game.serverId === serverId) Object.assign(game, newGame);
+        renderChannels();
+    } catch (error) { console.error(error); alert(error.message || "Could not start the auction or save its bidders locally."); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); if (game.screen === "play") revealAuctionStage(); } }
+}
+
+function renderBlindAuction() {
+    const game = state.blindAuction, serverId = getActiveServer()?.id;
+    if (game.serverId !== serverId) { stopAuctionSlideshow(); Object.assign(game, { screen: "setup", serverId, sequence: [], results: [], index: 0, saving: false }); }
+    const page = document.createElement("section"); page.className = `blindAuction auctionStage${game.screen === "play" ? " auctionStagePlaying" : ""}`;
+    const marquee = document.createElement("div"); marquee.className = "auctionStageMarquee";
+    const marqueeKicker = document.createElement("span"); marqueeKicker.textContent = "THE GALLERY PRESENTS";
+    const marqueeTitle = document.createElement("strong"); marqueeTitle.textContent = "THE PHOTO AUCTION";
+    const marqueeDetail = document.createElement("span"); marqueeDetail.textContent = "A PRIVATE COLLECTION · LOCAL ONLY";
+    marquee.append(marqueeKicker, marqueeTitle, marqueeDetail); page.appendChild(marquee);
+    const intro = document.createElement("section"); intro.className = "focusSessionIntro"; page.appendChild(intro);
+    if (game.screen === "setup") {
+        intro.innerHTML = "<h3>Photo Auction</h3><p>Bid against local programmed opponents. Highest bid wins; the winner pays one dollar above the next bid, up to their own bid. Ties are random. Future photos remain a surprise.</p>";
+        const saved = getSavedAuctionSession(serverId);
+        if (saved) {
+            const recovery = document.createElement("section"); recovery.className = "auctionRecovery";
+            const message = document.createElement("p"); message.textContent = isValidSavedAuctionSession(saved, serverId) ? `Unfinished auction saved: ${saved.index} of ${saved.sequence.length} photos completed. Resume without another grant.` : "An unfinished auction was found but could not be read. You can discard it without changing completed sales or balances.";
+            const resume = document.createElement("button"); resume.type = "button"; resume.className = "adventurePrimary"; resume.textContent = "Resume auction"; resume.disabled = !isValidSavedAuctionSession(saved, serverId); resume.addEventListener("click", async () => { resume.disabled = true; try { await resumeSavedAuction(serverId); } catch (error) { console.error(error); alert("Could not load the saved auction. It has not been discarded."); resume.disabled = false; } });
+            const discard = document.createElement("button"); discard.type = "button"; discard.textContent = "Discard unfinished auction"; discard.addEventListener("click", () => discardSavedAuction(serverId));
+            recovery.append(message, resume, discard); page.appendChild(recovery);
+        }
+        const options = document.createElement("div"); options.className = "blindAuctionSetup";
+        const field = (text, value, min, max) => { const label = document.createElement("label"); label.textContent = text; const input = document.createElement("input"); input.type = "number"; input.min = String(min); input.max = String(max); input.step = "1"; input.inputMode = "numeric"; input.value = String(value); label.appendChild(input); options.appendChild(label); return input; };
+        const count = field("Number of photos", game.count, 2, 100), bots = field("Opponents", game.aiCount, 1, 8);
+        let consignmentToggle = null;
+        if (getAuctionConsignmentSettings().enabled) { const label = document.createElement("label"); consignmentToggle = document.createElement("input"); consignmentToggle.type = "checkbox"; label.append(consignmentToggle, document.createTextNode(" Run a consignment auction (listed owned photos only)")); options.appendChild(label); const info = document.createElement("p"); info.textContent = `${getValidAuctionConsignments(serverId).length} valid listings in this server. Add or remove listings from each owner's roster. Sellers cannot bid on their own photos; unsold photos remain with their owners. Fee: ${getAuctionConsignmentSettings().feePercent}% of sale price.`; options.appendChild(info); consignmentToggle.addEventListener("change", () => { count.min = consignmentToggle.checked ? "1" : "2"; }); }
+        const economyInfo = document.createElement("p"); const economy = getAuctionEconomy(); economyInfo.textContent = `Each returning player receives $${economy.grant} plus ${economy.carryPercent}% of their remaining money. New bidders start at the players’ average plus $${economy.newBidderBonus}. Change these in Organization settings.`;
+        const profiles = document.createElement("div"); profiles.className = "auctionProfiles";
+        getAuctionBidders().forEach((bidder) => { const row = document.createElement("div"); row.className = "auctionProfile"; row.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name)); const name = document.createElement("span"); name.textContent = `${bidder.name} · ${bidder.strategy?.name || "Balanced"}`; const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Rename"; rename.addEventListener("click", () => renameAuctionBidder(bidder.id)); row.append(name, rename); profiles.appendChild(row); });
+        const stats = document.createElement("p"); const history = getAuctionHistory(); stats.textContent = `${history.length} auction rounds · ${history.filter((item) => item.ownerId).length} sales · ${getAuctionOwnership().length} currently owned photos in this server.`;
+        const start = document.createElement("button"); start.type = "button"; start.className = "adventurePrimary"; start.textContent = "Preview auction";
+        start.disabled = Boolean(saved);
+        start.addEventListener("click", async () => { start.disabled = true; start.textContent = "Preparing…"; try { await prepareAuctionPreview(Number(count.value), Number(bots.value), serverId, Boolean(consignmentToggle?.checked)); } finally { start.disabled = Boolean(getSavedAuctionSession(serverId)); start.textContent = "Preview auction"; } });
+        const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "Admin: release all auctioned photos";
+        reset.addEventListener("click", async () => { if (!confirm("Release every auction-owned photo in this server for re-auction? Original photos, bidder profiles, and auction history will remain.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref); await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionTrades: invalidateAuctionTradesForRefs(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Ownership was not changed."); } });
+        const fresh = document.createElement("button"); fresh.type = "button"; fresh.textContent = "Admin: fresh auction slate";
+        fresh.addEventListener("click", async () => { if (!confirm("Release this server's auction-owned photos, discard any unfinished auction, and reset its auction balances? Original photos, bidder profiles, and historical records will remain. Pending trades involving released photos will expire.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref), balances = { ...(state.structure.settings.auctionBalances || {}) }, sessions = { ...(state.structure.settings.auctionSessions || {}) }; delete balances[serverId]; delete sessions[serverId]; await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionBalances: balances, auctionSessions: sessions, auctionTrades: invalidateAuctionTradesForRefs(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Auction data was not changed."); } });
+        page.append(options, economyInfo, createWeightedGameControls(game), stats, profiles, start, reset, fresh);
+    } else if (game.screen === "preview") {
+        const plan = game.pendingAuction;
+        if (!plan || plan.serverId !== serverId) { game.pendingAuction = null; game.screen = "setup"; renderMessages(); return; }
+        intro.innerHTML = "<p class=\"auctionEyebrow\">BEFORE THE CURTAIN RISES</p><h3>Your next auction</h3>";
+        const preview = document.createElement("section"); preview.className = "auctionPreview";
+        const format = document.createElement("strong"); format.className = "auctionPreviewTitle"; format.textContent = plan.consignmentMode ? "Consignment auction · owned listings only" : auctionFormatDescription(plan.auctionFormat);
+        const details = document.createElement("p"); details.textContent = `${plan.desired} photos · ${plan.aiCount} programmed opponent${plan.aiCount === 1 ? "" : "s"} · ${plan.consignmentMode ? `Seller receives the sale price minus a ${plan.feePercent}% fee (rounded down). Unsold photos remain owned.` : plan.vetoed ? "Special format vetoed; standard rules selected." : "Your photo draw stays a surprise."}`;
+        const assurance = document.createElement("p"); assurance.textContent = "No money is granted and no photos are assigned until you start.";
+        const actions = document.createElement("div"); actions.className = "auctionPreviewActions";
+        const begin = document.createElement("button"); begin.type = "button"; begin.className = "adventurePrimary"; begin.textContent = game.saving ? "Starting…" : "Start this auction"; begin.disabled = game.saving; begin.addEventListener("click", () => acceptAuctionPreview(serverId)); actions.appendChild(begin);
+        if (plan.auctionFormat.type !== "standard") { const veto = document.createElement("button"); veto.type = "button"; veto.textContent = "Veto · use standard rules"; veto.disabled = game.saving; veto.addEventListener("click", () => vetoAuctionPreview(serverId)); actions.appendChild(veto); }
+        const back = document.createElement("button"); back.type = "button"; back.textContent = "Back to setup"; back.disabled = game.saving; back.addEventListener("click", () => { game.pendingAuction = null; game.screen = "setup"; renderMessages(); }); actions.appendChild(back);
+        preview.append(format, details, assurance, actions); page.appendChild(preview);
+    } else if (game.screen === "reveal") {
+        const result = game.results[game.results.length - 1];
+        if (!result) { page.appendChild(emptyPanel("This auction result could not be found. Reopen the saved auction to try again.")); els.messages.appendChild(page); return; }
+        intro.innerHTML = `<p class="auctionEyebrow">TAKE YOUR TIME</p><h3>Photo ${game.index} of ${game.sequence.length} · result</h3>`;
+        const outcome = document.createElement("p"); outcome.className = "auctionRevealOutcome";
+        outcome.textContent = result.ownerId ? `${getAuctionOwnerName(result.ownerId)} won this photo for $${result.price}.${result.sellerId ? ` ${getAuctionOwnerName(result.sellerId)} received $${result.sellerProceeds} after a $${result.consignmentFee} fee.` : ""}` : result.sellerId ? `No qualifying bids; ${getAuctionOwnerName(result.sellerId)} keeps the photo.` : "This photo received no qualifying bids.";
+        const wait = document.createElement("p"); wait.textContent = "The auction is paused here. Continue whenever you are ready."; intro.append(outcome, wait);
+        (result.milestones || []).forEach((milestone) => { const award = document.createElement("p"); award.className = "auctionMilestoneNotice"; award.textContent = `✦ ${getAuctionOwnerName(milestone.bidderId)}: ${auctionMilestoneTitle(milestone)} · “${milestone.reaction}”`; intro.appendChild(award); });
+        const card = auctionImageCard(result.ref, result.ownerId ? `Won by ${getAuctionOwnerName(result.ownerId)}` : "No sale"); card.classList.add("auctionRevealPhoto"); page.appendChild(card);
+        if (result.eventReaction && getAuctionPersonalitySettings().dialogue && getAuctionPersonalitySettings().eventReactions && !(game.dismissedReactions || []).includes(result.id)) {
+            const reaction = document.createElement("div"); reaction.className = "auctionEventReaction";
+            const text = document.createElement("p"); text.textContent = `${getAuctionOwnerName(result.eventReaction.bidderId)}: “${result.eventReaction.text}”`;
+            const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "Dismiss";
+            dismiss.addEventListener("click", async () => { if (game.saving) return; const dismissedReactions = [...(game.dismissedReactions || []), result.id]; game.saving = true; renderMessages(); try { const sessions = { ...(state.structure.settings.auctionSessions || {}), [game.serverId]: snapshotAuctionSession(game, { dismissedReactions }) }; await saveAuctionChanges({ auctionSessions: sessions }); game.dismissedReactions = dismissedReactions; } catch (error) { console.error(error); alert("Could not save dismissal locally."); } finally { game.saving = false; if (state.activeView.type === "blindAuction") renderMessages(); } });
+            reaction.append(text, dismiss); page.appendChild(reaction);
+        }
+        const details = document.createElement("details"); details.className = "auctionRevealBids"; const summary = document.createElement("summary"); summary.textContent = "View bids and why they were made"; details.appendChild(summary);
+        [...(result.bids || [])].sort((a, b) => b.bid - a.bid).forEach((bid) => {
+            const row = document.createElement("details"), label = document.createElement("summary"); label.textContent = `${getAuctionOwnerName(bid.id)} · ${bid.bid > 0 ? `$${bid.bid}` : "passed"}${bid.id === "john" ? "" : " · Why?"}`; row.appendChild(label);
+            const copy = document.createElement("p"), x = bid.explanation;
+            if (bid.id === "john") copy.textContent = "Your own bid.";
+            else if (x?.seller) copy.textContent = "The seller cannot bid on her own consignment.";
+            else if (!x || !Number.isFinite(x.calculated)) copy.textContent = x?.available === false ? "The photo was unavailable." : "Bid details are available for rounds played after this update.";
+            else { const reasons = [x.ranked ? `This or That score ${Math.round(x.quality * 100)}/100` : "no This or That ranking yet (neutral estimate)", `${x.strategy} strategy`, `budget $${x.remaining} across ${x.roundsLeft} remaining photos`, `random variation ${Math.round(x.noise * 100)}%`]; if (x.competitive && x.competitive !== 1) reasons.push(`competitiveness ×${x.competitive.toFixed(2)}`); if (x.taste !== 1) reasons.push(`taste and goal multiplier ×${x.taste.toFixed(2)}`); if (x.goal) reasons.push("matches a collection goal"); if (x.rivalry > 0) reasons.push(`rivalry +${Math.round(x.rivalry * 100)}%`); if (x.mood) reasons.push(`${x.mood} mood`); if (x.wish) reasons.push(`${x.wish === "revealed" ? "revealed wishlist" : "strong personal interest"} +${Math.round(((x.wishBoost || 1.18) - 1) * 100)}%`); if (x.reserve) reasons.push(`$${x.reserve} reserved for later`); if (bid.bid === 0 && x.calculated > 0 && x.calculated < x.minimum) reasons.push(`below the $${x.minimum} minimum`); copy.textContent = reasons.join(" · ") + "."; }
+            row.appendChild(copy); details.appendChild(row);
+        }); page.appendChild(details);
+        const next = document.createElement("button"); next.type = "button"; next.className = "adventurePrimary"; next.textContent = game.saving ? "Saving…" : game.index >= game.sequence.length ? "View auction results" : "Next photo"; next.disabled = game.saving; next.addEventListener("click", continueAuctionAfterReveal); page.appendChild(next);
+    } else if (game.screen === "play") {
+        const ref = game.sequence[game.index], attachment = ref && findAttachment(ref);
+        const consignment = ref && game.consignmentLots?.[auctionPhotoKey(ref)], ownLot = consignment?.sellerId === "john";
+        intro.innerHTML = `<h3>Photo ${game.index + 1} of ${game.sequence.length}</h3><p>John: $${game.remaining} available · ${game.sequence.length - game.index - 1} photos still to come</p>`;
+        if (consignment) { const notice = document.createElement("p"); notice.className = "auctionFormatNotice"; notice.textContent = `Consigned by ${getAuctionOwnerName(consignment.sellerId)} · seller cannot bid · ${game.consignmentFeePercent || 0}% fee${ownLot ? " · pass to let the other bidders compete" : ""}.`; intro.appendChild(notice); }
+        if (game.auctionFormat?.type && game.auctionFormat.type !== "standard") { const format = document.createElement("p"); format.className = "auctionFormatNotice"; format.textContent = auctionFormatDescription(game.auctionFormat); intro.appendChild(format); }
+        if (game.results.length) { const last = game.results[game.results.length - 1], message = document.createElement("p"); message.textContent = last.ownerId ? `Previous sale: ${getAuctionOwnerName(last.ownerId)} won for $${last.price}.` : "Previous photo received no bids."; intro.appendChild(message); }
+        const photoDialogue = currentAuctionDialogue(game);
+        if (photoDialogue) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.textContent = `${getAuctionOwnerName(photoDialogue.bidderId)}: “${photoDialogue.text}”`; intro.appendChild(line); }
+        const figure = document.createElement("figure"); figure.className = "blindAuctionPhoto";
+        if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = "Current auction photo"; if (game.auctionFormat?.type === "mystery") { image.classList.add("auctionMysteryImage"); image.alt = "Blurred mystery auction photo"; } else image.addEventListener("click", () => openImageViewer(attachment, image.alt)); figure.appendChild(image); } else figure.appendChild(emptyPanel("This photo is unavailable; pass to continue."));
+        const controls = document.createElement("div"); controls.className = "blindAuctionControls";
+        const minimum = game.auctionFormat?.type === "reserve" ? Math.max(1, Number(game.auctionFormat.minimum) || 5) : 1;
+        const label = document.createElement("label"); label.textContent = "Your maximum bid ($)"; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(minimum); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(minimum); bid.disabled = ownLot || !attachment || game.remaining < minimum || game.saving; label.appendChild(bid);
+        const actions = document.createElement("div"); actions.className = "blindAuctionActions";
+        const pass = document.createElement("button"); pass.textContent = ownLot ? "Let bidders compete" : "Pass"; pass.disabled = game.saving; const submit = document.createElement("button"); submit.textContent = game.saving ? "Saving…" : "Place bid"; submit.className = "adventurePrimary"; submit.disabled = ownLot || !attachment || game.remaining < minimum || game.saving;
+        const index = game.index; pass.addEventListener("click", () => resolveAuctionBid(0, index)); submit.addEventListener("click", () => { const amount = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(amount) || amount < minimum || amount > game.remaining) { alert(`Enter a whole-number bid between ${minimum} and ${game.remaining}.`); return; } resolveAuctionBid(amount, index); });
+        actions.append(pass, submit); controls.append(label, actions);
+        const end = document.createElement("button"); end.className = "auctionStageEnd"; end.textContent = "End auction early"; end.disabled = game.saving; end.addEventListener("click", async () => {
+            if (!confirm("End the auction? Completed sales remain saved.")) return;
+            game.saving = true; renderMessages();
+            try {
+                const sessions = { ...(state.structure.settings.auctionSessions || {}) }; delete sessions[game.serverId];
+                const changes = { auctionSessions: sessions };
+                try { const existing = state.structure.settings.auctionTrades || [], proposals = suggestedAuctionTrades(state.structure.settings.auctionOwnership || [], existing, game.serverId); if (proposals.length) changes.auctionTrades = [...existing, ...proposals]; }
+                catch (error) { console.warn("Could not prepare suggested trades:", error); }
+                await saveAuctionChanges(changes);
+                game.screen = "results";
+            } catch (error) { console.error("Could not end auction:", error); alert("The auction could not be ended locally. Completed sales are saved, and the auction remains available."); }
+            game.saving = false; render();
+        }); page.append(figure, controls, end);
+    } else if (game.screen === "slideshow") {
+        const show = game.slideshow, item = show?.items[show.index];
+        if (item) { intro.textContent = `${show.index + 1} of ${show.items.length} · ${getAuctionOwnerName(item.ownerId)} · ${show.seconds} seconds · ${show.bpm} BPM`; const card = auctionImageCard(item.ref, "Tap the photo to expand"); card.classList.add("auctionSlideshowPhoto"); page.appendChild(card); }
+        const stop = document.createElement("button"); stop.textContent = "Stop slideshow"; stop.addEventListener("click", () => { stopAuctionSlideshow(); renderMessages(); }); page.appendChild(stop);
+    } else {
+        intro.innerHTML = `<h3>Auction results</h3><p>${game.results.length} rounds · John spent $${game.budget - game.remaining}. Completed sales, balances, and auction stats are saved locally.</p>`;
+        [{ id: "john", name: "John" }, ...(game.bidders || [])].forEach((owner) => { const won = game.results.filter((item) => item.ownerId === owner.id); const section = document.createElement("section"); section.className = "auctionRoster"; const heading = document.createElement("h4"); heading.textContent = `${getAuctionOwnerName(owner.id)} · ${won.length} won · $${owner.id === "john" ? game.remaining : game.balances[owner.id]} left`; section.appendChild(heading); if (owner.avatarRef) section.appendChild(auctionProfilePhoto(owner.avatarRef, owner.name)); const list = document.createElement("div"); list.className = "blindAuctionResults"; won.slice(0, game.visibleLimit || 10).forEach((item) => list.appendChild(auctionImageCard(item.ref, `$${item.price}`))); section.appendChild(list); if (won.length > (game.visibleLimit || 10)) { const more = document.createElement("button"); more.type = "button"; more.textContent = "Show more photos"; more.addEventListener("click", () => { game.visibleLimit = (game.visibleLimit || 10) + 10; renderMessages(); }); section.appendChild(more); } page.appendChild(section); });
+        const slideshow = document.createElement("button"); slideshow.className = "adventurePrimary"; slideshow.textContent = "Play all sold photos"; slideshow.addEventListener("click", startAuctionSlideshow);
+        const again = document.createElement("button"); again.textContent = "New auction"; again.addEventListener("click", () => { game.screen = "setup"; game.sequence = []; game.results = []; renderMessages(); }); page.append(slideshow, again);
+    }
+    els.messages.appendChild(page);
+}
+
 function getTournamentInsights() {
     const records = new Map();
     const history = (state.structure.settings.tournamentHistory || []).filter((entry) => entry.serverId === getActiveServer()?.id);
@@ -3304,16 +5175,15 @@ function getTournamentInsights() {
     return [...records.values()].sort((a, b) => b.championships - a.championships || b.wins - a.wins || b.appearances - a.appearances);
 }
 
+function tournamentSeedSlots(count) {
+    let slots = [1, 2]; while (slots.length < count) { const total = slots.length * 2 + 1; slots = slots.flatMap((seed) => [seed, total - seed]); } return slots;
+}
 function makeTournamentBracket(refs, seeded) {
     if (!seeded) return shuffledCopy(refs);
     const ranks = new Map(getThisOrThatInsights().images.map((item, index) => [photoRefKey(item.ref), index]));
     // Shuffle first so photos without a This or That rank receive random seeds.
     const ranked = shuffledCopy(refs).sort((a, b) => (ranks.get(photoRefKey(a)) ?? Infinity) - (ranks.get(photoRefKey(b)) ?? Infinity));
-    let slots = [1, 2];
-    while (slots.length < ranked.length) {
-        const total = slots.length * 2 + 1;
-        slots = slots.flatMap((seed) => [seed, total - seed]);
-    }
+    const slots = tournamentSeedSlots(ranked.length);
     return slots.map((seed) => ranked[seed - 1]);
 }
 
@@ -3323,6 +5193,7 @@ function startTournamentBracket(refs, seeded) {
     game.size = refs.length;
     game.round = makeTournamentBracket(game.selected, seeded);
     game.initialBracket = structuredClone(game.round);
+    const slots = tournamentSeedSlots(game.initialBracket.length); game.seeds = game.initialBracket.map((ref, index) => ({ ref: structuredClone(ref), seed: slots[index] }));
     game.bracketSeeding = seeded ? "this-or-that" : "random";
     game.nextRound = [];
     game.matchIndex = 0;
@@ -3355,33 +5226,37 @@ async function rematchTournament(entry) {
     await openView("tournament", "tournament");
 }
 
+function tournamentBracketColumns(game) {
+    let participants = [...(game.initialBracket || [])], columns = [];
+    for (let size = participants.length; size >= 2; size /= 2) { const completed = (game.matches || []).filter((match) => match.kind !== "third-place" && match.roundSize === size), matches = [], winners = []; for (let index = 0; index < size / 2; index++) { const result = completed[index]; matches.push({ participants: [participants[index * 2], participants[index * 2 + 1]], winner: result?.winner || null }); winners.push(result?.winner || null); } columns.push({ size, matches }); participants = winners; } return columns;
+}
 function renderTournamentBracket(game) {
     const wrapper = document.createElement("section"); wrapper.className = "tournamentBracket";
     wrapper.setAttribute("aria-label", "Tournament bracket; scroll horizontally to see later rounds");
     const columns = document.createElement("div"); columns.className = "tournamentBracketColumns";
-    let participants = [...(game.initialBracket || [])];
-    for (let size = participants.length; size >= 2; size /= 2) {
+    const rounds = tournamentBracketColumns(game), initialSize = game.initialBracket?.length || 0, fallbackSeeds = tournamentSeedSlots(initialSize), seeds = new Map(((Array.isArray(game.seeds) && game.seeds.length) ? game.seeds : (game.initialBracket || []).map((ref, index) => ({ ref, seed: fallbackSeeds[index] }))).map((item) => [photoRefKey(item.ref), item.seed]));
+    rounds.forEach(({ size, matches: bracketMatches }, roundIndex) => {
         const column = document.createElement("section"); column.className = "tournamentBracketRound";
         const title = document.createElement("h4"); title.textContent = size === 2 ? "Final" : size === 4 ? "Semifinals" : `Round of ${size}`; column.appendChild(title);
         const matches = document.createElement("div"); matches.className = "tournamentBracketMatches";
-        const completed = (game.matches || []).filter((match) => match.kind !== "third-place" && match.roundSize === size);
-        const winners = [];
-        for (let index = 0; index < size / 2; index += 1) {
-            const result = completed[index];
+        const stride = 2 ** roundIndex; matches.style.gridTemplateRows = `repeat(${initialSize / 2}, 104px)`;
+        bracketMatches.forEach((result, index) => {
             const matchup = document.createElement("div"); matchup.className = "tournamentBracketMatch";
-            [participants[index * 2], participants[index * 2 + 1]].forEach((ref) => {
+            matchup.style.gridRow = `${index * stride + 1} / span ${stride}`; matchup.style.setProperty("--bracket-link-span", `${stride * 52}px`);
+            result.participants.forEach((ref) => {
                 const button = document.createElement("button"); button.type = "button";
-                button.textContent = ref ? tournamentPhotoName(ref) : "To be decided";
+                const attachment = ref && findAttachment(ref), seed = ref && seeds.get(photoRefKey(ref));
+                if (attachment) { const image = document.createElement("img"); image.loading = "lazy"; image.decoding = "async"; image.alt = ""; setRenderedImageSource(image, attachment); button.appendChild(image); }
+                const text = document.createElement("span"); text.textContent = ref ? `#${seed || "?"} · ${tournamentPhotoName(ref)}` : "To be decided"; button.appendChild(text);
                 button.disabled = !ref || !findAttachment(ref);
-                if (ref && result && photoRefKey(result.winner) === photoRefKey(ref)) button.classList.add("isWinner");
+                if (ref && result.winner && photoRefKey(result.winner) === photoRefKey(ref)) button.classList.add("isWinner");
                 if (ref) button.addEventListener("click", () => { const attachment = findAttachment(ref); if (attachment) openImageViewer(attachment, tournamentPhotoName(ref)); });
                 matchup.appendChild(button);
             });
             matches.appendChild(matchup);
-            winners.push(result?.winner || null);
-        }
-        column.appendChild(matches); columns.appendChild(column); participants = winners;
-    }
+        });
+        column.appendChild(matches); columns.appendChild(column);
+    });
     wrapper.appendChild(columns);
     if (game.thirdPlacePending || game.thirdPlaceWinner) {
         const third = document.createElement("p"); third.className = "tournamentBracketThird";
@@ -3391,18 +5266,58 @@ function renderTournamentBracket(game) {
     return wrapper;
 }
 
+async function createTournamentBracketImage(game) {
+    const initial = game.initialBracket || [], rounds = tournamentBracketColumns(game);
+    if (!TOURNAMENT_SIZES.includes(initial.length) || !rounds.length || !rounds[rounds.length - 1].matches[0]?.winner) throw new Error("Finish the tournament before saving its bracket.");
+    const tile = 48, atlas = document.createElement("canvas"); atlas.width = tile * 16; atlas.height = tile * Math.ceil(initial.length / 16); const atlasCtx = atlas.getContext("2d"); if (!atlasCtx) throw new Error("Image rendering is unavailable on this device.");
+    const positions = new Map(); let missing = 0;
+    for (let index = 0; index < initial.length; index++) {
+        const ref = initial[index], attachment = findAttachment(ref), x = (index % 16) * tile, y = Math.floor(index / 16) * tile; positions.set(photoRefKey(ref), { x, y }); atlasCtx.fillStyle = "#39343f"; atlasCtx.fillRect(x, y, tile, tile);
+        const source = attachment?.blob ? URL.createObjectURL(attachment.blob) : typeof attachment?.dataUrl === "string" && attachment.dataUrl.startsWith("data:image/") ? attachment.dataUrl : "";
+        if (!source) { missing++; continue; }
+        try { const image = new Image(); await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Photo unavailable")); image.src = source; }); const factor = Math.min(tile / image.naturalWidth, tile / image.naturalHeight); const width = image.naturalWidth * factor, height = image.naturalHeight * factor; atlasCtx.drawImage(image, x + (tile - width) / 2, y + (tile - height) / 2, width, height); image.src = ""; }
+        catch (error) { console.warn("Could not draw a bracket thumbnail:", error); missing++; }
+        finally { if (attachment?.blob) URL.revokeObjectURL(source); }
+    }
+    const rowHeight = Math.max(28, Math.min(96, Math.floor(3900 / (initial.length / 2)))), colWidth = 190, top = 70, canvas = document.createElement("canvas"); canvas.width = 36 + rounds.length * colWidth; canvas.height = top + initial.length / 2 * rowHeight + 28; const ctx = canvas.getContext("2d"); if (!ctx) throw new Error("Image rendering is unavailable on this device.");
+    ctx.fillStyle = "#211c26"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = "#fff"; ctx.font = "bold 20px sans-serif"; ctx.fillText(`Photo tournament · ${initial.length} entrants`, 18, 28); ctx.font = "12px sans-serif"; ctx.fillStyle = "#c7b8cb"; ctx.fillText(game.bracketSeeding === "this-or-that" || game.seeding === "this-or-that" ? "Seeds based on This or That rankings" : "Random seeds", 18, 48);
+    const slots = tournamentSeedSlots(initial.length), seedMap = new Map(((Array.isArray(game.seeds) && game.seeds.length) ? game.seeds : initial.map((ref, index) => ({ ref, seed: slots[index] }))).map((item) => [photoRefKey(item.ref), item.seed]));
+    rounds.forEach(({ size, matches }, roundIndex) => { const x = 18 + roundIndex * colWidth, stride = 2 ** roundIndex; ctx.fillStyle = "#dfd0e0"; ctx.font = "bold 12px sans-serif"; ctx.fillText(size === 2 ? "Final" : size === 4 ? "Semifinals" : `Round of ${size}`, x, 64);
+        matches.forEach((match, index) => { const center = top + (index * stride + stride / 2) * rowHeight, entryHeight = Math.min(38, Math.max(13, rowHeight / 2 - 1)), startY = center - entryHeight, width = colWidth - 25;
+            if (roundIndex < rounds.length - 1) { const targetCenter = top + (Math.floor(index / 2) * stride * 2 + stride) * rowHeight; ctx.strokeStyle = "#8b788d"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x + width, center); ctx.lineTo(x + width + 10, center); ctx.lineTo(x + width + 10, targetCenter); ctx.lineTo(x + colWidth, targetCenter); ctx.stroke(); }
+            match.participants.forEach((ref, side) => { const y = startY + side * entryHeight, winner = ref && match.winner && photoRefKey(ref) === photoRefKey(match.winner); ctx.fillStyle = winner ? "#365e4b" : "#35303b"; ctx.fillRect(x, y, width, entryHeight - 1); if (ref) { const pos = positions.get(photoRefKey(ref)), thumb = Math.max(8, Math.min(entryHeight - 3, 34)); if (pos) ctx.drawImage(atlas, pos.x, pos.y, tile, tile, x + 2, y + 1, thumb, thumb); ctx.fillStyle = "#fff"; ctx.font = `${Math.max(9, Math.min(12, entryHeight - 3))}px sans-serif`; ctx.fillText(`#${seedMap.get(photoRefKey(ref)) || "?"} ${tournamentPhotoName(ref)}`, x + thumb + 5, y + entryHeight * .7, width - thumb - 7); } else { ctx.fillStyle = "#b7aeb9"; ctx.font = "10px sans-serif"; ctx.fillText("To be decided", x + 4, y + entryHeight * .7); } }); }); });
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png")); if (!blob) throw new Error("The device could not create this bracket image. Try a smaller tournament."); return { blob, missing };
+}
+async function saveTournamentBracketPicture(game, button) {
+    if (state.savingTournamentBracket) return; const serverId = game.serverId || getActiveServer()?.id; if (!serverId || serverId !== getActiveServer()?.id) { alert("Open the tournament's workspace before saving its bracket."); return; }
+    state.savingTournamentBracket = true; button.disabled = true; const oldText = button.textContent; button.textContent = "Creating bracket image…";
+    try { const { blob, missing } = await createTournamentBracketImage(game); if (!(await hasSpaceForLocalFiles([blob]))) return; if (getActiveServer()?.id !== serverId) { alert("The workspace changed; open the tournament again before saving."); return; }
+        let server = getActiveServer(), channel = allChannels(server).find((item) => normalizeChannelName(item.name) === "tournament-brackets");
+        if (!channel) { const next = structuredClone(state.structure), nextServer = next.servers.find((item) => item.id === serverId), category = nextServer?.categories.find((item) => item.isDraftGalleryCategory) || nextServer?.categories[0]; if (!category) throw new Error("No folder is available for the bracket channel."); channel = { id: uniqueId("channel", "tournament-brackets"), name: "tournament-brackets", hidden: false }; category.channels.push(channel); await saveStructure(next); state.structure = next; server = getActiveServer(); renderChannels(); }
+        if (channel.isTournamentRankingsChannel || channel.isDraftRankingsChannel || channel.isMuseumExhibitsChannel || channel.isHallOfFameChannel || channel.isThisOrThatRankingsChannel || channel.isHolisticRankingsChannel) throw new Error("The existing #tournament-brackets is a special view, not a message channel. Rename it or create a normal channel first.");
+        const attachment = { id: crypto.randomUUID(), name: `tournament-bracket-${new Date().toISOString().slice(0, 10)}.png`, type: "image/png", size: blob.size, blob }, message = createMessage(`Tournament bracket · ${(game.initialBracket || []).length} photos`, [attachment]); await saveChannelMessage(channel.id, message);
+        if (state.messagesByChannel.has(channel.id)) state.messagesByChannel.set(channel.id, [...state.messagesByChannel.get(channel.id), message]); state.channelMessageCounts.delete(channel.id); refreshStorageEstimate(); button.textContent = "Saved to #tournament-brackets"; alert(missing ? `Saved locally. ${missing} photo thumbnail(s) were unavailable and shown as placeholders.` : "Bracket image saved locally to #tournament-brackets.");
+    } catch (error) { console.error("Could not save bracket image:", error); alert(error.message || "Could not save the bracket image. Your tournament and photos were not changed."); }
+    finally { state.savingTournamentBracket = false; button.disabled = false; if (button.textContent === "Creating bracket image…") button.textContent = oldText; }
+}
+
 function renderTournament() {
     const game = state.tournament;
     const serverId = getActiveServer()?.id;
-    if (game.serverId !== serverId) Object.assign(game, { screen: "setup", selected: [], round: [], nextRound: [], wins: {}, serverId, visibleLimit: 10 });
+    if (game.serverId !== serverId) Object.assign(game, { screen: "setup", selected: [], round: [], nextRound: [], wins: {}, serverId, visibleLimit: 10, sourceChannelId: "" });
     const page = document.createElement("section");
     page.className = "thisOrThatChannel";
     const intro = document.createElement("section");
     intro.className = "focusSessionIntro";
     page.appendChild(intro);
     if (game.screen === "setup") {
-        intro.innerHTML = "<h3>Photo Tournament</h3><p>Select 4, 8, 16, 32, or 64 local photos, or draw a random bracket from this server. Choose a winner in each matchup; only a completed tournament affects rankings.</p>";
-        const candidates = getThisOrThatCandidates();
+        intro.innerHTML = "<h3>Photo Tournament</h3><p>Select or randomly draw 4–256 local photos from this server or one channel. Choose a winner in each matchup; only a completed tournament affects rankings.</p>";
+        const allCandidates = getThisOrThatCandidates().filter((item) => shouldShowAttachment(item.attachment) && !getChannelById(item.ref.channelId)?.hidden && !getChannelCategory(item.ref.channelId)?.hidden);
+        const candidateChannels = new Set(allCandidates.map((item) => item.ref.channelId));
+        const availableChannels = allChannels(getActiveServer()).filter((channel) => candidateChannels.has(channel.id) && !channel.hidden && !getChannelCategory(channel.id)?.hidden);
+        if (game.sourceChannelId && !availableChannels.some((channel) => channel.id === game.sourceChannelId)) game.sourceChannelId = "";
+        const candidates = game.sourceChannelId ? allCandidates.filter((item) => item.ref.channelId === game.sourceChannelId) : allCandidates;
+        const sourceLabel = document.createElement("label"); sourceLabel.textContent = "Draw photos from"; const source = document.createElement("select"); source.setAttribute("aria-label", "Tournament photo source"); const all = document.createElement("option"); all.value = ""; all.textContent = "All visible channels"; source.appendChild(all); availableChannels.forEach((channel) => { const option = document.createElement("option"); option.value = channel.id; option.textContent = `#${channel.name}`; option.selected = channel.id === game.sourceChannelId; source.appendChild(option); }); source.addEventListener("change", () => { game.sourceChannelId = source.value; game.selected = []; game.visibleLimit = 10; renderMessages(); }); sourceLabel.appendChild(source);
         const size = document.createElement("select");
         size.setAttribute("aria-label", "Tournament size");
         TOURNAMENT_SIZES.forEach((count) => { const option = document.createElement("option"); option.value = String(count); option.textContent = `${count} photos`; option.selected = count === game.size; size.appendChild(option); });
@@ -3418,7 +5333,7 @@ function renderTournament() {
         thirdLabel.append(thirdInput, thirdText);
         const weighted = createWeightedGameControls(game, renderMessages);
         const weightedHelp = document.createElement("p"); weightedHelp.className = "gameWeightedHelp";
-        weightedHelp.textContent = "Special-pool photos replace randomly selected ordinary entrants and do not receive tournament ranking statistics. Their matchup history is still shown.";
+        weightedHelp.textContent = "Special-pool photos can come from their named channels even when a different source is selected. They replace ordinary entrants and do not receive tournament ranking statistics.";
         const status = document.createElement("p");
         status.textContent = `${game.selected.length} selected · ${candidates.length} photos available. With weighted pools, choose ordinary photos; special photos replace some of them.`;
         const gallery = document.createElement("div");
@@ -3442,22 +5357,21 @@ function renderTournament() {
         });
         const more = document.createElement("button"); more.type = "button"; more.textContent = "Show 10 more"; more.hidden = game.visibleLimit >= candidates.length;
         more.addEventListener("click", () => { game.visibleLimit += 10; renderMessages(); });
-        const random = document.createElement("button"); random.type = "button"; random.textContent = "Draw random photos"; random.disabled = candidates.length < game.size;
+        const random = document.createElement("button"); random.type = "button"; random.textContent = "Draw random photos"; const ordinaryAvailable = getGameOrdinaryCandidates(candidates, game.punishmentWeighted, game.censoredWeighted); const minimumSelected = Math.max(1, game.size - 3 * (Number(Boolean(game.punishmentWeighted)) + Number(Boolean(game.censoredWeighted)))); random.disabled = ordinaryAvailable.length < minimumSelected;
         random.addEventListener("click", () => { game.selected = shuffledCopy(getGameOrdinaryCandidates(candidates, game.punishmentWeighted, game.censoredWeighted)).slice(0, game.size).map((item) => structuredClone(item.ref)); renderMessages(); });
-        const minimumSelected = Math.max(1, game.size - 3 * (Number(Boolean(game.punishmentWeighted)) + Number(Boolean(game.censoredWeighted))));
         const start = document.createElement("button"); start.type = "button"; start.className = "adventurePrimary"; start.textContent = "Start tournament"; start.disabled = game.selected.length < minimumSelected || (!game.punishmentWeighted && !game.censoredWeighted && game.selected.length !== game.size);
         start.addEventListener("click", () => {
             try {
-                const selection = buildWeightedGameSelection(candidates, game.selected, game.size, game.punishmentWeighted, game.censoredWeighted);
+                const selection = buildWeightedGameSelection(allCandidates, game.selected, game.size, game.punishmentWeighted, game.censoredWeighted);
                 game.weightedEntries = selection.weightedEntries;
-                startTournamentBracket(selection.refs, game.seeded); renderMessages();
+                startTournamentBracket(selection.refs, game.seeded); renderMessages(); els.messages.scrollTop = 0;
             } catch (error) { alert(error.message); }
         });
-        page.append(size, seedLabel, thirdLabel, weighted, weightedHelp, status, gallery, more, random, start);
+        page.append(sourceLabel, size, seedLabel, thirdLabel, weighted, weightedHelp, status, gallery, more, random, start);
     } else if (game.screen === "bracket") {
         intro.innerHTML = game.matches.length
             ? "<h3>Tournament bracket</h3><p>Review the results and upcoming matches before continuing.</p>"
-            : "<h3>Tournament bracket</h3><p>Review the opening matchups before you start. Tap a photo name to expand it.</p>";
+            : `<h3>Tournament bracket</h3><p>Review the opening matchups before you start. ${game.bracketSeeding === "this-or-that" ? "Seed numbers follow This or That rankings; unranked photos are randomly ordered." : "Seed numbers are random."} Tap a thumbnail to expand it.</p>`;
         page.appendChild(renderTournamentBracket(game));
         const next = document.createElement("button"); next.type = "button"; next.className = "adventurePrimary";
         next.textContent = !game.matches.length ? "Start first round" : game.thirdPlacePending ? "Play third-place match" : game.round.length === 2 ? "Play the final" : "Start next round";
@@ -3490,6 +5404,8 @@ function renderTournament() {
         const champion = game.round[0];
         if (champion && findAttachment(champion)) page.appendChild(renderAdventurePlayerMedia(champion, "Tournament champion"));
         if (game.thirdPlaceWinner) { const third = document.createElement("p"); third.textContent = `Third place: ${tournamentPhotoName(game.thirdPlaceWinner)}`; page.appendChild(third); }
+        page.appendChild(renderTournamentBracket(game));
+        const saveBracket = document.createElement("button"); saveBracket.type = "button"; saveBracket.textContent = "Save bracket image to #tournament-brackets"; saveBracket.addEventListener("click", () => saveTournamentBracketPicture(game, saveBracket)); page.appendChild(saveBracket);
         const again = document.createElement("button"); again.type = "button"; again.textContent = "New tournament";
         again.addEventListener("click", () => { game.screen = "setup"; game.selected = []; renderMessages(); }); page.appendChild(again);
     }
@@ -3522,12 +5438,12 @@ async function chooseTournamentWinner(ref) {
             const weightedKeys = new Set((game.weightedEntries || []).map((item) => photoRefKey(item.ref)));
             const entrants = game.selected.map((item) => ({ ref: structuredClone(item), wins: wins[photoRefKey(item)] || 0 }));
             game.pendingRecordId ||= newLocalGameRecordId();
-            const entry = { id: game.pendingRecordId, serverId: game.serverId, at: new Date().toISOString(), champion: structuredClone(ref), thirdPlaceEnabled: Boolean(game.thirdPlaceEnabled), thirdPlaceWinner: game.thirdPlaceWinner ? structuredClone(game.thirdPlaceWinner) : null, entrants, entries: entrants.filter((item) => !weightedKeys.has(photoRefKey(item.ref))), weightedEntries: structuredClone(game.weightedEntries || []), seeding: game.bracketSeeding, initialBracket: structuredClone(game.initialBracket), matches: [...game.matches, match] };
+            const entry = { id: game.pendingRecordId, serverId: game.serverId, at: new Date().toISOString(), champion: structuredClone(ref), thirdPlaceEnabled: Boolean(game.thirdPlaceEnabled), thirdPlaceWinner: game.thirdPlaceWinner ? structuredClone(game.thirdPlaceWinner) : null, entrants, entries: entrants.filter((item) => !weightedKeys.has(photoRefKey(item.ref))), weightedEntries: structuredClone(game.weightedEntries || []), seeding: game.bracketSeeding, seeds: structuredClone(game.seeds || []), initialBracket: structuredClone(game.initialBracket), matches: [...game.matches, match] };
             const previous = state.structure.settings.tournamentHistory || [];
             const nextHistory = [...previous.filter((item) => item.id !== entry.id), entry];
             await saveStructure({ ...state.structure, settings: { ...state.structure.settings, tournamentHistory: nextHistory } });
             state.structure.settings.tournamentHistory = nextHistory;
-            game.wins = wins; game.round = [ref]; game.screen = "finished"; game.saveError = "";
+            game.wins = wins; game.matches.push(match); game.round = [ref]; game.screen = "finished"; game.saveError = "";
         } catch (error) {
             console.error("Could not save tournament result:", error);
             game.saveError = localGameSaveError(error);
@@ -3547,6 +5463,7 @@ async function chooseTournamentWinner(ref) {
         game.screen = "bracket";
     }
     renderMessages();
+    if (game.screen === "bracket") els.messages.scrollTop = 0;
 }
 
 function renderTournamentRankings() {
@@ -3600,6 +5517,7 @@ function renderTournamentHistory(page) {
         const summary = document.createElement("summary"); summary.textContent = "View bracket and results"; detail.appendChild(summary);
         if (Array.isArray(entry.matches) && entry.matches.length) {
             const seeding = document.createElement("p"); seeding.textContent = entry.seeding === "this-or-that" ? "Seeded using This or That rankings." : "Random bracket."; detail.appendChild(seeding);
+            if (Array.isArray(entry.initialBracket) && entry.initialBracket.length) { let loaded = false; detail.addEventListener("toggle", () => { if (detail.open && !loaded) { loaded = true; detail.insertBefore(renderTournamentBracket(entry), seeding.nextSibling); } }); }
             entry.matches.forEach((match) => {
                 const line = document.createElement("p");
                 const contestants = (match.participants || []).map(tournamentPhotoName).join(" vs ");
@@ -3616,7 +5534,7 @@ function renderTournamentHistory(page) {
             try { await rematchTournament(entry); } catch (error) { console.error("Could not start tournament rematch:", error); alert("Could not load the original photos for this rematch."); }
             finally { rematch.disabled = false; }
         });
-        card.append(title, champion, detail, rematch); page.appendChild(card);
+        card.append(title, champion, detail, rematch); if (Array.isArray(entry.initialBracket) && entry.initialBracket.length && Array.isArray(entry.matches) && entry.matches.length) { const save = document.createElement("button"); save.textContent = "Save bracket image"; save.addEventListener("click", () => saveTournamentBracketPicture(entry, save)); card.appendChild(save); } page.appendChild(card);
     });
     if (history.length > state.tournamentHistoryLimit) {
         const more = document.createElement("button"); more.type = "button"; more.textContent = `Show 5 more (${history.length - state.tournamentHistoryLimit} remaining)`;
@@ -8166,6 +10084,13 @@ function getChannelQuizPunishmentRef(settings) {
     return randomItem(candidates);
 }
 
+function renderGameActivityStats() {
+    const serverId = getActiveServer()?.id, settings = state.structure.settings, tournaments = (settings.tournamentHistory || []).filter((item) => item.serverId === serverId), choices = (settings.thisOrThatHistory || []).filter((item) => (item.serverId || getChannelServer(item.winner?.channelId)?.id) === serverId), sales = getAuctionHistory().filter((item) => item.ownerId), trades = getAuctionTrades().filter((item) => item.status === "accepted"), dinners = (settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId), exhibitions = (settings.auctionExhibitionHistory || []).filter((item) => item.serverId === serverId), quiz = settings.channelQuizHighScores?.[serverId];
+    const section = document.createElement("section"); section.className = "statsSection"; const heading = document.createElement("h3"); heading.textContent = "Game activity"; const help = document.createElement("p"); help.textContent = "Based on records kept on this device. Personality-hosted games are unranked and excluded. Older games without recorded details are not inferred; This or That counts reflect the retained history."; section.append(heading, help);
+    const metrics = [["Completed tournaments", tournaments.length], ["Recorded tournament matches", tournaments.reduce((sum, item) => sum + (Array.isArray(item.matches) ? item.matches.length : 0), 0)], ["Different tournament champions", new Set(tournaments.filter((item) => item.champion).map((item) => photoRefKey(item.champion))).size], ["Largest tournament", tournaments.reduce((max, item) => Math.max(max, (item.entrants || item.entries || []).length), 0)], ["Stored This or That rounds", choices.length], ["Photos compared", new Set(choices.flatMap((item) => [item.winner, item.loser]).filter(Boolean).map(photoRefKey)).size], ["Channel quiz best correct", Number(quiz?.bestCorrect) || 0], ["Channel quiz answers in best run", Number(quiz?.bestRounds) || 0], ["Auction sales", sales.length], ["Auction sale total", `$${sales.reduce((sum, item) => sum + (Number(item.price) || 0), 0)}`], ["Accepted trades", trades.length], ["Completed dinners", dinners.length], ["Exhibition winners chosen", exhibitions.length]];
+    const grid = document.createElement("div"); grid.className = "statsMetricGrid"; metrics.forEach(([label, value]) => { const card = document.createElement("div"); card.className = "statsMetric"; const number = document.createElement("strong"); number.textContent = String(value); const caption = document.createElement("span"); caption.textContent = label; card.append(number, caption); grid.appendChild(card); }); section.appendChild(grid); return section;
+}
+
 function renderStatsPage() {
     const stats = getWorkspaceStats();
     const page = document.createElement("section");
@@ -8188,7 +10113,10 @@ function renderStatsPage() {
         ["Favorite photos", stats.favorites],
         ["Completed drafts", stats.draftInsights.drafts],
         ["Permanent exhibits", stats.exhibitInsights.exhibits],
-        ["Exhibit placements", stats.exhibitInsights.placements]
+        ["Exhibit placements", stats.exhibitInsights.placements],
+        ["Auction rounds", getAuctionHistory().length],
+        ["Auction sales", getAuctionHistory().filter((round) => round.ownerId).length],
+        ["John's auction wins", getAuctionHistory().filter((round) => round.ownerId === "john").length]
     ].forEach(([label, value]) => {
         const card = document.createElement("div");
         card.className = "statsMetric";
@@ -8279,7 +10207,7 @@ function renderStatsPage() {
         });
         tagSection.appendChild(tags);
     }
-    page.append(intro, metricGrid, reactionSection, channelSection, tagSection, renderImageDraftStats(stats.draftInsights), renderExhibitStats(stats.exhibitInsights), renderReactionTimingStats(stats.reactionInsights));
+    page.append(intro, metricGrid, renderGameActivityStats(), reactionSection, channelSection, tagSection, renderImageDraftStats(stats.draftInsights), renderExhibitStats(stats.exhibitInsights), renderReactionTimingStats(stats.reactionInsights));
     els.messages.appendChild(page);
 }
 
@@ -8555,6 +10483,47 @@ function renderSettingsPage() {
     intro.innerHTML = `<h3>${escapeHTML(server?.name || "Workspace")}</h3><p>Organize channels under categories. Everything is saved in this browser on this device.</p>`;
     page.appendChild(intro);
     page.appendChild(renderAppearanceSettings());
+
+    const auctionSettings = document.createElement("section"); auctionSettings.className = "settingsCategory";
+    const auctionTitle = document.createElement("h4"); auctionTitle.textContent = "Auction settings";
+    const ownerLabel = document.createElement("label"); const ownerToggle = document.createElement("input"); ownerToggle.type = "checkbox"; ownerToggle.checked = state.structure.settings.showAuctionOwners !== false;
+    ownerLabel.append(ownerToggle, document.createTextNode(" Show owner name and color trim on auction-owned photos"));
+    ownerToggle.addEventListener("change", async () => {
+        const value = ownerToggle.checked; ownerToggle.disabled = true;
+        try { await saveAuctionChanges({ showAuctionOwners: value }); }
+        catch (error) { console.error(error); ownerToggle.checked = !value; alert("Could not save this setting locally."); }
+        finally { ownerToggle.disabled = false; }
+    });
+    const tradeLabel = document.createElement("label"); const tradeToggle = document.createElement("input"); tradeToggle.type = "checkbox"; tradeToggle.checked = Boolean(state.structure.settings.allowAuctionBotTrades);
+    tradeLabel.append(tradeToggle, document.createTextNode(" Allow suggested trades between bidders (always requires your approval)"));
+    tradeToggle.addEventListener("change", async () => { const value = tradeToggle.checked; tradeToggle.disabled = true; try { await saveAuctionChanges({ allowAuctionBotTrades: value }); } catch (error) { console.error(error); tradeToggle.checked = !value; alert("Could not save this setting locally."); } finally { tradeToggle.disabled = false; } });
+    const consignmentSection = document.createElement("details"), consignmentSummary = document.createElement("summary"); consignmentSummary.textContent = "Consignment auctions"; consignmentSection.appendChild(consignmentSummary); const consignmentSettings = getAuctionConsignmentSettings(), consignmentLabel = document.createElement("label"), consignmentToggle = document.createElement("input"); consignmentToggle.type = "checkbox"; consignmentToggle.checked = consignmentSettings.enabled; consignmentLabel.append(consignmentToggle, document.createTextNode(" Enable consignment auctions")); const consignmentFeeLabel = document.createElement("label"); consignmentFeeLabel.textContent = "Auction-house fee (0–100%)"; const consignmentFee = document.createElement("input"); consignmentFee.type = "number"; consignmentFee.min = "0"; consignmentFee.max = "100"; consignmentFee.step = "1"; consignmentFee.inputMode = "numeric"; consignmentFee.value = String(consignmentSettings.feePercent); consignmentFeeLabel.appendChild(consignmentFee); const consignmentSave = document.createElement("button"); consignmentSave.type = "button"; consignmentSave.textContent = "Save consignment settings"; const consignmentHelp = document.createElement("p"); consignmentHelp.textContent = "Off by default. List owned photos from each roster, then choose a consignment auction in setup. Sellers receive the sale price minus this fee; the seller cannot bid on their own lot. Unsold photos stay owned. Existing listings and auctions are not deleted when disabled; an auction already underway keeps its original terms."; consignmentSection.append(consignmentLabel, consignmentFeeLabel, consignmentSave, consignmentHelp); consignmentSave.addEventListener("click", async () => { const fee = Number(consignmentFee.value); if (!consignmentFee.value.trim() || !Number.isInteger(fee) || fee < 0 || fee > 100) { alert("Choose a whole-number fee from 0 to 100 percent."); return; } consignmentSave.disabled = true; try { await saveAuctionChanges({ auctionConsignment: { enabled: consignmentToggle.checked, feePercent: fee } }); consignmentSave.textContent = "Saved locally"; } catch (error) { console.error(error); alert("Could not save consignment settings."); } finally { consignmentSave.disabled = false; } });
+    const economy = getAuctionEconomy(), economyFields = document.createElement("div"); economyFields.className = "blindAuctionSetup";
+    const economyField = (labelText, value, max) => { const label = document.createElement("label"); label.textContent = labelText; const input = document.createElement("input"); input.type = "number"; input.min = "0"; input.max = String(max); input.step = "1"; input.inputMode = "numeric"; input.value = String(value); label.appendChild(input); economyFields.appendChild(label); return input; };
+    const grantInput = economyField("Grant per auction ($)", economy.grant, 10000);
+    const carryInput = economyField("Unspent money carried over (%)", economy.carryPercent, 100);
+    const bonusInput = economyField("New bidder bonus above average ($)", economy.newBidderBonus, 10000);
+    const economyHelp = document.createElement("p"); economyHelp.textContent = "Existing participants receive the grant plus their carried-over unspent money. New bidders start at the participating players’ average starting balance plus the bonus. Fractions of a dollar are rounded down.";
+    const economySave = document.createElement("button"); economySave.type = "button"; economySave.textContent = "Save auction economy";
+    economySave.addEventListener("click", async () => { const fields = [grantInput, carryInput, bonusInput], values = fields.map((input) => Number(input.value)); if (fields.some((input) => !input.value.trim()) || values.some((value, i) => !Number.isInteger(value) || value < 0 || value > (i === 1 ? 100 : 10000))) { alert("Enter whole numbers from 0–100% for carryover and 0–10,000 for dollar amounts."); return; } economySave.disabled = true; try { await saveAuctionChanges({ auctionEconomy: { grant: values[0], carryPercent: values[1], newBidderBonus: values[2] } }); economySave.textContent = "Saved locally"; } catch (error) { console.error(error); alert("Could not save auction settings."); } finally { economySave.disabled = false; } });
+    const personalityHeading = document.createElement("h4"); personalityHeading.textContent = "Bidder personalities and events";
+    const personalityOptions = document.createElement("div"); personalityOptions.className = "auctionPersonalityOptions";
+    [["tastes", "Use and evolve personal tastes"], ["goals", "Use collection goals"], ["moneyHabits", "Use individual money habits"], ["moods", "Occasional temporary moods"], ["specialFormats", "Occasional special auction formats"], ["wishlists", "Bidder wishlists influence bids"], ["dialogue", "Flirty dialogue for auction photos and profiles"], ["eventReactions", "Occasional flirty reactions to close bids"], ["punishmentFavorites", "Enable personality punishment-photo favorites and interactions"], ["dinnerGuests", "Allow occasional invited dinner guests"], ["dinnerJealousy", "Dinner jealousy dialogue"], ["relationshipInfluence", "Relationships influence bids and trade decisions"]].forEach(([key, text]) => {
+        const label = document.createElement("label"), input = document.createElement("input"); input.type = "checkbox"; input.checked = Boolean(getAuctionPersonalitySettings()[key]);
+        input.addEventListener("change", async () => { const value = input.checked; input.disabled = true; try { await saveAuctionChanges({ auctionPersonalitySettings: { ...getAuctionPersonalitySettings(), [key]: value } }); } catch (error) { console.error(error); input.checked = !value; alert("Could not save this setting locally."); } finally { input.disabled = false; } });
+        label.append(input, document.createTextNode(` ${text}`)); personalityOptions.appendChild(label);
+    });
+    const personalityHelp = document.createElement("p"); personalityHelp.textContent = "These are local programmed characters. Disabling relationship influence stops its effect on bids and trade decisions, but history continues to be recorded and existing relationships still determine guest eligibility. Turning features off preserves saved history. Bidder-to-bidder trades always need your approval.";
+    const director = document.createElement("details"), directorSummary = document.createElement("summary"); directorSummary.textContent = "Personality director"; director.appendChild(directorSummary); const directorIntro = document.createElement("p"); directorIntro.textContent = "Control the existing personality features in one place. Changes apply locally; future random events use the selected frequency. Nothing runs while the app is closed."; director.append(directorIntro, tradeLabel, personalityOptions);
+    const directorFields = document.createElement("div"); directorFields.className = "blindAuctionSetup";
+    const directorSelect = (key, labelText, choices) => { const label = document.createElement("label"), select = document.createElement("select"); label.textContent = labelText; choices.forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = getAuctionPersonalitySettings()[key] === value; select.appendChild(option); }); select.addEventListener("change", async () => { const before = getAuctionPersonalitySettings()[key], value = select.value; select.disabled = true; try { await saveAuctionChanges({ auctionPersonalitySettings: { ...getAuctionPersonalitySettings(), [key]: value } }); } catch (error) { console.error(error); select.value = before; alert("Could not save this setting locally."); } finally { select.disabled = false; } }); label.appendChild(select); directorFields.appendChild(label); };
+    directorSelect("eventFrequency", "Random event frequency", [["low", "Less often"], ["normal", "Normal"], ["high", "More often"]]); directorSelect("dialogueFrequency", "Auction and dinner photo dialogue", [["sparse", "Less often"], ["normal", "Every photo"]]); director.appendChild(directorFields); director.appendChild(personalityHelp);
+    const explain = document.createElement("details"), explainSummary = document.createElement("summary"), explainText = document.createElement("p"); explainSummary.textContent = "Why do these things happen?"; explainText.textContent = "Special auction formats, temporary moods, close-bid reactions, and dinner guests are random; the frequency control changes their chances. A guest also needs a positive trade relationship and owned photos. Jealousy refers to the most recent completed dinner in this server. Shared bids build rivalry and accepted trades build trust; the relationship map shows the underlying events and adjustments."; explain.append(explainSummary, explainText); director.appendChild(explain);
+    const resetSection = document.createElement("details"); resetSection.className = "auctionManualReset"; const resetSummary = document.createElement("summary"); resetSummary.textContent = "Advanced: reset auction data"; resetSection.appendChild(resetSummary);
+    const resetHelp = document.createElement("p"); resetHelp.textContent = "Nothing resets automatically. The button below releases auction-owned photos, clears auction balances and unfinished auction sessions across all workspaces, and expires pending trades. Original photos, notes, profiles, completed history and scrapbook entries remain. This cannot be undone without a backup."; resetSection.appendChild(resetHelp);
+    const resetButton = document.createElement("button"); resetButton.type = "button"; resetButton.textContent = "Reset auctions in all workspaces…";
+    resetButton.addEventListener("click", async () => { if (!confirm("Reset auction data in ALL workspaces? This releases all auction ownership, clears balances and unfinished auctions, and expires pending trades. Original photos, profiles and completed history remain. Restore from a backup to undo.")) return; resetButton.disabled = true; try { if (await resetAllAuctionData()) { resetButton.textContent = "Auction data reset"; renderChannels(); } } catch (error) { console.error("Could not reset auctions:", error); alert("The reset could not be saved. Auction data was not changed."); } finally { resetButton.disabled = false; } }); resetSection.appendChild(resetButton);
+    auctionSettings.append(auctionTitle, ownerLabel, economyFields, economyHelp, economySave, consignmentSection, personalityHeading, director, resetSection); page.appendChild(auctionSettings);
 
     const backup = document.createElement("section");
     backup.className = "settingsCategory";
@@ -12401,6 +14370,7 @@ function renderAttachments(attachments, message, channelId) {
                 openPhotoActionSheet({ message, attachment, channelId, viewerItems, alt: image.alt });
             });
             figure.append(image, caption, noteButton, collectionButton, moreButton);
+            addAuctionOwnerBadge(figure, ref);
             bindPhotoQuickActions(figure, { message, attachment, channelId, viewerItems, alt: image.alt });
             figure.addEventListener("click", (event) => {
                 if (figure.dataset.longPressHandled === "1") {
@@ -14597,6 +16567,19 @@ function getCurrentMobileStage() {
 
 function isMobileLayout() {
     return window.matchMedia("(max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse)").matches;
+}
+
+function handleResponsiveLayoutChange() {
+    const isMobile = isMobileLayout();
+
+    // A live resize or rotation from the three-column layout starts at the
+    // left edge of the mobile scroller. Keep the selected notes view in sight.
+    if (isMobile && !state.wasMobileLayout) {
+        showMobileStage(state.activeView.type ? "chat" : "sidebar", "auto");
+    }
+
+    state.wasMobileLayout = isMobile;
+    updateMobileStageNav();
 }
 
 function debounce(callback, delay) {
