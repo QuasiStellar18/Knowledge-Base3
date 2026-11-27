@@ -76,7 +76,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "150";
+const APP_BUILD_VERSION = "156";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
@@ -1608,6 +1608,7 @@ function renderHeader() {
 }
 
 function renderMessages() {
+    if (state.activeView.type !== "blindAuction" && state.blindAuction.screen === "play" && auctionPacingDelay()) { cancelAuctionAutoTurn(); state.blindAuction.autoPacingPaused = true; }
     document.body.classList.toggle("personalityGameOpen", state.activeView.type === "personalityGames");
     document.body.classList.toggle("auctionViewOpen", ["blindAuction", "auctionSettings", "auctionOwner", "auctionExhibition", "auctionSeasons", "auctionDinner", "auctionCompare", "auctionScrapbook", "relationshipMap", "personalityGames", "punishmentChallenge"].includes(state.activeView.type));
     releaseRenderedObjectUrls();
@@ -3795,9 +3796,33 @@ const AUCTION_SCRIPTED_LABELS = {
     dinner_start: "Dinner · welcome", dinner_end: "Dinner · farewell", dinner_end_guest: "Dinner · farewell with guest", dinner_invitation: "Dinner · guest invitation", dinner_photo_choice: "Dinner · photo selection",
     milestone_goal: "Milestone · collection goal", milestone_contest: "Milestone · close contest"
 };
+const AUCTION_PHOTO_NAMES = ["Aria", "Belle", "Cleo", "Dahlia", "Eden", "Faye", "Gia", "Hazel", "Iris", "Jade", "Luna", "Mila", "Nina", "Opal", "Pearl", "Rose", "Sienna", "Violet", "Willow", "Zara"];
+const AUCTION_PHOTO_DIALOGUE = [
+    "Go on, take another look. I think you and I could become very well acquainted.",
+    "I'm hoping you'll choose me, darling. I promise I'll be worth your attention.",
+    "Come a little closer. I want to see how long you can resist me.",
+    "You've caught my eye too. Are you going to let someone else take me home?",
+    "I like the way you look at me. Don't stop just yet.",
+    "Make me yours and I'll give you something lovely to remember.",
+    "I can be a delicious distraction, if you're willing to indulge me.",
+    "I'm waiting for your next move. Make it a tempting one.",
+    "I have a feeling we'd have a wonderful time together. Shall we find out?",
+    "Keep your eyes on me, gorgeous. I rather enjoy having your attention.",
+    "I was hoping you'd notice me. Now that you have, what will you do?",
+    "A little competition can be irresistible. Show me how much you want me.",
+    "Take your time, darling. I can make the anticipation very enjoyable.",
+    "I saved my most captivating look for you. Did it work?",
+    "I could be your favorite little temptation. All you have to do is bid.",
+    "Don't be shy. I'd love to know exactly what you're thinking.",
+    "I think we both know you want another moment alone with me.",
+    "You make me feel rather irresistible. Would you like to keep me close?",
+    "I might look innocent, but I have a talent for keeping you curious.",
+    "Give me your attention tonight, and I might just become your favorite."
+];
 function getDefaultAuctionDialoguePools() {
     return [
         { id: "auction", label: "Auction lots and profile talk", lines: AUCTION_FLIRTY_DIALOGUE },
+        { id: "auction_photo", label: "Auction photo · speaking for itself", lines: AUCTION_PHOTO_DIALOGUE, hint: "Use {name} for the photo's randomly assigned name." },
         { id: "reaction", label: "Close-bid reactions", lines: AUCTION_REACTION_DIALOGUE },
         { id: "dinner", label: "Dinner slideshow · general", lines: [...AUCTION_DINNER_DIALOGUE, ...getCustomAuctionDinnerDialogue()] },
         ...["romantic", "playful", "competitive", "mysterious"].map((key) => ({ id: `dinner_${key}`, label: `Dinner slideshow · ${key}`, lines: AUCTION_DINNER_THEMES[key] })),
@@ -3837,6 +3862,13 @@ function currentAuctionDialogue(game) {
     const hash = [...`${game.auctionId || "auction"}:${game.index}`].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 17);
     const lines = getAuctionDialoguePool("auction", AUCTION_FLIRTY_DIALOGUE); return { bidderId: game.bidders[hash % game.bidders.length].id, text: lines[hash % lines.length] };
 }
+function currentAuctionPhotoDialogue(game) {
+    if (!getAuctionPersonalitySettings().dialogue) return null;
+    const hash = [...`${game.auctionId || "auction"}:${game.index}:photo`].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 17);
+    const lines = getAuctionDialoguePool("auction_photo", AUCTION_PHOTO_DIALOGUE);
+    const name = AUCTION_PHOTO_NAMES[hash % AUCTION_PHOTO_NAMES.length];
+    return { name, text: lines[Math.floor(hash / AUCTION_PHOTO_NAMES.length) % lines.length].split("{name}").join(name) };
+}
 function getAuctionBalances(serverId = getActiveServer()?.id) {
     const saved = state.structure.settings.auctionBalances?.[serverId];
     return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
@@ -3868,8 +3900,10 @@ async function resumeSavedAuction(serverId) {
     const bidders = session.bidders.map((bidder) => current.get(bidder.id) || bidder);
     await ensureAuctionPhotoRefsLoaded([...session.sequence, ...bidders.map((bidder) => bidder.avatarRef).filter(Boolean)]);
     if (getActiveServer()?.id !== serverId || state.activeView.type !== "blindAuction") return;
-    const restoredLot = session.biddingMode === "open" && session.openLot ? (session.bidRulesVersion === 2 ? structuredClone(session.openLot) : migrateOpenAuctionPasses(session.openLot)) : null;
-    Object.assign(state.blindAuction, structuredClone(session), { bidders, saving: false, visibleLimit: 10, slideshow: null, biddingMode: session.biddingMode === "open" ? "open" : "sealed", bidRulesVersion: 2, openLot: restoredLot,
+    // Retain the currently active and passed bidders in an existing session; the new
+    // permanent-pass rule takes effect from the next turn, without changing past bids.
+    const restoredLot = session.biddingMode === "open" && session.openLot ? structuredClone(session.openLot) : null;
+    Object.assign(state.blindAuction, structuredClone(session), { bidders, saving: false, visibleLimit: 10, slideshow: null, biddingMode: session.biddingMode === "open" ? "open" : "sealed", bidRulesVersion: 3, openLot: restoredLot, autoPacingPaused: true,
         auctionFormat: session.auctionFormat || { type: "standard" }, moods: session.moods || {}, dialogue: session.dialogue || null,
         dialogueCount: session.dialogueCount || 0, lastDialogueRound: Number.isInteger(session.lastDialogueRound) ? session.lastDialogueRound : -10 });
     renderMessages();
@@ -4298,14 +4332,6 @@ function createOpenAuctionLot(game) {
     game.bidders.filter((bidder) => bidder.id !== seller).forEach((bidder) => { const explanation = {}; caps[bidder.id] = auctionBotBid(bidder, game.balances[bidder.id], game.sequence.length - game.index, quality, order.filter((id) => id !== bidder.id), ref, game.moods?.[bidder.id], explanation); explanations[bidder.id] = { ...explanation, ranked, minimum, available: Boolean(findAttachment(ref)) }; });
     return { index: game.index, order, turnIndex: 0, passed: [], highBid: 0, highBidder: null, events: [], caps, explanations, minimum };
 }
-function migrateOpenAuctionPasses(original) {
-    const lot = structuredClone(original); let passed = [];
-    for (const event of lot.events || []) { if (event.action === "bid") passed = []; else if (event.action === "pass" && !passed.includes(event.id)) passed.push(event.id); }
-    lot.passed = passed;
-    const last = lot.events?.[lot.events.length - 1], lastIndex = last ? lot.order.indexOf(last.id) : -1;
-    if (lastIndex >= 0) for (let offset = 1; offset <= lot.order.length; offset++) { const index = (lastIndex + offset) % lot.order.length, id = lot.order[index]; if (id !== lot.highBidder && !passed.includes(id)) { lot.turnIndex = index; break; } }
-    return lot;
-}
 function applyOpenAuctionTurn(game, original, amount) {
     const lot = structuredClone(original), actor = lot.order[lot.turnIndex];
     if (!actor || lot.passed.includes(actor) || actor === lot.highBidder) throw new Error("This bidding turn is no longer available.");
@@ -4313,22 +4339,71 @@ function applyOpenAuctionTurn(game, original, amount) {
     if (actor === "john") {
         if (!Number.isInteger(amount) || amount < 0 || (amount > 0 && (!available || amount < required || amount > game.remaining))) throw new Error(`Enter a whole-number bid from ${required} to ${game.remaining}, or pass.`);
     } else { const cap = Number(lot.caps[actor]) || 0; amount = available && cap >= required ? Math.min(cap, required + (required >= 10 ? Math.max(1, Math.floor(required * .08)) : 0)) : 0; }
-    if (amount > 0) { lot.highBid = amount; lot.highBidder = actor; lot.passed = []; lot.events.push({ id: actor, action: "bid", amount }); }
+    if (amount > 0) { lot.highBid = amount; lot.highBidder = actor; lot.events.push({ id: actor, action: "bid", amount }); }
     else { lot.passed.push(actor); lot.events.push({ id: actor, action: "pass", amount: 0 }); }
     const remaining = lot.order.filter((id) => !lot.passed.includes(id));
     const finished = lot.highBidder ? remaining.every((id) => id === lot.highBidder) : remaining.length === 0;
     if (!finished) { for (let offset = 1; offset <= lot.order.length; offset++) { const next = (lot.turnIndex + offset) % lot.order.length, id = lot.order[next]; if (!lot.passed.includes(id) && id !== lot.highBidder) { lot.turnIndex = next; break; } } }
     return { lot, finished };
 }
+let auctionAutoTurnTimer = null, auctionAutoTurnLot = null;
+function cancelAuctionAutoTurn() { if (auctionAutoTurnTimer !== null) window.clearTimeout(auctionAutoTurnTimer); auctionAutoTurnTimer = null; auctionAutoTurnLot = null; }
+function auctionPacingDelay() { const delay = Number(state.structure.settings.auctionPacingDelay); return [1500, 3000, 5000].includes(delay) ? delay : 0; }
+function scheduleAuctionAutoTurn(game) {
+    const delay = auctionPacingDelay(), lot = game.openLot;
+    const eligible = delay && !game.autoPacingPaused && !game.autoPacingSettingBusy && !game.saving && game.screen === "play" && game.biddingMode === "open" && lot && lot.order[lot.turnIndex] !== "john" && state.isUnlocked && state.activeView.type === "blindAuction" && getActiveServer()?.id === game.serverId && document.visibilityState === "visible";
+    if (!eligible) { cancelAuctionAutoTurn(); return; }
+    if (auctionAutoTurnTimer !== null && auctionAutoTurnLot === lot) return;
+    cancelAuctionAutoTurn(); auctionAutoTurnLot = lot;
+    const index = game.index, turn = lot.turnIndex;
+    auctionAutoTurnTimer = window.setTimeout(() => {
+        auctionAutoTurnTimer = null; auctionAutoTurnLot = null;
+        if (state.blindAuction === game && game.openLot === lot && !game.saving && !game.autoPacingPaused && auctionPacingDelay() && state.isUnlocked && state.activeView.type === "blindAuction" && getActiveServer()?.id === game.serverId && document.visibilityState === "visible") void advanceOpenAuctionTurn(null, index, turn);
+    }, delay);
+}
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" && state.blindAuction.screen === "play" && auctionPacingDelay()) { cancelAuctionAutoTurn(); state.blindAuction.autoPacingPaused = true; }
+    else if (document.visibilityState === "visible" && state.activeView.type === "blindAuction" && state.blindAuction.autoPacingPaused) renderMessages();
+});
+function renderAuctionTurnInPlace() {
+    const scrollTop = els.messages.scrollTop;
+    const windowX = window.scrollX, windowY = window.scrollY;
+    const oldControls = els.messages.querySelector(".blindAuctionControls");
+    const oldTop = oldControls?.getBoundingClientRect().top;
+    renderMessages();
+    els.messages.scrollTop = scrollTop;
+    window.scrollTo(windowX, windowY);
+    const newControls = els.messages.querySelector(".blindAuctionControls");
+    if (newControls && Number.isFinite(oldTop)) {
+        els.messages.scrollTop += newControls.getBoundingClientRect().top - oldTop;
+        window.scrollBy(0, newControls.getBoundingClientRect().top - oldTop);
+    }
+}
+function renderAuctionBidderStatus(game, lot, sellerId) {
+    const strip = document.createElement("div"); strip.className = "auctionBidderStrip";
+    strip.setAttribute("aria-label", "Bidder status");
+    const people = [{ id: "john", name: "John" }, ...(game.bidders || [])];
+    people.forEach((person) => {
+        const card = document.createElement("div"), active = lot.order[lot.turnIndex] === person.id;
+        const role = person.id === sellerId ? "Seller" : lot.passed.includes(person.id) ? "Out" : lot.highBidder === person.id ? "Leading" : active ? "Up next" : "Bidding";
+        card.className = `auctionBidderChip${role === "Out" ? " isOut" : ""}${role === "Leading" ? " isLeading" : ""}${active ? " isActive" : ""}`;
+        if (person.id === "john") { const avatar = document.createElement("span"); avatar.className = "auctionBidderInitial"; avatar.textContent = "J"; avatar.setAttribute("aria-hidden", "true"); card.appendChild(avatar); }
+        else card.appendChild(auctionProfilePhoto(person.avatarRef, person.name));
+        const info = document.createElement("span"), name = document.createElement("strong"), status = document.createElement("small");
+        name.textContent = person.name; status.textContent = role; info.append(name, status); card.appendChild(info); strip.appendChild(card);
+    });
+    return strip;
+}
 async function advanceOpenAuctionTurn(amount, expectedIndex, expectedTurn) {
     const game = state.blindAuction, original = game.openLot;
     if (game.saving || game.screen !== "play" || game.index !== expectedIndex || !original || original.turnIndex !== expectedTurn) return;
+    cancelAuctionAutoTurn();
     let next; try { next = applyOpenAuctionTurn(game, original, amount); } catch (error) { alert(error.message); return; }
     if (next.finished) { const johnBid = Math.max(0, ...next.lot.events.filter((event) => event.id === "john" && event.action === "bid").map((event) => event.amount)); await resolveAuctionBid(johnBid, expectedIndex, next.lot); return; }
-    const serverId = game.serverId; game.saving = true; renderMessages();
+    const serverId = game.serverId; game.saving = true; renderAuctionTurnInPlace();
     try { const sessions = { ...(state.structure.settings.auctionSessions || {}), [serverId]: snapshotAuctionSession(game, { openLot: next.lot }) }; await saveAuctionChanges({ auctionSessions: sessions }); if (game.serverId === serverId && game.index === expectedIndex && game.openLot === original) game.openLot = next.lot; }
-    catch (error) { console.error("Could not save bidding turn:", error); alert(auctionSaveErrorMessage(error)); }
-    finally { game.saving = false; if (state.activeView.type === "blindAuction" && game.serverId === serverId) renderMessages(); }
+    catch (error) { game.autoPacingPaused = true; console.error("Could not save bidding turn:", error); alert(auctionSaveErrorMessage(error)); }
+    finally { game.saving = false; if (state.activeView.type === "blindAuction" && game.serverId === serverId) renderAuctionTurnInPlace(); }
 }
 
 async function resolveAuctionBid(amount, expectedIndex, openLot = null) {
@@ -4377,7 +4452,7 @@ async function resolveAuctionBid(amount, expectedIndex, openLot = null) {
         await saveAuctionChanges(changes);
         game.remaining = balances.john; game.balances = nextBalances; game.results = nextResults; game.index = nextIndex; game.bidders = nextBidders; game.dialogue = shownDialogue; game.openLot = null; game.screen = "reveal";
         renderChannels();
-    } catch (error) { console.error("Could not save auction round:", error); alert("The round could not be saved locally. No bid was charged; please try again."); }
+    } catch (error) { game.autoPacingPaused = true; console.error("Could not save auction round:", error); alert("The round could not be saved locally. No bid was charged; please try again."); }
     finally { game.saving = false; if (state.activeView.type === "blindAuction") { renderMessages(); if (game.screen === "reveal") revealAuctionStage(); } }
 }
 
@@ -4549,6 +4624,7 @@ function renderPersonalityGames() {
     } else if (game.screen === "finished") { const heading = document.createElement("h4"); heading.textContent = "Tournament winner · unranked"; page.appendChild(heading); if (game.winner) page.appendChild(auctionImageCard(game.winner, "Your winner")); }
     else {
         const hostLine = document.createElement("p"); hostLine.className = "auctionDialogue"; hostLine.textContent = `${game.host.name}: “${scriptedAuctionDialogue(game.mode === "quiz" ? "game_quiz_prompt" : game.mode === "thisOrThat" ? "game_choice_prompt" : "game_tournament_prompt", `${game.host.id}:${game.rounds}`)}”`; page.appendChild(hostLine);
+        playPersonalityDialogueAudio(game.host.id, `game:${game.host.id}:${game.mode}:${game.rounds}:${game.feedback || "prompt"}`);
         const counter = document.createElement("p"); counter.textContent = game.mode === "quiz" ? `Session only: ${game.score}/${game.rounds} correct` : game.mode === "tournament" ? `Round of ${game.round.length} · match ${Math.floor(game.matchIndex / 2) + 1} of ${game.round.length / 2}` : `Session choices: ${game.rounds}`; page.appendChild(counter);
         if (game.mode === "quiz") { page.appendChild(auctionImageCard(game.current[0], "Tap to expand")); const answers = document.createElement("div"); answers.className = "personalityGameAnswers"; game.answers.forEach((id) => { const button = document.createElement("button"); button.textContent = `#${getChannelById(id)?.name || "unavailable channel"}`; button.disabled = Boolean(game.feedback) || game.busy; button.addEventListener("click", () => { if (game.feedback) return; const correct = id === game.current[0].channelId; game.rounds += 1; if (correct) game.score += 1; game.feedback = scriptedAuctionDialogue(correct ? "game_correct" : "game_wrong", `${game.host.id}:${game.rounds}`, { channel: getChannelById(game.current[0].channelId)?.name || "the original channel" }); renderMessages(); }); answers.appendChild(button); }); page.appendChild(answers); }
         else { const choices = document.createElement("div"); choices.className = "personalityGameChoices"; game.current.forEach((ref) => { const button = document.createElement("button"); button.type = "button"; button.disabled = Boolean(game.feedback) || game.busy; const attachment = findAttachment(ref); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo choice"; button.appendChild(image); } const label = document.createElement("span"); label.textContent = "Choose this photo"; button.appendChild(label); button.addEventListener("click", () => { if (game.mode === "tournament") choosePersonalityTournamentPhoto(game, ref); else { game.rounds += 1; game.feedback = scriptedAuctionDialogue("game_choice_feedback", `${game.host.id}:${game.rounds}`); renderMessages(); } }); choices.appendChild(button); }); page.appendChild(choices); }
@@ -4799,6 +4875,7 @@ function renderAuctionDinner() {
         const table = document.createElement("div"); table.className = "auctionDinnerTable"; const title = document.createElement("h3"); title.textContent = show.screen === "end" ? "Until next time…" : `Dinner with ${bidder.name}`; table.appendChild(title);
         if (bidder.avatarRef) table.appendChild(auctionProfilePhoto(bidder.avatarRef, bidder.name));
         const line = document.createElement("p"); line.textContent = `“${scriptedAuctionDialogue(show.screen === "end" ? (show.guestIds?.length ? "dinner_end_guest" : "dinner_end") : "dinner_start", bidder.id)}”`; table.appendChild(line); page.appendChild(table);
+        playPersonalityDialogueAudio(bidder.id, `dinner-table:${bidder.id}:${show.dinnerId || "setup"}:${show.screen}`);
         if (show.screen === "end") { const recap = document.createElement("details"), summary = document.createElement("summary"), info = document.createElement("p"); summary.textContent = "Dinner recap"; const guest = show.guestIds?.length ? ` Guest: ${show.guestIds.map(getAuctionOwnerName).join(", ")} (${show.guestPhotoCount} contributed photos).` : " No guest joined."; info.textContent = `${show.items.length} photos shown with ${bidder.name}.${guest} This dinner is recorded locally; it does not change trade trust or bidding rivalry.`; recap.append(summary, info); page.appendChild(recap); }
         if (show.screen === "setup") {
             const items = getAuctionRosterSections(bidder.id).items, help = document.createElement("p"); help.textContent = `${bidder.name} will choose from her owned photos, set each photo’s duration and BPM, and guide you through them. Sometimes you can pick the next photo; the source channels you choose can influence later tours. The metronome is restored when you leave.`; page.appendChild(help);
@@ -4823,7 +4900,7 @@ function renderAuctionDinner() {
         const item = show.items[show.index], heading = document.createElement("h3"); heading.textContent = `${bidder.name}’s favorites · ${show.index + 1}/${show.items.length}`; page.appendChild(heading);
         const frame = document.createElement("div"); frame.className = "auctionDinnerFrame"; frame.appendChild(auctionImageCard(item.ref, `${item.seconds} seconds · ${item.bpm} BPM${item.isFavorite ? " · Personal favorite" : ""}`)); page.appendChild(frame);
         if (show.guestIds?.length) { const guestNotice = document.createElement("p"); guestNotice.textContent = `Guest: ${getAuctionOwnerName(show.guestIds[0])} · ${show.guestPhotoCount} additional photo${show.guestPhotoCount === 1 ? "" : "s"}`; page.appendChild(guestNotice); }
-        if (getAuctionPersonalitySettings().dialogue && (item.speakerId || auctionDialogueVisible(show.index))) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${item.speakerId ? getAuctionOwnerName(item.speakerId) : bidder.name}: “${item.line}”`; page.appendChild(line); }
+        if (getAuctionPersonalitySettings().dialogue && (item.speakerId || auctionDialogueVisible(show.index))) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.textContent = `${item.speakerId ? getAuctionOwnerName(item.speakerId) : bidder.name}: “${item.line}”`; page.appendChild(line); playPersonalityDialogueAudio(item.speakerId || bidder.id, `dinner:${show.dinnerId}:${show.index}:${item.speakerId || bidder.id}`); }
         if (show.index === 0 && show.guestIntro && getAuctionPersonalitySettings().dialogue) { const intro = document.createElement("p"); intro.className = "auctionDinnerCallback"; intro.textContent = `${bidder.name}: “${show.guestIntro}”`; page.appendChild(intro); }
         if (show.index === 0 && show.callback) { const callback = document.createElement("p"); callback.className = "auctionDinnerCallback"; callback.textContent = `${bidder.name}: “${show.callback}”`; page.appendChild(callback); }
         if (show.conversation) { const conversation = document.createElement("section"); conversation.className = "auctionDinnerConversation"; const prompt = document.createElement("strong"); prompt.textContent = show.conversation.response ? `${bidder.name} replies` : "What would you like to say? The slideshow is waiting for you."; conversation.appendChild(prompt);
@@ -5163,8 +5240,9 @@ function renderAuctionOwnerChannel() {
         if (bidder) { const shuffle = document.createElement("button"); shuffle.type = "button"; shuffle.textContent = "Shuffle profile photo"; shuffle.addEventListener("click", async () => { shuffle.disabled = true; await shuffleAuctionBidderPortrait(ownerId); shuffle.disabled = false; }); profileActions.appendChild(shuffle); }
         if (bidder) { const dinner = document.createElement("button"); dinner.type = "button"; dinner.className = "adventurePrimary"; dinner.textContent = `Dinner with ${bidder.name}`; dinner.addEventListener("click", () => { state.auctionDinner = { serverId: getActiveServer()?.id, ownerId, screen: "setup" }; openView("auctionDinner", ownerId); }); profileActions.appendChild(dinner); }
         if (bidder) { const play = document.createElement("button"); play.type = "button"; play.textContent = `Play with ${bidder.name}`; play.addEventListener("click", () => { state.personalityGame = { serverId: getActiveServer()?.id, hostId: bidder.id, mode: "quiz", screen: "setup" }; openView("personalityGames", "personality-games"); }); profileActions.appendChild(play); }
-        if (bidder && getAuctionPersonalitySettings().dialogue) { const talk = document.createElement("button"); talk.type = "button"; talk.textContent = `Talk to ${bidder.name}`; const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.hidden = true; talk.addEventListener("click", () => { line.textContent = `${bidder.name}: “${randomAuctionDialogue()}”`; line.hidden = false; }); profileActions.append(talk, line); }
+        if (bidder && getAuctionPersonalitySettings().dialogue) { const talk = document.createElement("button"); talk.type = "button"; talk.textContent = `Talk to ${bidder.name}`; const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.hidden = true; talk.addEventListener("click", () => { line.textContent = `${bidder.name}: “${randomAuctionDialogue()}”`; line.hidden = false; playPersonalityDialogueAudio(bidder.id, `talk:${bidder.id}:${newLocalGameRecordId()}`); }); profileActions.append(talk, line); }
         if (profileActions.children.length) profile.appendChild(profileActions);
+        if (bidder) profile.appendChild(renderPersonalityAudioAssignment(bidder));
         if (bidder) profile.appendChild(renderAuctionPersonalityDeleteControls(bidder));
         if (bidder) { const reactions = document.createElement("section"); reactions.className = "auctionProfileReactions"; const title = document.createElement("strong"); title.textContent = "Your reactions"; reactions.appendChild(title); ["❤️", "😍", "🔥", "😘", "✨", "😊"].forEach((emoji) => { const button = document.createElement("button"); button.type = "button"; button.textContent = emoji; button.setAttribute("aria-label", `React ${emoji}`); button.setAttribute("aria-pressed", String((bidder.profileReactions || []).includes(emoji))); button.addEventListener("click", async () => { const current = getAuctionBidders().find((item) => item.id === ownerId); if (!current) return; const old = Array.isArray(current.profileReactions) ? current.profileReactions : [], next = old.includes(emoji) ? old.filter((item) => item !== emoji) : [...old, emoji]; button.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((item) => item.id === ownerId ? { ...item, profileReactions: next } : item) }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); button.disabled = false; alert("Could not save the reaction."); } }); reactions.appendChild(button); }); profile.appendChild(reactions); }
         if (bidder) { const biography = document.createElement("article"); biography.className = "auctionCharacterBio"; const label = document.createElement("span"); label.className = "auctionCharacterKicker"; label.textContent = "A LITTLE ABOUT HER"; const copy = document.createElement("p"); copy.textContent = getAuctionBiography(bidder); biography.append(label, copy); profile.appendChild(biography); }
@@ -5316,7 +5394,7 @@ async function acceptAuctionPreview(serverId) {
         const moods = {}; if (getAuctionPersonalitySettings().moods) prepared.forEach((bidder) => { if (Math.random() < auctionEventChance(.18)) moods[bidder.id] = Math.random() < .5 ? "bold" : "cautious"; });
         const activeBidders = updatedBidders.filter((item) => bidderIds.has(item.id));
         const dialogue = nextAuctionDialogue({ dialogue: null }, activeBidders, {});
-        const newGame = { serverId, count: plan.desired, budget: starting.john, startBalances: starting, aiCount: plan.aiCount, bidders: activeBidders, balances: Object.fromEntries(prepared.map((item) => [item.id, starting[item.id]])), auctionId: newLocalGameRecordId(), sequence: selection.refs, consignmentLots, consignmentFeePercent: plan.feePercent || 0, biddingMode: "open", bidRulesVersion: 2, results: [], index: 0, remaining: starting.john, punishmentWeighted: plan.punishmentWeighted, censoredWeighted: plan.censoredWeighted, auctionFormat: structuredClone(plan.auctionFormat), moods, dialogue, dialogueCount: dialogue ? 1 : 0, lastDialogueRound: dialogue ? 0 : -10, visibleLimit: 10, pendingAuction: null, screen: "play" };
+        const newGame = { serverId, count: plan.desired, budget: starting.john, startBalances: starting, aiCount: plan.aiCount, bidders: activeBidders, balances: Object.fromEntries(prepared.map((item) => [item.id, starting[item.id]])), auctionId: newLocalGameRecordId(), sequence: selection.refs, consignmentLots, consignmentFeePercent: plan.feePercent || 0, biddingMode: "open", bidRulesVersion: 3, autoPacingPaused: false, results: [], index: 0, remaining: starting.john, punishmentWeighted: plan.punishmentWeighted, censoredWeighted: plan.censoredWeighted, auctionFormat: structuredClone(plan.auctionFormat), moods, dialogue, dialogueCount: dialogue ? 1 : 0, lastDialogueRound: dialogue ? 0 : -10, visibleLimit: 10, pendingAuction: null, screen: "play" };
         newGame.openLot = createOpenAuctionLot(newGame);
         await saveAuctionChanges({ auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [serverId]: balances }, auctionBidders: updatedBidders, auctionSessions: { ...(state.structure.settings.auctionSessions || {}), [serverId]: snapshotAuctionSession(newGame) } });
         if (game.serverId === serverId) Object.assign(game, newGame);
@@ -5392,6 +5470,7 @@ function renderBlindAuction() {
         if (result.eventReaction && getAuctionPersonalitySettings().dialogue && getAuctionPersonalitySettings().eventReactions && !(game.dismissedReactions || []).includes(result.id)) {
             const reaction = document.createElement("div"); reaction.className = "auctionEventReaction";
             const text = document.createElement("p"); text.textContent = `${getAuctionOwnerName(result.eventReaction.bidderId)}: “${result.eventReaction.text}”`;
+            playPersonalityDialogueAudio(result.eventReaction.bidderId, `auction-reaction:${result.id}`);
             const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "Dismiss";
             dismiss.addEventListener("click", async () => { if (game.saving) return; const dismissedReactions = [...(game.dismissedReactions || []), result.id]; game.saving = true; renderMessages(); try { const sessions = { ...(state.structure.settings.auctionSessions || {}), [game.serverId]: snapshotAuctionSession(game, { dismissedReactions }) }; await saveAuctionChanges({ auctionSessions: sessions }); game.dismissedReactions = dismissedReactions; } catch (error) { console.error(error); alert("Could not save dismissal locally."); } finally { game.saving = false; if (state.activeView.type === "blindAuction") renderMessages(); } });
             reaction.append(text, dismiss); page.appendChild(reaction);
@@ -5415,8 +5494,16 @@ function renderBlindAuction() {
         if (consignment) { const notice = document.createElement("p"); notice.className = "auctionFormatNotice"; notice.textContent = `Consigned by ${getAuctionOwnerName(consignment.sellerId)} · seller cannot bid · ${game.consignmentFeePercent || 0}% fee${ownLot ? " · pass to let the other bidders compete" : ""}.`; intro.appendChild(notice); }
         if (game.auctionFormat?.type && game.auctionFormat.type !== "standard") { const format = document.createElement("p"); format.className = "auctionFormatNotice"; format.textContent = auctionFormatDescription(game.auctionFormat); intro.appendChild(format); }
         if (game.results.length) { const last = game.results[game.results.length - 1], message = document.createElement("p"); message.textContent = last.ownerId ? `Previous sale: ${getAuctionOwnerName(last.ownerId)} won for $${last.price}.` : "Previous photo received no bids."; intro.appendChild(message); }
-        const photoDialogue = currentAuctionDialogue(game);
-        if (photoDialogue) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.textContent = `${getAuctionOwnerName(photoDialogue.bidderId)}: “${photoDialogue.text}”`; intro.appendChild(line); }
+        const photoDialogue = currentAuctionPhotoDialogue(game);
+        if (photoDialogue) { const line = document.createElement("p"); line.className = "auctionDialogue"; line.setAttribute("aria-live", "polite"); line.textContent = `${photoDialogue.name} · the photo: “${photoDialogue.text}”`; intro.appendChild(line); }
+        if (game.biddingMode === "open" && game.openLot) {
+            intro.appendChild(renderAuctionBidderStatus(game, game.openLot, consignment?.sellerId));
+            const pacingLabel = document.createElement("label"); pacingLabel.className = "auctionPacingSelect"; pacingLabel.textContent = "Opponent pacing "; const pacing = document.createElement("select");
+            [[0, "One tap per turn"], [1500, "Automatic · 1.5 sec"], [3000, "Automatic · 3 sec"], [5000, "Automatic · 5 sec"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = String(value); option.textContent = text; option.selected = auctionPacingDelay() === value; pacing.appendChild(option); });
+            pacing.disabled = Boolean(game.autoPacingSettingBusy || game.saving);
+            pacing.addEventListener("change", async () => { const value = Number(pacing.value); cancelAuctionAutoTurn(); game.autoPacingSettingBusy = true; pacing.disabled = true; try { await saveAuctionChanges({ auctionPacingDelay: value }); game.autoPacingPaused = state.activeView.type !== "blindAuction" || document.visibilityState !== "visible"; } catch (error) { game.autoPacingPaused = true; console.error("Could not save auction pacing:", error); alert(auctionSaveErrorMessage(error)); } finally { game.autoPacingSettingBusy = false; if (state.activeView.type === "blindAuction" && state.blindAuction === game) renderAuctionTurnInPlace(); } });
+            pacingLabel.appendChild(pacing); intro.appendChild(pacingLabel);
+        }
         const figure = document.createElement("figure"); figure.className = "blindAuctionPhoto";
         if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = "Current auction photo"; if (game.auctionFormat?.type === "mystery") { image.classList.add("auctionMysteryImage"); image.alt = "Blurred mystery auction photo"; } else image.addEventListener("click", () => openImageViewer(attachment, image.alt)); figure.appendChild(image); } else figure.appendChild(emptyPanel("This photo is unavailable; pass to continue."));
         const controls = document.createElement("div"); controls.className = "blindAuctionControls";
@@ -5424,11 +5511,17 @@ function renderBlindAuction() {
         const actions = document.createElement("div"); actions.className = "blindAuctionActions";
         if (game.biddingMode === "open" && game.openLot) {
             const lot = game.openLot, actor = lot.order[lot.turnIndex], required = lot.highBid ? lot.highBid + 1 : lot.minimum, status = document.createElement("p"); status.setAttribute("role", "status"); status.textContent = `${lot.highBidder ? `Current bid: $${lot.highBid} by ${getAuctionOwnerName(lot.highBidder)}.` : `Opening bid: $${lot.minimum}.`} ${actor === "john" ? "Your turn." : `${getAuctionOwnerName(actor)} is next.`}`; controls.appendChild(status);
-            const help = document.createElement("small"); help.textContent = "Each raise gives everyone else another chance. A photo sells only after everyone else passes at the current price; the winner pays their bid."; controls.appendChild(help);
-            if (lot.events.length) { const recent = document.createElement("div"); recent.className = "auctionBidTimeline"; lot.events.slice(-5).forEach((event) => { const line = document.createElement("p"); line.textContent = event.action === "bid" ? `${getAuctionOwnerName(event.id)} bid $${event.amount}` : `${getAuctionOwnerName(event.id)} passed`; recent.appendChild(line); }); controls.appendChild(recent); }
+            const help = document.createElement("small"); help.textContent = "Pass for this photo only. Quick bids place the displayed bid immediately."; help.className = "auctionBidHelp"; controls.appendChild(help);
+            if (lot.events.length) { const last = lot.events[lot.events.length - 1], latest = document.createElement("small"); latest.className = "auctionLatestBid"; latest.textContent = last.action === "bid" ? `Last: ${getAuctionOwnerName(last.id)} bid $${last.amount}.` : `Last: ${getAuctionOwnerName(last.id)} passed.`; controls.appendChild(latest); }
+            if (lot.events.length) { const recent = document.createElement("details"); recent.className = "auctionBidTimeline"; const summary = document.createElement("summary"); summary.textContent = "Recent bidding"; recent.appendChild(summary); lot.events.slice(-5).forEach((event) => { const line = document.createElement("p"); line.textContent = event.action === "bid" ? `${getAuctionOwnerName(event.id)} bid $${event.amount}` : `${getAuctionOwnerName(event.id)} passed`; recent.appendChild(line); }); intro.appendChild(recent); }
             const index = game.index, turn = lot.turnIndex;
-            if (actor === "john") { const label = document.createElement("label"); label.textContent = `Your bid ($${required} minimum)`; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(required); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(required); bid.disabled = !attachment || game.remaining < required || game.saving; label.appendChild(bid); const pass = document.createElement("button"); pass.textContent = "Pass for now"; pass.disabled = game.saving; pass.addEventListener("click", () => advanceOpenAuctionTurn(0, index, turn)); const submit = document.createElement("button"); submit.className = "adventurePrimary"; submit.textContent = game.saving ? "Saving…" : "Raise bid"; submit.disabled = !attachment || game.remaining < required || game.saving; submit.addEventListener("click", () => { const value = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(value) || value < required || value > game.remaining) { alert(`Enter a whole-number bid between ${required} and ${game.remaining}, or pass.`); return; } advanceOpenAuctionTurn(value, index, turn); }); actions.append(pass, submit); controls.append(label, actions); }
-            else { const next = document.createElement("button"); next.className = "adventurePrimary"; next.textContent = game.saving ? "Saving…" : `Continue · ${getAuctionOwnerName(actor)}'s turn`; next.disabled = game.saving; next.addEventListener("click", () => advanceOpenAuctionTurn(null, index, turn)); controls.appendChild(next); }
+            if (actor === "john") {
+                const quick = document.createElement("div"); quick.className = "auctionQuickBids"; quick.setAttribute("aria-label", "Quick bids");
+                [1, 5, 10].forEach((increment) => { const amount = required + increment - 1; const raise = amount - lot.highBid; const button = document.createElement("button"); button.type = "button"; button.className = "adventurePrimary"; button.textContent = `+$${raise} · $${amount}`; button.setAttribute("aria-label", `Bid $${amount} ($${raise} more)`); button.disabled = !attachment || amount > game.remaining || game.saving; button.addEventListener("click", () => advanceOpenAuctionTurn(amount, index, turn)); quick.appendChild(button); });
+                const pass = document.createElement("button"); pass.type = "button"; pass.textContent = "Pass on this photo"; pass.disabled = game.saving; pass.addEventListener("click", () => advanceOpenAuctionTurn(0, index, turn));
+                const manual = document.createElement("details"); manual.className = "auctionManualBid"; const summary = document.createElement("summary"); summary.textContent = "Enter a different bid"; const label = document.createElement("label"); label.textContent = `Your bid ($${required} minimum)`; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(required); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(required); bid.disabled = !attachment || game.remaining < required || game.saving; label.appendChild(bid); const submit = document.createElement("button"); submit.type = "button"; submit.textContent = "Place manual bid"; submit.disabled = !attachment || game.remaining < required || game.saving; submit.addEventListener("click", () => { const value = Number(bid.value); if (!bid.value.trim() || !Number.isInteger(value) || value < required || value > game.remaining) { alert(`Enter a whole-number bid between ${required} and ${game.remaining}, or pass.`); return; } bid.blur(); advanceOpenAuctionTurn(value, index, turn); }); manual.append(summary, label, submit); controls.append(quick, pass, manual);
+            } else { const next = document.createElement("button"); next.type = "button"; next.className = "adventurePrimary auctionNextTurn"; next.textContent = game.saving ? "Saving…" : "Continue to next turn"; next.setAttribute("aria-label", `Continue · ${getAuctionOwnerName(actor)}'s turn`); next.disabled = game.saving; next.addEventListener("click", () => advanceOpenAuctionTurn(null, index, turn)); controls.appendChild(next); }
+            if (auctionPacingDelay()) { const pause = document.createElement("button"); pause.type = "button"; pause.className = "auctionAutoPause"; pause.textContent = game.autoPacingPaused ? "Resume automatic turns" : "Pause automatic turns"; pause.disabled = game.saving || game.autoPacingSettingBusy; pause.addEventListener("click", () => { cancelAuctionAutoTurn(); game.autoPacingPaused = !game.autoPacingPaused; renderAuctionTurnInPlace(); }); controls.appendChild(pause); }
         } else {
             const label = document.createElement("label"); label.textContent = "Your maximum bid ($)"; const bid = document.createElement("input"); bid.type = "number"; bid.min = String(minimum); bid.max = String(game.remaining); bid.inputMode = "numeric"; bid.value = String(minimum); bid.disabled = ownLot || !attachment || game.remaining < minimum || game.saving; label.appendChild(bid);
             const pass = document.createElement("button"); pass.textContent = ownLot ? "Let bidders compete" : "Pass"; pass.disabled = game.saving; const submit = document.createElement("button"); submit.textContent = game.saving ? "Saving…" : "Place bid"; submit.className = "adventurePrimary"; submit.disabled = ownLot || !attachment || game.remaining < minimum || game.saving;
@@ -5458,6 +5551,7 @@ function renderBlindAuction() {
         const again = document.createElement("button"); again.textContent = "New auction"; again.addEventListener("click", () => { game.screen = "setup"; game.sequence = []; game.results = []; renderMessages(); }); page.append(slideshow, again);
     }
     els.messages.appendChild(page);
+    scheduleAuctionAutoTurn(game);
 }
 
 function getTournamentInsights() {
@@ -10767,6 +10861,161 @@ function getRecentStatsDays(days, count) {
     });
 }
 
+// Audio is kept in a separate local database: it never changes the photo store.
+let localAudioDBPromise = null;
+const bundledAudioTracks = Array.from({ length: 11 }, (_, index) => { const n = index + 1; return { id: `bundled:${n}`, name: `Test ${n}`, paths: [5, 6, 7].includes(n) ? [`audio/track${n}.part1.kba`, `audio/track${n}.part2.kba`] : [`audio/track${n}.kba`] }; });
+let bundledAudioKey = null;
+function openLocalAudioDB() {
+    if (!localAudioDBPromise) localAudioDBPromise = new Promise((resolve, reject) => {
+        const request = indexedDB.open("knowledgeDiscordLocalAudio", 1);
+        request.onupgradeneeded = () => { if (!request.result.objectStoreNames.contains("tracks")) request.result.createObjectStore("tracks", { keyPath: "id" }); if (!request.result.objectStoreNames.contains("keys")) request.result.createObjectStore("keys"); };
+        request.onsuccess = () => { const database = request.result; database.onversionchange = () => { database.close(); localAudioDBPromise = null; }; resolve(database); };
+        request.onerror = () => reject(request.error || new Error("Could not open local audio storage."));
+        request.onblocked = () => reject(new Error("Audio storage is busy in another tab."));
+    }).catch((error) => { localAudioDBPromise = null; throw error; });
+    return localAudioDBPromise;
+}
+async function localAudioRequest(mode, operation) {
+    const database = await openLocalAudioDB();
+    return new Promise((resolve, reject) => {
+        const tx = database.transaction("tracks", mode), store = tx.objectStore("tracks"); let value, failed;
+        try { operation(store, (result) => { value = result; }); } catch (error) { reject(error); return; }
+        tx.oncomplete = () => resolve(value); tx.onerror = () => { failed = tx.error; }; tx.onabort = () => reject(failed || tx.error || new Error("Audio storage could not be saved."));
+    });
+}
+function listLocalAudioTracks() {
+    return localAudioRequest("readonly", (store, done) => { const tracks = [], request = store.openCursor(); request.onsuccess = () => { const cursor = request.result; if (!cursor) { done(tracks); return; } const { id, name, size } = cursor.value; tracks.push({ id, name, size }); cursor.continue(); }; });
+}
+async function localAudioKeyRequest(mode, operation) {
+    const database = await openLocalAudioDB();
+    return new Promise((resolve, reject) => { const tx = database.transaction("keys", mode); let value; const request = operation(tx.objectStore("keys")); request.onsuccess = () => { value = request.result; }; tx.oncomplete = () => resolve(value); tx.onabort = () => reject(tx.error || new Error("Could not save the audio unlock.")); tx.onerror = () => {}; });
+}
+async function loadRememberedAudioKey() { if (!bundledAudioKey) bundledAudioKey = (await localAudioKeyRequest("readonly", (store) => store.get("bundled"))) || null; return bundledAudioKey; }
+async function fetchBundledAudio(track) { const parts = []; for (const path of track.paths) { const response = await fetch(path); if (!response.ok) throw new Error("Could not download the encrypted recording. Check your connection and uploaded audio files."); parts.push(await response.arrayBuffer()); } const bytes = parts.length === 1 ? parts[0] : await new Blob(parts).arrayBuffer(); if (bytes.byteLength < 48 || new TextDecoder().decode(bytes.slice(0, 4)) !== "KBA1") throw new Error("The encrypted audio file is invalid."); return bytes; }
+async function decryptBundledAudio(bytes, key) { return crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(20, 32) }, key, bytes.slice(32)); }
+async function unlockBundledAudio(password) {
+    if (!globalThis.crypto?.subtle) throw new Error("Audio unlock requires HTTPS or a secure browser context.");
+    const bytes = await fetchBundledAudio(bundledAudioTracks[0]);
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: bytes.slice(4, 20), iterations: 310000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    try { await decryptBundledAudio(bytes, key); } catch (_) { throw new Error("The audio password was not accepted."); }
+    await localAudioKeyRequest("readwrite", (store) => store.put(key, "bundled")); bundledAudioKey = key;
+}
+async function getLocalAudioTrack(id) {
+    const bundled = bundledAudioTracks.find((track) => track.id === id);
+    if (bundled) { const key = await loadRememberedAudioKey(); if (!key) throw new Error("Unlock the bundled recordings in Local audio player first."); const bytes = await fetchBundledAudio(bundled); const decoded = await decryptBundledAudio(bytes, key); return { ...bundled, name: state.structure.settings.localAudio?.names?.[id] || bundled.name, blob: new Blob([decoded], { type: "audio/mp4" }) }; }
+    return localAudioRequest("readonly", (store, done) => { const request = store.get(id); request.onsuccess = () => done(request.result || null); });
+}
+function putLocalAudioTrack(track) { return localAudioRequest("readwrite", (store) => store.put(track)); }
+function deleteLocalAudioTrack(id) { return localAudioRequest("readwrite", (store) => store.delete(id)); }
+
+const audioSession = { enabled: false, player: null, url: null, sequence: 0, currentKey: null, bar: null, preloaded: null, lastTrack: null, clipEnd: null, userPaused: false, loading: false };
+function stopLocalAudio() {
+    audioSession.enabled = false; audioSession.sequence++; audioSession.currentKey = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
+    if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
+    if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null;
+    audioSession.bar?.remove(); audioSession.bar = null; document.body.classList.remove("localAudioActive");
+}
+function audioClock(seconds) { if (!Number.isFinite(seconds) || seconds < 0) return "0:00"; return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`; }
+function audioExcerptSeconds() { const value = Number(state.structure.settings.localAudio?.excerptSeconds); return [5, 10, 20, 30].includes(value) ? value : 10; }
+function updateAudioPlayerBar() {
+    const bar = audioSession.bar, player = audioSession.player; if (!bar) return;
+    const button = bar.querySelector(".localAudioToggle"), progress = bar.querySelector(".localAudioProgress"), time = bar.querySelector(".localAudioTime");
+    const hasTrack = Boolean(player?.getAttribute("src")); button.disabled = !audioSession.enabled || !hasTrack || audioSession.loading;
+    button.textContent = hasTrack && !player.paused ? "Pause" : "Play";
+    const duration = hasTrack && Number.isFinite(player.duration) ? player.duration : 0; progress.disabled = !duration; progress.max = String(duration || 1); progress.value = String(hasTrack && Number.isFinite(player.currentTime) ? player.currentTime : 0);
+    time.textContent = `${audioClock(hasTrack ? player.currentTime : 0)} / ${audioClock(duration)}`;
+}
+function showAudioSessionBar(message) {
+    if (!audioSession.bar) {
+        const bar = document.createElement("section"); bar.className = "localAudioSessionBar"; bar.setAttribute("aria-label", "Audio player");
+        const label = document.createElement("span"); label.className = "localAudioTitle"; label.setAttribute("role", "status");
+        const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "localAudioToggle"; toggle.textContent = "Play"; toggle.addEventListener("click", () => { const player = audioSession.player; if (!audioSession.enabled || !player?.getAttribute("src")) return; if (!player.paused) { audioSession.userPaused = true; player.pause(); updateAudioPlayerBar(); return; } audioSession.userPaused = false; if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd - .1) audioSession.clipEnd = Math.min(player.duration || Infinity, player.currentTime + audioExcerptSeconds()); player.play().then(updateAudioPlayerBar).catch(() => { label.textContent = "Playback blocked; tap Play to retry."; }); });
+        const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Stop"; stop.setAttribute("aria-label", "Stop and disable audio"); stop.addEventListener("click", stopLocalAudio);
+        const progress = document.createElement("input"); progress.type = "range"; progress.className = "localAudioProgress"; progress.min = "0"; progress.max = "1"; progress.step = "0.1"; progress.value = "0"; progress.setAttribute("aria-label", "Audio position"); progress.disabled = true; progress.addEventListener("input", () => { const player = audioSession.player; if (!player || !Number.isFinite(player.duration)) return; player.currentTime = Number(progress.value); if (audioSession.clipEnd !== null) audioSession.clipEnd = Math.min(player.duration, player.currentTime + audioExcerptSeconds()); updateAudioPlayerBar(); });
+        const time = document.createElement("span"); time.className = "localAudioTime"; time.textContent = "0:00 / 0:00";
+        bar.append(label, toggle, stop, progress, time); document.body.appendChild(bar); audioSession.bar = bar; document.body.classList.add("localAudioActive");
+    }
+    audioSession.bar.querySelector(".localAudioTitle").textContent = message; updateAudioPlayerBar();
+}
+function getAudioPlayer() {
+    if (!audioSession.player) { const player = new Audio(); player.preload = "metadata"; ["play", "pause", "durationchange", "loadedmetadata", "ended"].forEach((event) => player.addEventListener(event, updateAudioPlayerBar)); player.addEventListener("timeupdate", () => { if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd) { player.pause(); showAudioSessionBar("Excerpt finished · waiting for dialogue"); } updateAudioPlayerBar(); }); audioSession.player = player; }
+    return audioSession.player;
+}
+function waitForLocalAudioMetadata(player, sequence) {
+    return new Promise((resolve, reject) => {
+        if (player.readyState >= 1 && Number.isFinite(player.duration)) { resolve(); return; }
+        let timer; const cleanup = () => { clearTimeout(timer); player.removeEventListener("loadedmetadata", onReady); player.removeEventListener("error", onError); player.removeEventListener("abort", onAbort); };
+        const onReady = () => { cleanup(); if (sequence !== audioSession.sequence || !audioSession.enabled) reject(new Error("Audio selection changed.")); else resolve(); }, onError = () => { cleanup(); reject(new Error("This audio format could not be loaded.")); }, onAbort = () => { cleanup(); reject(new Error("Audio loading was interrupted.")); };
+        player.addEventListener("loadedmetadata", onReady); player.addEventListener("error", onError); player.addEventListener("abort", onAbort); timer = setTimeout(() => { cleanup(); reject(new Error("Audio took too long to load.")); }, 15000);
+    });
+}
+async function playLocalAudioTrack(id, key, loop = false, excerpt = false) {
+    if (!audioSession.enabled || !id || audioSession.currentKey === key) return;
+    const sequence = ++audioSession.sequence; audioSession.currentKey = key; audioSession.loading = true; audioSession.clipEnd = null;
+    if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
+    if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Loading audio…");
+    try {
+        const track = audioSession.lastTrack?.id === id ? audioSession.lastTrack : audioSession.preloaded?.id === id ? audioSession.preloaded : await getLocalAudioTrack(id);
+        if (!audioSession.enabled || sequence !== audioSession.sequence) return;
+        if (!track?.blob) throw new Error("The selected track is no longer available on this device.");
+        audioSession.lastTrack = track;
+        const player = getAudioPlayer();
+        audioSession.url = URL.createObjectURL(track.blob); player.src = audioSession.url; player.loop = loop; player.volume = 0.5;
+        showAudioSessionBar(excerpt ? `${track.name} · random excerpt` : track.name);
+        if (excerpt) { await waitForLocalAudioMetadata(player, sequence); if (!audioSession.enabled || audioSession.userPaused || sequence !== audioSession.sequence) return; const duration = player.duration; if (!Number.isFinite(duration) || duration <= 0) throw new Error("This track has no seekable duration."); const length = Math.min(audioExcerptSeconds(), duration); const start = Math.random() * Math.max(0, duration - length); player.currentTime = start; audioSession.clipEnd = Math.min(duration, start + length); }
+        audioSession.loading = false; updateAudioPlayerBar(); await player.play();
+    } catch (error) { if (sequence === audioSession.sequence && audioSession.enabled) { audioSession.loading = false; if (excerpt && audioSession.clipEnd === null) { audioSession.player?.removeAttribute("src"); if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; } showAudioSessionBar("Audio couldn't start · check the connection, unlock, or tap Play if available."); console.warn("Local audio playback failed:", error); } }
+}
+function playPersonalityDialogueAudio(bidderId, key) {
+    const settings = state.structure.settings.localAudio || {};
+    if (!audioSession.enabled || audioSession.userPaused || settings.mode !== "personality") return;
+    const id = settings.assignments?.[bidderId];
+    if (id) void playLocalAudioTrack(id, key, false, true);
+    else if (audioSession.currentKey !== key) { audioSession.sequence++; audioSession.currentKey = key; audioSession.clipEnd = null; audioSession.loading = false; audioSession.player?.pause(); audioSession.player?.removeAttribute("src"); if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Personality audio enabled · no track assigned"); }
+}
+function renderPersonalityAudioAssignment(bidder) {
+    const details = document.createElement("details"), summary = document.createElement("summary"), note = document.createElement("p"); details.className = "personalityAudioAssignment"; summary.textContent = "Dialogue audio"; note.textContent = "Choose a track for a random excerpt when she speaks. Enable personality audio in Settings to hear it; nothing starts automatically."; const label = document.createElement("label"); label.textContent = `${bidder.name}'s track`; const select = document.createElement("select"); select.disabled = true; label.appendChild(select); const status = document.createElement("p"); status.setAttribute("role", "status"); const save = document.createElement("button"); save.type = "button"; save.textContent = "Save dialogue track"; save.disabled = true;
+    details.append(summary, note, label, save, status); let loaded = false;
+    details.addEventListener("toggle", async () => { if (!details.open || loaded) return; try { const config = state.structure.settings.localAudio || {}, tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: config.names?.[track.id] || track.name })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!details.isConnected) return; const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = config.assignments?.[bidder.id] || ""; select.disabled = false; save.disabled = false; loaded = true; } catch (error) { status.textContent = `Could not load audio: ${error.message}`; } });
+    save.addEventListener("click", async () => { save.disabled = true; try { await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}, assignments = { ...(config.assignments || {}) }; if (select.value) assignments[bidder.id] = select.value; else delete assignments[bidder.id]; return { localAudio: { ...config, assignments } }; }); status.textContent = "Dialogue track saved locally."; } catch (error) { status.textContent = `Could not save the track: ${error.message}`; } finally { save.disabled = false; } });
+    return details;
+}
+function renderLocalAudioSettings() {
+    const section = document.createElement("details"); section.className = "localAudioSettings"; const title = document.createElement("summary"); title.textContent = "Local audio player";
+    const help = document.createElement("p"); help.textContent = "Unlock the encrypted included recordings, or import audio on this device. Name tracks and choose background music or a track for each personality. Nothing plays until you explicitly enable audio for this session. Imported files are not included in the existing app backup; keep your originals. Included recordings require a connection and the encrypted audio files on the website.";
+    const unlockLabel = document.createElement("label"); unlockLabel.textContent = "Password for included recordings"; const password = document.createElement("input"); password.type = "password"; password.autocomplete = "off"; unlockLabel.appendChild(password); const unlock = document.createElement("button"); unlock.type = "button"; unlock.textContent = "Unlock and remember on this device";
+    const inputLabel = document.createElement("label"); inputLabel.textContent = "Add audio files"; const input = document.createElement("input"); input.type = "file"; input.accept = "audio/*,.m4a"; input.multiple = true; inputLabel.appendChild(input);
+    const status = document.createElement("p"); status.setAttribute("role", "status");
+    const content = document.createElement("div"); section.append(title, help, unlockLabel, unlock, inputLabel, status, content); let editing = false;
+    unlock.addEventListener("click", async () => { if (!password.value) { status.textContent = "Enter the audio password first."; return; } unlock.disabled = true; status.textContent = "Unlocking encrypted recordings…"; try { await unlockBundledAudio(password.value); password.value = ""; status.textContent = "Unlocked and remembered on this device. No audio has been played."; await refresh(); } catch (error) { password.value = ""; status.textContent = `Could not unlock: ${error.message}`; } finally { unlock.disabled = false; } });
+    const refresh = async () => {
+        try {
+            const config = state.structure.settings.localAudio || {}, unlocked = Boolean(await loadRememberedAudioKey()); const tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: config.names?.[track.id] || track.name })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!section.isConnected) return;
+            content.replaceChildren(); const unlockState = document.createElement("p"); unlockState.textContent = unlocked ? "Included recordings: unlocked on this device." : "Included recordings: locked."; content.appendChild(unlockState); const list = document.createElement("div"); list.className = "localAudioTrackList";
+            if (!tracks.length) { const empty = document.createElement("p"); empty.textContent = "No audio imported on this device yet."; list.appendChild(empty); }
+            tracks.forEach((track) => {
+                const row = document.createElement("div"); row.className = "localAudioTrack"; const name = document.createElement("input"); name.type = "text"; name.value = track.name; name.maxLength = 100; name.setAttribute("aria-label", `Name for ${track.name}`);
+                const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Save name"; rename.addEventListener("click", async () => { const value = name.value.trim(); if (!value) { status.textContent = "Enter a name for the track."; return; } rename.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), names: { ...(state.structure.settings.localAudio?.names || {}), [track.id]: value } } })); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("Track is no longer available."); await putLocalAudioTrack({ ...original, name: value }); } status.textContent = "Name saved locally."; await refresh(); } catch (error) { status.textContent = `Could not save the name: ${error.message}`; } finally { rename.disabled = false; } });
+                const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove"; remove.addEventListener("click", async () => { if (!confirm(`Remove “${track.name}” from this device's audio library? Your original file is not changed.`)) return; remove.disabled = true; try { stopLocalAudio(); await deleteLocalAudioTrack(track.id); status.textContent = "Removed from the local audio library."; await refresh(); } catch (error) { status.textContent = `Could not remove audio: ${error.message}`; remove.disabled = false; } });
+                row.append(name, rename); if (!track.id.startsWith("bundled:")) row.appendChild(remove); list.appendChild(row);
+            }); content.appendChild(list);
+            const modeLabel = document.createElement("label"); modeLabel.textContent = "Audio mode"; const mode = document.createElement("select"); [["background", "Background track"], ["personality", "Personality dialogue tracks"]].forEach(([id, label]) => { const option = document.createElement("option"); option.value = id; option.textContent = label; option.selected = (config.mode || "background") === id; mode.appendChild(option); }); modeLabel.appendChild(mode); content.appendChild(modeLabel);
+            const excerptLabel = document.createElement("label"); excerptLabel.textContent = "Personality excerpt length"; const excerpt = document.createElement("select"); [5, 10, 20, 30].forEach((seconds) => { const option = document.createElement("option"); option.value = String(seconds); option.textContent = `${seconds} seconds`; option.selected = audioExcerptSeconds() === seconds; excerpt.appendChild(option); }); excerptLabel.appendChild(excerpt); content.appendChild(excerptLabel);
+            const selectTrack = (labelText, chosen) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = chosen || ""; label.appendChild(select); content.appendChild(label); return select; };
+            const background = selectTrack("Background track (loops)", config.backgroundTrackId), assignments = new Map(); getAuctionBidders().forEach((bidder) => assignments.set(bidder.id, selectTrack(`${bidder.name}'s dialogue track`, config.assignments?.[bidder.id])));
+            const save = document.createElement("button"); save.type = "button"; save.textContent = "Save audio choices"; save.addEventListener("click", async () => { save.disabled = true; try { const updated = { ...(config.assignments || {}) }; assignments.forEach((select, id) => { if (select.value) updated[id] = select.value; else delete updated[id]; }); await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), mode: mode.value, backgroundTrackId: background.value, assignments: updated, excerptSeconds: Number(excerpt.value) } })); stopLocalAudio(); status.textContent = "Audio choices saved locally. Enable audio to start a new listening session."; await refresh(); } catch (error) { status.textContent = `Could not save audio choices: ${error.message}`; } finally { save.disabled = false; } });
+            const start = document.createElement("button"); start.type = "button"; start.textContent = "Enable audio for this session…"; start.addEventListener("click", () => { const saved = state.structure.settings.localAudio || {}; if (saved.mode !== "personality" && !saved.backgroundTrackId) { status.textContent = "Choose a background track and save your choices first."; return; } if (saved.mode === "personality" && !Object.values(saved.assignments || {}).some(Boolean)) { status.textContent = "Assign at least one personality track and save your choices first."; return; } if (!confirm("Allow the selected local audio to play in this session? You can stop it at any time.")) return; stopLocalAudio(); audioSession.enabled = true; showAudioSessionBar(saved.mode === "personality" ? "Personality audio enabled · waiting for dialogue" : "Starting background audio…"); if (saved.mode !== "personality") void playLocalAudioTrack(saved.backgroundTrackId, `background:${saved.backgroundTrackId}`, true); status.textContent = "Audio enabled for this session. Use Stop audio at any time."; });
+            content.append(save, start);
+            if (config.mode === "personality") audioSession.preloaded = null;
+            else if (config.backgroundTrackId && audioSession.preloaded?.id !== config.backgroundTrackId) { try { audioSession.preloaded = await getLocalAudioTrack(config.backgroundTrackId); } catch (_) { audioSession.preloaded = null; } }
+        } catch (error) { if (section.isConnected) status.textContent = `Could not open local audio storage: ${error.message}`; }
+    };
+    section.addEventListener("toggle", () => { if (section.open && !editing) void refresh(); });
+    input.addEventListener("change", async () => { const files = Array.from(input.files || []); if (!files.length) return; editing = true; input.disabled = true; let imported = 0; try { for (const file of files) { if (!file.type.startsWith("audio/") && !/\.(m4a|mp3|wav|aac|ogg|opus|flac)$/i.test(file.name)) throw new Error(`${file.name} is not a supported audio file.`); await putLocalAudioTrack({ id: newLocalGameRecordId(), name: file.name.replace(/\.[^.]+$/, "").slice(0, 100) || "Audio track", size: file.size, blob: file }); imported++; } status.textContent = `Imported ${imported} ${imported === 1 ? "track" : "tracks"} locally. You can rename them below.`; } catch (error) { status.textContent = `Imported ${imported} of ${files.length}. ${error.message || "Local storage is full or unavailable."}`; } finally { editing = false; input.disabled = false; input.value = ""; await refresh(); } });
+    return section;
+}
+
 function renderSettingsPage(auctionOnly = false) {
     const server = getActiveServer();
     const page = document.createElement("section");
@@ -10781,6 +11030,7 @@ function renderSettingsPage(auctionOnly = false) {
     intro.className = "settingsIntro";
     intro.innerHTML = auctionOnly ? `<h3>Auction settings · ${escapeHTML(server?.name || "Workspace")}</h3><p>Manage personalities and auction options locally on this device.</p>` : `<h3>${escapeHTML(server?.name || "Workspace")}</h3><p>Organize channels under categories. Everything is saved in this browser on this device.</p>`;
     page.appendChild(intro);
+    page.appendChild(renderLocalAudioSettings());
     if (!auctionOnly) page.appendChild(renderAppearanceSettings());
     if (auctionOnly) page.appendChild(renderAuctionPersonalityCreation());
 
