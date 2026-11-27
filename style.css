@@ -6420,6 +6420,16 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .auctionDraftProfile { flex-wrap: wrap; padding: 10px 0; }
 .auctionDraftProfile label { flex: 1 1 150px; min-width: 0; }
 .auctionDraftProfile input { width: 100%; min-width: 0; }
+.auctionDraftProfile { display: grid; grid-template-columns: 56px minmax(0, 1fr); align-items: start; gap: 8px 12px; }
+.auctionDraftProfile > .auctionAvatar, .auctionDraftProfile > .auctionAvatarPlaceholder { grid-column: 1; grid-row: 1 / span 3; }
+.auctionDraftProfile > label, .auctionDraftProfile > span:not(.auctionAvatarPlaceholder), .auctionDraftProfile > button { grid-column: 2; min-width: 0; }
+.auctionDraftProfile label { display: grid; gap: 5px; overflow-wrap: anywhere; }
+.auctionDraftProfile > button { justify-self: start; }
+.auctionDeletePersonality { margin: 10px 0; padding: 10px; border: 1px solid #a96d85; border-radius: 10px; }
+.auctionDeletePersonality label { display: grid; gap: 6px; margin: 8px 0; }
+.auctionDeletePersonality select { width: 100%; min-width: 0; min-height: 44px; }
+.auctionNuclearReset { margin-top: 12px; padding: 12px; border: 1px solid #eb8e9f; border-radius: 10px; background: #542432; }
+.auctionNuclearReset summary { font-weight: 800; color: #ffd7dd; }
 .auctionAllRelations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
 .auctionRelationPair { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; text-align: left; }
 .auctionRelationPair strong, .auctionRelationPair span { overflow-wrap: anywhere; }
