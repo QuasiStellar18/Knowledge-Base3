@@ -7767,3 +7767,145 @@ body.auction-club :is(.auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auc
     body.auction-club :is(.auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) { padding: 12px; }
     body.auction-club .auctionDinnerTable { padding: .9rem; }
 }
+/* A compact, touch-friendly listening space; the persistent player remains shared. */
+.audioLibrary { max-width: 1050px; margin: 0 auto; padding: 12px 12px 100px; color: #f8eef6; }
+.audioLibraryHero { padding: clamp(22px, 5vw, 46px); border-radius: 22px; background: radial-gradient(circle at 85% 0%, #b74d84 0, transparent 43%), linear-gradient(135deg, #6d305e, #261d3d 72%); box-shadow: 0 12px 28px #0003; }
+.audioLibrary { max-width: 1200px; border-radius: 18px; background: linear-gradient(180deg, #321526, #170e18 360px); }
+.audioLibraryHero { border-radius: 15px; background: radial-gradient(circle at 85% 5%, #f087b9aa, transparent 40%), linear-gradient(135deg, #8d315e, #3c1936 75%); }
+.audioLibraryHero button { margin: 6px 8px 0 0; border-radius: 30px; }
+.audioLibraryBody { padding: 16px; }
+.audioAlbumList { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(140px, 180px); overflow-x: auto; }
+.audioAlbumList button { display: flex; flex-direction: column; align-items: stretch; min-height: 74px; max-width: none; padding: 12px; white-space: normal; text-align: left; border-radius: 12px; background: #ffffff12; }
+.audioAlbumList button img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; margin-bottom: 8px; }
+.audioTrackIcon { flex-basis: 52px; height: 52px; overflow: hidden; }
+.audioTrackIcon img { width: 100%; height: 100%; object-fit: cover; }
+.audioTrackRow { background: #ffffff08; }
+.audioTrackRow:hover { background: #ffffff16; }
+.audioTrackTags { display: block; color: #f8add2; font-size: .78rem; overflow-wrap: anywhere; }
+.audioTrackTools { position: relative; }
+.audioTrackTools summary { cursor: pointer; list-style: none; padding: 10px; min-width: 36px; text-align: center; border-radius: 8px; background: #ffffff13; }
+.audioTrackTools[open] { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.audioTagFilters, .personalTagChips { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
+.audioTagFilters button, .personalTagChips button { border-radius: 999px; min-height: 36px; }
+.personalTagCard, .audioCoverCard { max-height: min(85vh, 850px); overflow-y: auto; }
+.personalTagCard input { width: 100%; min-height: 44px; font-size: 16px; }
+.personalTagActions { display: flex; justify-content: flex-end; gap: 8px; }
+.audioCoverGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin: 12px 0; }
+.audioCoverGrid button { padding: 0; overflow: hidden; border-radius: 10px; }
+.audioCoverGrid img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
+@media (max-width: 520px) { .audioLibraryBody { padding: 12px 2px; } .audioAlbumList { grid-auto-columns: 135px; } .audioTrackTools[open] { flex-basis: 100%; } }
+.audioLibraryHero span { font-size: .7rem; font-weight: 800; letter-spacing: .16em; color: #ffd2e8; }
+.audioLibraryHero h2 { font-size: clamp(1.8rem, 6vw, 3rem); margin: .4rem 0; }
+.audioLibraryHero p { max-width: 38rem; color: #f1dce9; line-height: 1.5; }
+.audioLibrary button, .audioLibrary select, .audioLibrary input { font-size: 16px; }
+.audioLibrary button { min-height: 42px; }
+.audioLibraryBody { padding: 12px 0; }
+.audioLibraryNotice { padding: 12px; border-radius: 12px; background: #57405c; line-height: 1.4; }
+.audioLibrarySectionHeading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 20px 0 10px; }
+.audioLibrarySectionHeading h3 { margin: 0 auto 0 0; font-size: 1.2rem; }
+.audioAlbumList { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; }
+.audioAlbumList button { flex: 0 0 auto; max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 999px; }
+.audioAlbumList button.active { background: #e38db9; color: #251423; }
+.audioLibrarySearch { box-sizing: border-box; width: 100%; min-height: 44px; margin-bottom: 10px; }
+.audioTrackList { display: grid; gap: 6px; }
+.audioTrackRow { display: flex; align-items: center; gap: 8px; padding: 9px; border-radius: 12px; background: #ffffff0b; }
+.audioTrackIcon { display: grid; place-items: center; flex: 0 0 42px; height: 42px; border-radius: 9px; background: linear-gradient(140deg, #ce6a9a, #704882); font-size: 1.4rem; }
+.audioTrackDetail { flex: 1 1 0; min-width: 0; }
+.audioTrackDetail strong, .audioTrackDetail small { display: block; overflow-wrap: anywhere; }
+.audioTrackDetail small { color: #ddc7d7; margin-top: 3px; }
+.audioTrackRow select { max-width: 120px; min-height: 42px; }
+@media (max-width: 520px) { .audioTrackRow { flex-wrap: wrap; } .audioTrackDetail { flex: 1 1 calc(100% - 110px); } .audioTrackRow button, .audioTrackRow select { flex-grow: 1; } }
+.audioLibraryBody { padding: 16px; }
+.audioAlbumList { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(140px, 180px); }
+.audioAlbumList button { max-width: none; white-space: normal; border-radius: 12px; }
+.audioTrackIcon { flex: 0 0 52px; height: 52px; }
+@media (max-width: 520px) { .audioLibraryBody { padding: 12px 2px; } .audioAlbumList { grid-auto-columns: 135px; } }
+
+/* Dedicated listening controls and settings. */
+.audioSettingsPage { max-width: 850px; margin: 0 auto; padding: 16px 16px 100px; }
+.audioSettingsPage > h2 { font-size: clamp(1.6rem, 5vw, 2.3rem); margin: 16px 0; }
+.audioSettingsPage > button { min-height: 44px; }
+.audioSettingsPage .localAudioSettings { padding: clamp(16px, 4vw, 28px); background: linear-gradient(145deg, #49223c, #211521 65%); border: 1px solid #bd789c; border-radius: 18px; }
+.audioSettingsPage .localAudioSettings > summary { font-size: 1.15rem; }
+.localAudioSettings p { line-height: 1.45; }
+.localAudioOverview { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
+.localAudioOverview span { padding: 8px 10px; border-radius: 20px; background: #ffffff12; font-size: .86rem; }
+.localAudioSettings > div > label { margin: 14px 0; }
+.localAudioSettings > div > label select { width: 100%; }
+.localAudioSave, .localAudioEnable { margin: 5px 8px 5px 0; }
+.localAudioLibrary input[type="search"] { width: 100%; margin: 10px 0 4px; }
+.localAudioLibrary small { display: block; margin-bottom: 10px; }
+.localAudioTrack { padding: 8px; border-radius: 10px; background: #ffffff0c; }
+.audioLibraryResultCount { color: #e5bfd3; margin: 6px 0 12px; font-size: .85rem; }
+.audioTrackTools summary { min-height: 42px; display: grid; place-items: center; }
+.localAudioSessionBar { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.localAudioSessionBar [hidden] { display: none !important; }
+.localAudioProgress { grid-column: 1 / 4; grid-row: 2; }
+.localAudioTime { grid-column: 4; grid-row: 2; }
+@media (max-width: 520px) { .audioSettingsPage { padding: 12px 10px 100px; } .localAudioSessionBar { gap: 3px 5px; padding-inline: 8px; } .localAudioSessionBar button { min-width: 48px; padding-inline: 7px; } }
+body.audioViewOpen #input-bar, body.audioViewOpen .searchWrap, body.audioViewOpen #mobileRandomBtn, body.audioViewOpen #mobileAddImageBtn { display: none !important; }
+
+/* Rounded, palette-aware controls. Photo tiles and specialized game artwork keep
+   their own styling; these are defaults and navigation surfaces, not overlays. */
+body { --ui-tint: #db79ac; --ui-shade: #634054; }
+body[data-palette="midnight"] { --ui-tint: #6dbcf0; --ui-shade: #34546c; }
+body[data-palette="violet"] { --ui-tint: #b19af5; --ui-shade: #57466f; }
+body[data-palette="forest"] { --ui-tint: #71d1ad; --ui-shade: #3c6057; }
+body[data-palette="sunset"] { --ui-tint: #ffa777; --ui-shade: #75493f; }
+button {
+    border-radius: 12px;
+    background: var(--ui-shade);
+    color: #fff7fb;
+    cursor: pointer;
+}
+button:disabled { cursor: not-allowed; opacity: .55; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 3px solid var(--ui-tint);
+    outline-offset: 2px;
+}
+@media (hover: hover) {
+    button:not(:disabled):hover { filter: brightness(1.12); }
+}
+:is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), textarea, select) {
+    border-radius: 11px;
+}
+.sidebarHeader { border-bottom-color: color-mix(in srgb, var(--ui-tint) 24%, var(--border)); }
+.categoryHeader, .channel, .channelRow { border-radius: 11px; }
+.categoryHeader { color: var(--muted); }
+.categoryHeader:hover, .channelRow:hover { background: color-mix(in srgb, var(--ui-tint) 10%, var(--sidebar-bg)); }
+.channelRow.active { background: color-mix(in srgb, var(--ui-tint) 23%, var(--sidebar-bg)); }
+.channelRow.active::before { background: var(--ui-tint); }
+.channelRow.active .hash { color: var(--ui-tint); }
+.server, .server:hover, .server.active { border-radius: 17px; }
+.server.active { box-shadow: 0 0 0 2px var(--ui-tint); }
+#topbar { border-bottom-color: color-mix(in srgb, var(--ui-tint) 20%, var(--border)); }
+.message:not(.pinned):not(.selected) { border-radius: 16px; }
+.message:hover:not(.pinned):not(.selected) { background: color-mix(in srgb, var(--ui-tint) 7%, var(--chat-bg)); }
+:is(.iconButton, .tag, .reactionChip, .savedTextChip) { border-radius: 999px; background: color-mix(in srgb, var(--ui-tint) 19%, var(--panel-bg)); color: var(--text); }
+:is(.topActions, #sidebar, #input-bar, #mobileQuickActions, #mobileStageNav) button:not(.channel):not(.server):not(.categoryHeader):not(.channelTool):not(.categoryTool) { border-radius: 12px; }
+#sidebar .sidebarTools button, #topbar .topActions > button, #mobileQuickActions button,
+#input-bar #attachImageBtn, #input-bar #linkPhotosBtn, #sidebar #newServerBtn {
+    background: var(--ui-shade);
+    background: color-mix(in srgb, var(--ui-tint) 23%, var(--panel-bg));
+    color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--ui-tint) 27%, transparent);
+}
+#input-bar #sendBtn { background: var(--ui-shade); background: color-mix(in srgb, var(--ui-tint) 50%, #452c40); color: #fff; }
+#mobileStageNav button.active { background: color-mix(in srgb, var(--ui-tint) 28%, var(--sidebar-bg)); color: var(--text); }
+.audioLibrary :is(button, select), .audioSettingsPage :is(button, select), .localAudioSettings button { border-radius: 13px; }
+.audioLibrarySectionHeading input, .audioLibrarySearch { min-height: 44px; padding: 9px 12px; background: #281a29; color: #fff7fb; border: 1px solid #80536c; border-radius: 12px; }
+.audioLibrarySectionHeading input::placeholder, .audioLibrarySearch::placeholder { color: #c9aeba; }
+.audioLibraryHero button, .audioLibrarySectionHeading button, .audioTagFilters button, .audioTrackTools summary, .audioTrackRow > button, .audioSettingsPage > button, .localAudioSettings button {
+    background: #693d57;
+    background: color-mix(in srgb, var(--ui-tint) 26%, #331b2c);
+    color: #fff7fb;
+    border: 1px solid color-mix(in srgb, var(--ui-tint) 48%, transparent);
+}
+.audioAlbumList button { border-radius: 14px; }
+.audioAlbumList button.active, .audioLibrary button[aria-pressed="true"] { background: var(--ui-tint); color: #25131f; }
+.audioTrackRow { border: 1px solid #ffffff0b; border-radius: 15px; }
+.audioLibraryHero, .audioSettingsPage .localAudioSettings { box-shadow: 0 10px 26px #0003; }
+.localAudioSessionBar { border-radius: 16px 16px 0 0; }
+.localAudioSessionBar button { border-radius: 12px; }
+:is(button.danger, .iconButton.danger, .categoryTool.danger, .channelTool.danger) { color: #ffd5dc; }
+@media (prefers-reduced-motion: reduce) { button:not(:disabled):active { transform: none; } }
