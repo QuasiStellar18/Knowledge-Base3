@@ -6396,6 +6396,10 @@ body .thisOrThatMatchup.isHorizontal .thisOrThatCard > img { width: 100%; height
 .localAudioSettings { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-bg); }
 .localAudioSettings summary { cursor: pointer; font-weight: 700; }
 .localAudioSettings > label, .localAudioSettings > div > label { display: grid; gap: 5px; margin: 8px 0; }
+.localAudioSettings [hidden] { display: none !important; }
+.localAudioAssignments, .localAudioLibrary, .localAudioSettings > details { margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.localAudioAssignments label, .localAudioSettings > details label { display: grid; gap: 5px; margin: 8px 0; }
+.localAudioEnable { font-weight: 700; background: var(--accent); color: #091710; }
 .localAudioSettings input, .localAudioSettings select { max-width: 100%; min-width: 0; min-height: 44px; padding: 8px; font-size: 16px; }
 .localAudioTrackList { display: grid; gap: 8px; }
 .localAudioTrack { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -6486,7 +6490,18 @@ body.localAudioActive #app { height: calc(100vh - 90px); height: calc(100dvh - 9
 .auctionNuclearReset summary { font-weight: 800; color: #ffd7dd; }
 .auctionAllRelations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; }
 .auctionRelationPair { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; text-align: left; }
+.auctionRelationPair[aria-pressed="true"] { border: 2px solid #efabc9; background: #70425a; }
 .auctionRelationPair strong, .auctionRelationPair span { overflow-wrap: anywhere; }
+.relationshipInsight { padding: 14px; border: 1px solid #d6a1b8; border-radius: 14px; background: linear-gradient(135deg, #583448, #30202c); }
+.relationshipInsight h4 { margin: 0 0 8px; }
+.relationshipInsight p { line-height: 1.5; }
+.relationshipPortraits { display: flex; gap: 16px; }
+.relationshipPortraits > div { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.relationshipPortraits img, .relationshipPortraits .auctionAvatarPlaceholder, .relationshipPortraits .auctionBidderInitial { width: 48px; height: 48px; min-width: 48px; border-radius: 50%; object-fit: cover; }
+.auctionTradeDecision, .auctionTradeResult { padding: 10px; border-left: 4px solid #e3a1c0; border-radius: 6px; background: #493044; font-weight: 700; }
+.auctionTradeResult.accepted { border-color: #6cdb9c; }
+.auctionTradeResult.declined { border-color: #ff9da8; }
+.auctionTradePicker input[type="search"] { width: 100%; min-height: 44px; font-size: 16px; }
 .auctionProfile span { flex: 1; overflow-wrap: anywhere; }
 .auctionAvatar, .auctionAvatarPlaceholder { display: inline-grid; place-items: center; width: 52px; height: 52px; flex: 0 0 52px; object-fit: cover; border-radius: 50%; background: #303540; }
 .auctionProfileDetail, .auctionRoster { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-bg); }
@@ -6587,6 +6602,10 @@ body.localAudioActive #app { height: calc(100vh - 90px); height: calc(100dvh - 9
 .thisOrThatMatchup { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .thisOrThatCard { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 15px; background: var(--panel-bg); }
 .thisOrThatCard > img { width: 100%; max-height: min(58dvh, 680px); object-fit: contain; background: #0c0f14; border-radius: 10px; cursor: zoom-in; }
+.thisOrThatCard > .thisOrThatImageChoice { display: block; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 10px; background: #0c0f14; cursor: pointer; overflow: hidden; }
+.thisOrThatImageChoice img { display: block; width: 100%; max-height: min(58dvh, 680px); object-fit: contain; }
+.thisOrThatImageChoice:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+body .thisOrThatMatchup.isHorizontal .thisOrThatImageChoice img { height: min(48dvh, 560px); max-height: none; object-fit: contain; }
 .thisOrThatCard > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .thisOrThatSkip { justify-self: center; }
 
@@ -7685,4 +7704,66 @@ body.interface-streamlined .streamlinedSceneActions {
 @media (max-width: 700px), (max-height: 520px) and (orientation: landscape) and (pointer: coarse) {
     body.auctionViewOpen #input-bar, body.auctionViewOpen .searchWrap, body.auctionViewOpen #mobileRandomBtn, body.auctionViewOpen #mobileAddImageBtn { display: none !important; }
     body.auctionViewOpen #mobileQuickActions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Optional pink club: layered CSS textures avoid downloading decorative images. */
+body.auction-club :is(.auctionStage, .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) {
+    --panel-bg: #35172d; --border: #bd7297; --text: #fff5fb; --muted: #f0cfe1; --accent: #ff9fca;
+    color: #fff5fb;
+    border: 2px solid #e9a6c6;
+    background:
+        radial-gradient(ellipse at 8% 2%, #b8327c66 0, transparent 30%),
+        radial-gradient(ellipse at 93% 0%, #e25eaa55 0, transparent 28%),
+        linear-gradient(150deg, #481936, #291326 55%, #1c1022);
+    box-shadow: inset 0 0 0 3px #65304f, 0 10px 28px #10061388;
+}
+body.auction-club .auctionStage::before {
+    height: 43px;
+    border-bottom: 3px solid #f8c6d6;
+    background:
+        radial-gradient(ellipse 9px 13px at 10px 100%, #ffb5da 52%, transparent 58%) 0 0 / 20px 100% repeat-x,
+        repeating-linear-gradient(100deg, #7c1c55, #e16aad 18px, #a82f70 30px, #5f143e 48px);
+}
+body.auction-club .auctionStage::after {
+    background: linear-gradient(90deg, #a63373bb, #e878b533 12px, transparent 30px, transparent calc(100% - 30px), #e878b533 calc(100% - 12px), #a63373bb);
+}
+body.auction-club .auctionStageMarquee {
+    border-block: 2px solid #ffd7a1;
+    background: #361326dd;
+    box-shadow: 0 0 0 3px #a94b7b, 0 0 17px #f163ac66;
+    color: #ffe5c7;
+}
+body.auction-club .auctionStageMarquee strong { color: #fff4df; text-shadow: 0 1px 0 #9b4c57, 0 0 12px #ffafd3aa; }
+body.auction-club :is(.auctionStage .focusSessionIntro, .auctionStage .blindAuctionControls, .auctionPreview, .auctionRevealBids, .auctionTradeOffer, .auctionTradeCompose, .auctionTradePicker, .auctionScrapbookCard, .auctionCompareCard, .auctionSettingsPage .settingsCategory) {
+    border-color: #e99cbd; background: #35172fea; color: #fff5fb;
+}
+body.auction-club :is(.auctionStage, .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) button:not(:disabled) {
+    border-color: #e6a2be; background: #713451; color: #fff7fb;
+}
+body.auction-club :is(.auctionStage, .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) button.adventurePrimary:not(:disabled) {
+    border-color: #ffd0e2; background: #b42c73 !important; color: #fff !important;
+}
+body.auction-club :is(.auctionStage, .auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) button[aria-pressed="true"] {
+    outline: 2px solid #ffd09e; outline-offset: -2px; background: #a3296b;
+}
+body.auction-club .auctionCharacterProfile { border-color: #f0aeca; background: linear-gradient(145deg, #83345c, #3b1934 72%); }
+body.auction-club .auctionCharacterHero { border-color: #e5a1c0; }
+body.auction-club .auctionCharacterBio { border-color: #ffc0d9; background: #2b1226dd; }
+body.auction-club .auctionDinner {
+    border-color: #efb2d1;
+    background: radial-gradient(ellipse at 50% 0, #b73d80aa, transparent 40%), linear-gradient(145deg, #431b39, #201121);
+    box-shadow: inset 0 0 0 4px #8d416a, 0 10px 26px #10061388;
+}
+body.auction-club .auctionDinnerTable {
+    border: 5px solid #ed9ac1;
+    background: radial-gradient(ellipse at 50% 100%, #ae587a 0, #562642 48%, #2b162b 100%);
+    box-shadow: inset 0 0 0 2px #ffdbac, 0 4px 14px #13000b88;
+}
+body.auction-club .auctionDinnerTable img { border-color: #ffd6a1; box-shadow: 0 0 0 3px #a63a75, 0 3px 12px #140610aa; }
+body.auction-club .auctionDinnerFrame { border-color: #edb187; background: #21101b; box-shadow: 0 0 0 3px #a73d79, 0 4px 18px #12030a99; }
+body.auction-club :is(.auctionDialogue, .auctionDinnerCallback) { color: #ffe9f3; }
+body.auction-club :is(.auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) :is(h3, h4) { color: #ffe3ed; }
+@media (max-width: 480px) {
+    body.auction-club :is(.auctionOwnerPage, .auctionExtraPage, .auctionDinner, .auctionSettingsPage) { padding: 12px; }
+    body.auction-club .auctionDinnerTable { padding: .9rem; }
 }
