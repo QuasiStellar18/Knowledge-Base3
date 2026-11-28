@@ -1,10 +1,10 @@
-const CACHE_NAME = "knowledge-discord-v156";
+const CACHE_NAME = "knowledge-discord-v161";
 const APP_SHELL = [
     "./",
     "./index.html",
-    "./style.css?v=156",
-    "./db.js?v=156",
-    "./app.js?v=156"
+    "./style.css?v=161",
+    "./db.js?v=161",
+    "./app.js?v=161"
 ];
 
 self.addEventListener("install", (event) => {
