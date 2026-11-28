@@ -76,7 +76,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "156";
+const APP_BUILD_VERSION = "161";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
@@ -481,8 +481,9 @@ function normalizeStructure(savedStructure) {
             ...(base.settings || {}),
             photoCollections: Array.isArray(base.settings?.photoCollections) ? base.settings.photoCollections : [],
             draftHistory: Array.isArray(base.settings?.draftHistory) ? base.settings.draftHistory.slice(-200) : [],
-            hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame.slice(-300) : [],
-            museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits.slice(-100) : [],
+            // Never silently discard curated records while opening a workspace.
+            hallOfFame: Array.isArray(base.settings?.hallOfFame) ? base.settings.hallOfFame : [],
+            museumExhibits: Array.isArray(base.settings?.museumExhibits) ? base.settings.museumExhibits : [],
             thisOrThatHistory: Array.isArray(base.settings?.thisOrThatHistory) ? base.settings.thisOrThatHistory.slice(-2000) : [],
             tournamentHistory: Array.isArray(base.settings?.tournamentHistory) ? base.settings.tournamentHistory : [],
             auctionBidders: Array.isArray(base.settings?.auctionBidders) ? base.settings.auctionBidders : [],
@@ -814,6 +815,7 @@ function allChannels(server = getActiveServer()) {
 
 function render() {
     document.body.classList.toggle("focusMode", state.focusMode);
+    document.body.classList.toggle("auction-club", state.structure?.settings?.auctionClubTheme !== false);
     renderServers();
     renderChannels();
     renderHeader();
@@ -1174,6 +1176,7 @@ function renderAuctionViews() {
     if (!state.auctionsFolderCollapsed) {
         [{ id: "auction-settings", type: "auctionSettings", label: "auction settings", prefix: "⚙", title: "Create personalities and manage auction settings" },
          { id: "blind-auction", type: "blindAuction", label: "photo auction", prefix: "◈", title: "Bid against local programmed opponents" },
+         { id: "auction-market-inbox", type: "auctionMarketInbox", label: `market sale inbox${getPendingAuctionMarketSales().length ? ` (${getPendingAuctionMarketSales().length})` : ""}`, prefix: "⇢", title: "Review all personality market-sale proposals" },
          { id: "auction-exhibition", type: "auctionExhibition", label: "exhibition night", prefix: "✧", title: "Browse bidder showcases and choose a winner" },
          { id: "auction-seasons", type: "auctionSeasons", label: "auction seasons", prefix: "◷", title: "Local auction season recaps" },
          { id: "auction-compare", type: "auctionCompare", label: "compare personalities", prefix: "⇄", title: "Compare bidders and their collections" },
@@ -1262,6 +1265,7 @@ function renderChannelRow(channel) {
 }
 
 async function openView(type, id) {
+    const viewChanged = state.activeView.type !== type || state.activeView.id !== id;
     state.sourceFocus = null;
     if (type !== "punishmentChallenge") stopPunishmentChallenge();
     if (type !== "personalityGames") clearPersonalityGamePhotoCache(state.personalityGame);
@@ -1343,13 +1347,15 @@ async function openView(type, id) {
         if (type === "personalityGames") { if (state.personalityGame?.serverId !== serverId) state.personalityGame = { serverId, screen: "setup", hostId: "", mode: "quiz" }; else { const game = state.personalityGame; if (game.screen === "play" && game.current?.length) await loadPersonalityGamePhotos(game, game.current); else if (game.screen === "finished" && game.winner) await loadPersonalityGamePhotos(game, [game.winner]); } }
     } else if (type === "auctionCompare" || type === "auctionScrapbook") {
         if (type === "auctionCompare") await ensureAuctionPhotoRefsLoaded(getAuctionCompareBidders().map((item) => item.avatarRef).filter(Boolean));
-        else { state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); }
+        else { state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getVisibleAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); }
+    } else if (type === "auctionMarketInbox") {
+        state.auctionMarketInboxLimit = 10; state.auctionTradeNotice = ""; await ensureAuctionPhotoRefsLoaded(getPendingAuctionMarketSales().slice(0, 10).map((item) => item.ref).filter(Boolean));
     } else if (type === "auctionExhibition" || type === "auctionSeasons") {
         if (type === "auctionExhibition" && state.auctionExhibition?.serverId !== getActiveServer()?.id) state.auctionExhibition = null;
         const exhibit = state.auctionExhibition;
         if (exhibit?.lineups?.length) await ensureAuctionPhotoRefsLoaded([exhibit.lineups[exhibit.ownerIndex]?.refs[exhibit.photoIndex]].filter(Boolean));
     } else if (type === "auctionOwner") {
-        state.auctionOwnerTab = getAuctionTrades().some((trade) => trade.status === "pending" && (trade.fromOwnerId === id || trade.toOwnerId === id)) ? "trades" : "roster";
+        state.auctionOwnerTab = getAuctionTrades().some((trade) => trade.status === "pending" && (trade.fromOwnerId === id || trade.toOwnerId === id)) || (state.structure.settings.auctionMarketProposals || []).some((proposal) => proposal.serverId === getActiveServer()?.id && proposal.ownerId === id && proposal.status === "pending") ? "trades" : "roster";
         state.auctionTradeNotice = "";
         await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(id, state.auctionOwnerTab));
         const bidder = getAuctionBidders().find((item) => item.id === id);
@@ -1374,6 +1380,7 @@ async function openView(type, id) {
     }
 
     render();
+    if (viewChanged && state.structure.settings.openViewsAtTop !== false && state.activeView.type === type && state.activeView.id === id) els.messages.scrollTop = 0;
     showMobileStage("chat");
 }
 
@@ -1539,6 +1546,7 @@ function renderHeader() {
         return;
     }
     if (state.activeView.type === "auctionSettings") { els.activeTitle.textContent = "Auction settings"; els.activeMeta.textContent = "Create local personalities and manage auction options"; return; }
+    if (state.activeView.type === "auctionMarketInbox") { els.activeTitle.textContent = "Market sale inbox"; els.activeMeta.textContent = "Review personality proposals · local to this server"; return; }
     if (state.activeView.type === "blindAuction") {
         els.activeTitle.textContent = "Photo Auction";
         els.activeMeta.textContent = "Bid local points against programmed opponents";
@@ -1610,7 +1618,7 @@ function renderHeader() {
 function renderMessages() {
     if (state.activeView.type !== "blindAuction" && state.blindAuction.screen === "play" && auctionPacingDelay()) { cancelAuctionAutoTurn(); state.blindAuction.autoPacingPaused = true; }
     document.body.classList.toggle("personalityGameOpen", state.activeView.type === "personalityGames");
-    document.body.classList.toggle("auctionViewOpen", ["blindAuction", "auctionSettings", "auctionOwner", "auctionExhibition", "auctionSeasons", "auctionDinner", "auctionCompare", "auctionScrapbook", "relationshipMap", "personalityGames", "punishmentChallenge"].includes(state.activeView.type));
+    document.body.classList.toggle("auctionViewOpen", ["blindAuction", "auctionSettings", "auctionOwner", "auctionMarketInbox", "auctionExhibition", "auctionSeasons", "auctionDinner", "auctionCompare", "auctionScrapbook", "relationshipMap", "personalityGames", "punishmentChallenge"].includes(state.activeView.type));
     releaseRenderedObjectUrls();
     els.messages.innerHTML = "";
 
@@ -1684,6 +1692,7 @@ function renderMessages() {
         return;
     }
     if (state.activeView.type === "auctionSettings") { renderSettingsPage(true); return; }
+    if (state.activeView.type === "auctionMarketInbox") { renderAuctionMarketInbox(); return; }
     if (state.activeView.type === "auctionExhibition") { renderAuctionExhibition(); return; }
     if (state.activeView.type === "auctionSeasons") { renderAuctionSeasons(); return; }
     if (state.activeView.type === "auctionDinner") { renderAuctionDinner(); return; }
@@ -2734,23 +2743,28 @@ function isHallOfFameRef(ref) {
 }
 
 async function toggleHallOfFameNomination(ref) {
+    if (state.hallOfFameSaving) return;
     const entries = state.structure.settings.hallOfFame || [];
     const existing = entries.find((entry) => photoRefKey(entry.ref) === photoRefKey(ref));
+    let nextEntries;
     if (existing) {
         if (!confirm("Remove this photo from the Hall of Fame? Its original local image will remain untouched.")) return;
-        state.structure.settings.hallOfFame = entries.filter((entry) => entry !== existing);
+        nextEntries = entries.filter((entry) => entry !== existing);
     } else {
         const server = getChannelServer(ref.channelId);
         if (!server) return;
-        state.structure.settings.hallOfFame = [...entries, {
+        nextEntries = [...entries, {
             id: crypto.randomUUID(),
             serverId: server.id,
             ref: structuredClone(ref),
             nominatedAt: new Date().toISOString(),
             blurb: ""
-        }].slice(-300);
+        }];
     }
-    await saveStructure(state.structure);
+    state.hallOfFameSaving = true;
+    try { await saveStructure({ ...state.structure, settings: { ...state.structure.settings, hallOfFame: nextEntries } }); state.structure.settings.hallOfFame = nextEntries; }
+    catch (error) { console.error("Could not save Hall of Fame nomination:", error); alert("The Hall of Fame change could not be saved. Your previous nominations and original photos were not changed."); return; }
+    finally { state.hallOfFameSaving = false; }
     render();
 }
 
@@ -3113,7 +3127,9 @@ function renderThisOrThatGame() {
         });
         layoutSelect.addEventListener("change", () => { game.layout = layoutSelect.value; });
         layout.append(layoutText, layoutSelect);
-        page.append(intro, modes, priority, layout, start);
+        const tapLabel = document.createElement("label"); tapLabel.className = "viewToggle"; const tapInput = document.createElement("input"); tapInput.type = "checkbox"; tapInput.checked = state.structure.settings.thisOrThatTapToChoose !== false; const tapText = document.createElement("span"); tapText.textContent = "Tap a photo to choose it"; tapLabel.append(tapInput, tapText);
+        tapInput.addEventListener("change", async () => { const value = tapInput.checked; tapInput.disabled = true; start.disabled = true; try { await saveAuctionChanges({ thisOrThatTapToChoose: value }); } catch (error) { console.error("Could not save photo selection preference:", error); tapInput.checked = !value; alert("Could not save this setting. Please try again."); } finally { tapInput.disabled = false; start.disabled = false; } });
+        page.append(intro, modes, priority, layout, tapLabel, start);
         const summary = game.lastSessionSummary;
         if (summary?.rounds) {
             const card = document.createElement("section");
@@ -3149,6 +3165,7 @@ function renderThisOrThatGame() {
     }
     const matchup = document.createElement("section");
     matchup.className = `thisOrThatMatchup${game.layout === "vertical" ? " isVertical" : " isHorizontal"}`;
+    const tapToChoose = state.structure.settings.thisOrThatTapToChoose !== false;
     pair.forEach((candidate, index) => {
         const other = pair[index === 0 ? 1 : 0];
         const card = document.createElement("article");
@@ -3156,7 +3173,7 @@ function renderThisOrThatGame() {
         const image = document.createElement("img");
         setRenderedImageSource(image, candidate.attachment);
         image.alt = candidate.attachment.note || candidate.attachment.name || "Local photo";
-        image.addEventListener("click", () => openImageViewer(candidate.attachment, image.alt));
+        if (!tapToChoose) image.addEventListener("click", () => openImageViewer(candidate.attachment, image.alt));
         const source = document.createElement("small");
         source.textContent = `# ${getChannelById(candidate.ref.channelId)?.name || "missing"}`;
         const choose = document.createElement("button");
@@ -3175,7 +3192,8 @@ function renderThisOrThatGame() {
         sourceButton.textContent = "Open source";
         sourceButton.addEventListener("click", () => { void openPhotoSource(candidate.ref); });
         actions.append(open, sourceButton);
-        card.append(image, source, choose, actions);
+        if (tapToChoose) { const selectImage = document.createElement("button"); selectImage.type = "button"; selectImage.className = "thisOrThatImageChoice"; selectImage.setAttribute("aria-label", `Choose photo ${index + 1}: ${image.alt}`); selectImage.disabled = Boolean(game.saving); selectImage.addEventListener("click", () => chooseThisOrThatWinner(candidate, other)); selectImage.appendChild(image); card.append(selectImage, source, actions); }
+        else card.append(image, source, choose, actions);
         matchup.appendChild(card);
     });
     const skip = document.createElement("button");
@@ -3473,7 +3491,8 @@ async function resetAllAuctionData() {
     state.auctionResetBusy = true;
     const changes = {
         auctionOwnership: [], auctionBalances: {}, auctionSessions: {}, auctionFreshStartVersion: 127,
-        auctionTrades: (state.structure.settings.auctionTrades || []).map((trade) => trade.status === "pending" ? { ...trade, status: "stale", resolvedAt: new Date().toISOString(), reason: "manual auction reset" } : trade)
+        auctionTrades: (state.structure.settings.auctionTrades || []).map((trade) => trade.status === "pending" ? { ...trade, status: "stale", resolvedAt: new Date().toISOString(), reason: "manual auction reset" } : trade),
+        auctionMarketProposals: (state.structure.settings.auctionMarketProposals || []).map((item) => item.status === "pending" ? { ...item, status: "stale", resolvedAt: new Date().toISOString(), reason: "manual auction reset" } : item)
     };
     try {
         await saveAuctionChanges(changes);
@@ -3971,9 +3990,10 @@ function getAuctionViewRefs(ownerId, tab) {
     if (tab === "trades") {
         const ownership = getAuctionOwnership();
         const draft = state.auctionTradeDraft?.targetId === ownerId ? state.auctionTradeDraft : {};
-        const picks = [["john", draft.givePage || 0], [ownerId, draft.wantPage || 0]].flatMap(([id, page]) => ownership.filter((item) => item.ownerId === id).slice(page * 10, page * 10 + 10).map((item) => item.ref));
-        const offers = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).slice(0, state.auctionTradeLimit || 10).flatMap((trade) => [trade.giveRef, trade.wantRef]);
-        return [avatar, ...picks, ...offers].filter(Boolean);
+        const values = getAuctionTradeValues(), picks = ["john", ownerId].flatMap((id) => ownership.filter((item) => item.ownerId === id).sort((a, b) => auctionTradeValue(b.ref, values) - auctionTradeValue(a.ref, values)).slice(0, 25).map((item) => item.ref));
+        const offers = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).slice(0, state.auctionTradeLimit || 10).flatMap(auctionTradeAllRefs);
+        const sales = (state.structure.settings.auctionMarketProposals || []).filter((item) => item.serverId === getActiveServer()?.id && item.ownerId === ownerId && item.status === "pending").map((item) => item.ref);
+        return [avatar, ...picks, ...offers, ...sales].filter(Boolean);
     }
     if (tab === "profile") { const bidder = getAuctionBidders().find((item) => item.id === ownerId); return [avatar, ...getAuctionPersonalFavorites(bidder), ...getPunishmentFavoriteRefs(bidder), ...(bidder?.personality?.wishlist || []).filter((item) => item.revealed).map((item) => item.ref)].filter(Boolean); }
     const sections = getAuctionRosterSections(ownerId);
@@ -4004,26 +4024,51 @@ function auctionTradeBotAccepts(bidder, givenRef, receivedRef, values, noise = t
     const attachment = getAuctionPersonalitySliders(bidder).attachment;
     const favoriteKey = `favorites:${bidder.id}`; let favorites = preferenceCache?.get(favoriteKey);
     if (!favorites) { favorites = new Set(getAuctionPersonalFavorites(bidder).map(auctionPhotoKey)); preferenceCache?.set(favoriteKey, favorites); }
-    const holding = (1 + Math.max(0, taste(givenRef) - 1) * ((attachment - 50) / 100)) * (favorites.has(auctionPhotoKey(givenRef)) ? 1.1 + attachment / 500 : 1);
-    return auctionTradeValue(receivedRef, values) * preference(receivedRef) * taste(receivedRef) * (1 + variation) >= auctionTradeValue(givenRef, values) * preference(givenRef) * taste(givenRef) * holding * (auctionTradeThreshold(bidder) + adjustment);
+    const given = Array.isArray(givenRef) ? givenRef : [givenRef], received = Array.isArray(receivedRef) ? receivedRef : [receivedRef];
+    const giveValue = given.reduce((sum, ref) => { const holding = (1 + Math.max(0, taste(ref) - 1) * ((attachment - 50) / 100)) * (favorites.has(auctionPhotoKey(ref)) ? 1.1 + attachment / 500 : 1); return sum + auctionTradeValue(ref, values) * preference(ref) * taste(ref) * holding; }, 0);
+    const receiveValue = received.reduce((sum, ref) => sum + auctionTradeValue(ref, values) * preference(ref) * taste(ref), 0);
+    return received.length > 0 && given.length > 0 && receiveValue * (1 + variation) >= giveValue * (auctionTradeThreshold(bidder) + adjustment);
+}
+function auctionTradeRefs(trade, side) { const list = trade?.[`${side}Refs`]; return Array.isArray(list) ? list.filter(Boolean) : trade?.[`${side}Ref`] ? [trade[`${side}Ref`]] : []; }
+function auctionTradeAllRefs(trade) { return [...auctionTradeRefs(trade, "give"), ...auctionTradeRefs(trade, "want")]; }
+function auctionTradeSignature(trade) {
+    const a = [trade.fromOwnerId, auctionTradeRefs(trade, "give").map(auctionPhotoKey).sort()], b = [trade.toOwnerId, auctionTradeRefs(trade, "want").map(auctionPhotoKey).sort()];
+    return JSON.stringify([a, b].sort((x, y) => String(x[0]).localeCompare(String(y[0]))));
+}
+function auctionTradeCooldown(candidate, trades, serverId) {
+    const signature = auctionTradeSignature(candidate), completions = state.structure.settings.auctionSeasonCompletions || [];
+    let remaining = 0;
+    for (const trade of trades) {
+        if (trade.serverId !== serverId || auctionTradeSignature(trade) !== signature) continue;
+        if (trade.status === "pending") return 5;
+        const since = trade.resolvedAt || trade.createdAt;
+        const completed = since ? new Set(completions.filter((item) => item.serverId === serverId && item.auctionId && item.finishedAt && item.finishedAt > since).map((item) => item.auctionId)).size : 0;
+        remaining = Math.max(remaining, Math.max(0, 5 - completed));
+    }
+    return remaining;
 }
 function auctionTradeOwnerHas(ownership, serverId, ownerId, ref) {
     return Boolean(ref?.messageId && ref?.attachmentId && ownership.some((item) => item.serverId === serverId && item.ownerId === ownerId && auctionPhotoKey(item.ref) === auctionPhotoKey(ref)));
 }
+function invalidateAuctionMarketProposals(serverId, refs) { const keys = new Set(refs.map(auctionPhotoKey)); return (state.structure.settings.auctionMarketProposals || []).map((item) => item.serverId === serverId && item.status === "pending" && keys.has(auctionPhotoKey(item.ref)) ? { ...item, status: "stale", resolvedAt: new Date().toISOString() } : item); }
 function invalidateAuctionTradesForRefs(serverId, refs) {
     const keys = new Set(refs.map(auctionPhotoKey));
-    return (state.structure.settings.auctionTrades || []).map((item) => item.serverId === serverId && item.status === "pending" && [item.giveRef, item.wantRef].some((ref) => keys.has(auctionPhotoKey(ref))) ? { ...item, status: "stale", resolvedAt: new Date().toISOString() } : item);
+    return (state.structure.settings.auctionTrades || []).map((item) => item.serverId === serverId && item.status === "pending" && auctionTradeAllRefs(item).some((ref) => keys.has(auctionPhotoKey(ref))) ? { ...item, status: "stale", resolvedAt: new Date().toISOString() } : item);
 }
 function makeAuctionTradeProposal(fromId, toId, ownership, pendingTrades, serverId, values = getAuctionTradeValues()) {
     if (fromId === toId || fromId === "john") return null;
-    if (pendingTrades.some((item) => item.serverId === serverId && item.status === "pending" && ((item.fromOwnerId === fromId && item.toOwnerId === toId) || (item.fromOwnerId === toId && item.toOwnerId === fromId)))) return null;
+    if (pendingTrades.filter((item) => item.serverId === serverId && item.status === "pending" && item.fromOwnerId === fromId).length >= 3) return null;
+    if (pendingTrades.filter((item) => item.serverId === serverId && item.status === "pending" && ((item.fromOwnerId === fromId && item.toOwnerId === toId) || (item.fromOwnerId === toId && item.toOwnerId === fromId))).length >= 3) return null;
     const bidders = getAuctionBidders(), from = bidders.find((item) => item.id === fromId), to = bidders.find((item) => item.id === toId);
     if (!from || (toId !== "john" && !to)) return null;
     const fromPhotos = shuffledCopy(ownership.filter((item) => item.serverId === serverId && item.ownerId === fromId)).slice(0, 16);
     const toPhotos = shuffledCopy(ownership.filter((item) => item.serverId === serverId && item.ownerId === toId)).slice(0, 16);
+    const relevant = pendingTrades.filter((item) => item.serverId === serverId && ((item.fromOwnerId === fromId && item.toOwnerId === toId) || (item.fromOwnerId === toId && item.toOwnerId === fromId)));
+    const blocked = new Set(relevant.filter((item) => auctionTradeCooldown(item, [item], serverId)).map(auctionTradeSignature));
     const preferenceCache = new Map(); let best = null, bestDifference = Infinity;
     for (const give of fromPhotos) for (const want of toPhotos) {
         if (auctionPhotoKey(give.ref) === auctionPhotoKey(want.ref)) continue;
+        if (blocked.has(auctionTradeSignature({ fromOwnerId: fromId, toOwnerId: toId, giveRef: give.ref, wantRef: want.ref }))) continue;
         if (!auctionTradeBotAccepts(from, give.ref, want.ref, values, false, toId, preferenceCache)) continue;
         if (to && !auctionTradeBotAccepts(to, want.ref, give.ref, values, false, fromId, preferenceCache)) continue;
         const difference = Math.abs(auctionTradeValue(give.ref, values) - auctionTradeValue(want.ref, values));
@@ -4035,19 +4080,36 @@ function makeAuctionTradeProposal(fromId, toId, ownership, pendingTrades, server
 function suggestedAuctionTrades(ownership, trades, serverId) {
     const result = [], bidders = shuffledCopy(getAuctionBidders()), values = getAuctionTradeValues();
     for (const bidder of bidders) {
-        const offer = makeAuctionTradeProposal(bidder.id, "john", ownership, [...trades, ...result], serverId, values);
-        if (offer) result.push(offer);
+        const offer = makeAuctionTradeProposal(bidder.id, "john", ownership, [...trades, ...result], serverId, values); if (offer) result.push(offer);
     }
     if (state.structure.settings.allowAuctionBotTrades) {
         for (let i = 0; i < bidders.length; i++) for (let j = i + 1; j < bidders.length; j++) {
-            const offer = makeAuctionTradeProposal(bidders[i].id, bidders[j].id, ownership, [...trades, ...result], serverId, values);
-            if (offer) result.push(offer);
+            const offer = makeAuctionTradeProposal(bidders[i].id, bidders[j].id, ownership, [...trades, ...result], serverId, values); if (offer) result.push(offer);
         }
     }
+    for (const bidder of bidders) for (let i = 0; i < 2; i++) { const offer = makeAuctionTradeProposal(bidder.id, "john", ownership, [...trades, ...result], serverId, values); if (!offer) break; result.push(offer); }
     return result;
 }
 
-async function resolveAuctionTrade(tradeId, approve) {
+function makeAuctionCounteroffer(original, ownership, trades, serverId, values = getAuctionTradeValues()) {
+    if (original.fromOwnerId !== "john") return null;
+    const bidder = getAuctionBidders().find((item) => item.id === original.toOwnerId); if (!bidder) return null;
+    if (trades.filter((item) => item.serverId === serverId && item.status === "pending" && item.fromOwnerId === bidder.id).length >= 3) return null;
+    if (trades.filter((item) => item.serverId === serverId && item.status === "pending" && ((item.fromOwnerId === bidder.id && item.toOwnerId === "john") || (item.fromOwnerId === "john" && item.toOwnerId === bidder.id))).length >= 3) return null;
+    const give = auctionTradeRefs(original, "want"), want = auctionTradeRefs(original, "give"), availableJohn = ownership.filter((item) => item.serverId === serverId && item.ownerId === "john"), availableBidder = ownership.filter((item) => item.serverId === serverId && item.ownerId === bidder.id);
+    if (!give.length || !want.length || !give.every((ref) => auctionTradeOwnerHas(ownership, serverId, bidder.id, ref)) || !want.every((ref) => auctionTradeOwnerHas(ownership, serverId, "john", ref))) return null;
+    const relevant = trades.filter((item) => item.serverId === serverId && ((item.fromOwnerId === bidder.id && item.toOwnerId === "john") || (item.fromOwnerId === "john" && item.toOwnerId === bidder.id))), blocked = new Set(relevant.filter((item) => auctionTradeCooldown(item, [item], serverId)).map(auctionTradeSignature)), originalSignature = auctionTradeSignature(original);
+    const candidates = [], add = (g, w) => { if (!g.length || !w.length || g.length > 20 || w.length > 20) return; const offer = { serverId, fromOwnerId: bidder.id, toOwnerId: "john", giveRefs: g, wantRefs: w }, signature = auctionTradeSignature(offer); if (signature === originalSignature || blocked.has(signature)) return; candidates.push(offer); };
+    if (give.length > 1) give.forEach((_, index) => add(give.filter((__, i) => i !== index), want));
+    if (want.length < 20) availableJohn.filter((item) => !want.some((ref) => auctionPhotoKey(ref) === auctionPhotoKey(item.ref))).sort((a, b) => auctionTradeValue(a.ref, values) - auctionTradeValue(b.ref, values)).slice(0, 25).forEach((item) => add(give, [...want, item.ref]));
+    availableBidder.filter((item) => !give.some((ref) => auctionPhotoKey(ref) === auctionPhotoKey(item.ref))).sort((a, b) => auctionTradeValue(a.ref, values) - auctionTradeValue(b.ref, values)).slice(0, 25).forEach((item) => give.forEach((_, index) => add(give.map((ref, i) => i === index ? item.ref : ref), want)));
+    const cache = new Map(), total = (refs) => refs.reduce((sum, ref) => sum + auctionTradeValue(ref, values), 0), acceptable = candidates.filter((offer) => auctionTradeBotAccepts(bidder, offer.giveRefs, offer.wantRefs, values, false, "john", cache));
+    acceptable.sort((a, b) => Math.abs(total(a.giveRefs) - total(a.wantRefs)) - Math.abs(total(b.giveRefs) - total(b.wantRefs)));
+    if (!acceptable.length) return null;
+    const choice = acceptable[0]; return { ...structuredClone(choice), id: newLocalGameRecordId(), giveRef: structuredClone(choice.giveRefs[0]), wantRef: structuredClone(choice.wantRefs[0]), status: "pending", counterToId: original.id, createdAt: new Date().toISOString() };
+}
+
+async function resolveAuctionTrade(tradeId, approve, decisionSource = "user") {
     if (state.auctionTradeBusy) return;
     const trades = state.structure.settings.auctionTrades || [], trade = trades.find((item) => item.id === tradeId && item.serverId === getActiveServer()?.id);
     if (!trade || trade.status !== "pending") { alert("This trade is no longer pending."); return; }
@@ -4055,24 +4117,28 @@ async function resolveAuctionTrade(tradeId, approve) {
     state.auctionTradeBusy = true;
     try {
         const ownership = state.structure.settings.auctionOwnership || [];
-        const valid = auctionTradeOwnerHas(ownership, trade.serverId, trade.fromOwnerId, trade.giveRef) && auctionTradeOwnerHas(ownership, trade.serverId, trade.toOwnerId, trade.wantRef) && auctionPhotoKey(trade.giveRef) !== auctionPhotoKey(trade.wantRef);
+        const giveRefs = auctionTradeRefs(trade, "give"), wantRefs = auctionTradeRefs(trade, "want"), allRefs = [...giveRefs, ...wantRefs], keys = new Set(allRefs.map(auctionPhotoKey));
+        const valid = giveRefs.length > 0 && wantRefs.length > 0 && keys.size === allRefs.length && giveRefs.every((ref) => auctionTradeOwnerHas(ownership, trade.serverId, trade.fromOwnerId, ref)) && wantRefs.every((ref) => auctionTradeOwnerHas(ownership, trade.serverId, trade.toOwnerId, ref));
         const status = !approve ? "declined" : valid ? "accepted" : "stale";
         const updatedTrades = trades.map((item) => {
             if (item.id === trade.id) return { ...item, status, resolvedAt: new Date().toISOString() };
-            if (status === "accepted" && item.serverId === trade.serverId && item.status === "pending" && [item.giveRef, item.wantRef].some((ref) => [auctionPhotoKey(trade.giveRef), auctionPhotoKey(trade.wantRef)].includes(auctionPhotoKey(ref)))) return { ...item, status: "stale", resolvedAt: new Date().toISOString() };
+            if (status === "accepted" && item.serverId === trade.serverId && item.status === "pending" && auctionTradeAllRefs(item).some((ref) => keys.has(auctionPhotoKey(ref)))) return { ...item, status: "stale", resolvedAt: new Date().toISOString() };
             return item;
         });
-        const changes = { auctionTrades: updatedTrades };
+        const counteroffer = status === "declined" && decisionSource === "bidder" ? makeAuctionCounteroffer(trade, ownership, updatedTrades, trade.serverId) : null;
+        const changes = { auctionTrades: counteroffer ? [...updatedTrades, counteroffer] : updatedTrades };
+        if (status === "accepted") changes.auctionMarketProposals = invalidateAuctionMarketProposals(trade.serverId, allRefs);
         if (status === "accepted") changes.auctionOwnership = ownership.map((item) => {
             if (item.serverId !== trade.serverId) return item;
             const key = auctionPhotoKey(item.ref);
-            if (key === auctionPhotoKey(trade.giveRef) && item.ownerId === trade.fromOwnerId) return { ...item, ownerId: trade.toOwnerId, acquiredVia: "trade" };
-            if (key === auctionPhotoKey(trade.wantRef) && item.ownerId === trade.toOwnerId) return { ...item, ownerId: trade.fromOwnerId, acquiredVia: "trade" };
+            if (giveRefs.some((ref) => key === auctionPhotoKey(ref)) && item.ownerId === trade.fromOwnerId) return { ...item, ownerId: trade.toOwnerId, acquiredVia: "trade" };
+            if (wantRefs.some((ref) => key === auctionPhotoKey(ref)) && item.ownerId === trade.toOwnerId) return { ...item, ownerId: trade.fromOwnerId, acquiredVia: "trade" };
             return item;
         });
         if (status === "accepted") { const milestones = auctionNewMilestones(trade.serverId, ownership, changes.auctionOwnership); if (milestones.length) changes.auctionMilestones = [...(state.structure.settings.auctionMilestones || []), ...milestones]; }
         await saveAuctionChanges(changes);
-        state.auctionTradeNotice = status === "accepted" ? "Trade accepted and ownership updated locally." : status === "declined" ? (trade.fromOwnerId === "john" ? "Your offer was declined or withdrawn." : "Trade declined.") : "The offer expired because ownership changed.";
+        state.auctionTradeNotice = status === "accepted" ? (decisionSource === "bidder" ? `${getAuctionOwnerName(trade.toOwnerId)} ACCEPTED your offer. Ownership updated locally.` : "Trade ACCEPTED and ownership updated locally.") : status === "declined" ? (decisionSource === "bidder" ? `${getAuctionOwnerName(trade.toOwnerId)} DECLINED your offer.${counteroffer ? " She suggested a counteroffer below; nothing changes unless you accept it." : " Nothing changed ownership; no suitable counteroffer was found."}` : trade.fromOwnerId === "john" ? "Offer withdrawn. Nothing changed ownership." : "Trade DECLINED. Nothing changed ownership.") : "The offer expired because ownership changed.";
+        if (counteroffer) { try { await ensureAuctionPhotoRefsLoaded(auctionTradeAllRefs(counteroffer)); } catch (error) { console.warn("Could not load counteroffer photos:", error); } }
         if (status === "stale") alert("This offer is no longer valid because ownership changed. No photos were moved.");
         state.auctionTradeBusy = false; render();
     } catch (error) { console.error("Could not save trade:", error); alert("The trade could not be saved. Ownership was not changed; try again."); }
@@ -4084,7 +4150,7 @@ async function requestAuctionTradeOffer(fromId, toId) {
     if (toId !== "john" && !state.structure.settings.allowAuctionBotTrades) { alert("Turn on trades between bidders first."); return; }
     const existing = state.structure.settings.auctionTrades || [];
     const offer = makeAuctionTradeProposal(fromId, toId, state.structure.settings.auctionOwnership || [], existing, getActiveServer()?.id);
-    if (!offer) { alert("No suitable offer was found. Both participants need owned photos, and a pending offer between them must be resolved first."); return; }
+    if (!offer) { alert("No suitable new offer was found. Both participants need owned photos; each personality may have up to three outgoing offers pending, and identical offers have a five-auction cooldown."); return; }
     state.auctionTradeBusy = true;
     try { await saveAuctionChanges({ auctionTrades: [...existing, offer] }); }
     catch (error) { console.error("Could not save proposed trade:", error); alert("The offer could not be saved locally."); state.auctionTradeBusy = false; return; }
@@ -4097,20 +4163,62 @@ async function evaluateJohnAuctionTrade(tradeId) {
     const trade = getAuctionTrades().find((item) => item.id === tradeId && item.status === "pending" && item.fromOwnerId === "john");
     if (!trade) return;
     const bidder = getAuctionBidders().find((item) => item.id === trade.toOwnerId);
-    const accepts = auctionTradeBotAccepts(bidder, trade.wantRef, trade.giveRef, getAuctionTradeValues(), true, "john");
-    await resolveAuctionTrade(trade.id, accepts);
+    const accepts = auctionTradeBotAccepts(bidder, auctionTradeRefs(trade, "want"), auctionTradeRefs(trade, "give"), getAuctionTradeValues(), true, "john");
+    await resolveAuctionTrade(trade.id, accepts, "bidder");
 }
 
 async function submitJohnAuctionTrade(targetId, giveRef, wantRef) {
     if (state.auctionTradeBusy) return;
     const serverId = getActiveServer()?.id, ownership = state.structure.settings.auctionOwnership || [], existing = state.structure.settings.auctionTrades || [];
-    if (!getAuctionBidders().some((item) => item.id === targetId) || !auctionTradeOwnerHas(ownership, serverId, "john", giveRef) || !auctionTradeOwnerHas(ownership, serverId, targetId, wantRef)) { alert("Choose one photo currently owned by John and one owned by this bidder."); return; }
-    const offer = { id: newLocalGameRecordId(), serverId, fromOwnerId: "john", toOwnerId: targetId, giveRef: structuredClone(giveRef), wantRef: structuredClone(wantRef), status: "pending", createdAt: new Date().toISOString() };
+    const giveRefs = Array.isArray(giveRef) ? giveRef : [giveRef], wantRefs = Array.isArray(wantRef) ? wantRef : [wantRef], refs = [...giveRefs, ...wantRefs];
+    if (!giveRefs.length || !wantRefs.length || giveRefs.length > 20 || wantRefs.length > 20 || new Set(refs.map(auctionPhotoKey)).size !== refs.length || !getAuctionBidders().some((item) => item.id === targetId) || !giveRefs.every((ref) => auctionTradeOwnerHas(ownership, serverId, "john", ref)) || !wantRefs.every((ref) => auctionTradeOwnerHas(ownership, serverId, targetId, ref))) { alert("Choose 1–20 distinct photos on each side, currently owned by the indicated person."); return; }
+    const offer = { id: newLocalGameRecordId(), serverId, fromOwnerId: "john", toOwnerId: targetId, giveRefs: structuredClone(giveRefs), wantRefs: structuredClone(wantRefs), giveRef: structuredClone(giveRefs[0]), wantRef: structuredClone(wantRefs[0]), status: "pending", createdAt: new Date().toISOString() };
+    if (existing.some((item) => item.serverId === serverId && item.status === "pending" && auctionTradeSignature(item) === auctionTradeSignature(offer))) { alert("This exact exchange is already pending."); return; }
+    const remaining = auctionTradeCooldown(offer, existing, serverId); if (remaining) { alert(`That exact exchange cannot be offered again yet. Wait for ${remaining} more completed auction${remaining === 1 ? "" : "s"}, or choose different photos.`); return; }
     state.auctionTradeBusy = true;
     try { await saveAuctionChanges({ auctionTrades: [...existing, offer] }); }
     catch (error) { console.error("Could not save trade offer:", error); alert("Your offer could not be saved. Nothing changed owners."); state.auctionTradeBusy = false; return; }
     state.auctionTradeBusy = false;
     await evaluateJohnAuctionTrade(offer.id);
+}
+
+function proposeAuctionMarketSale(bidder, ownership, proposals, serverId, values = getAuctionTradeValues()) {
+    if (!bidder || proposals.some((item) => item.serverId === serverId && item.ownerId === bidder.id && item.status === "pending" && auctionTradeOwnerHas(ownership, serverId, bidder.id, item.ref))) return null;
+    const owned = ownership.filter((item) => item.serverId === serverId && item.ownerId === bidder.id); if (owned.length < 2) return null;
+    const candidates = owned.map((item) => ({ item, score: auctionPersonalScore(bidder, item.ref, values) * (.9 + Math.random() * .2) })).sort((a, b) => a.score - b.score);
+    const item = candidates[0].item, amount = Math.floor(auctionTradeValue(item.ref, values) * .6);
+    return { id: newLocalGameRecordId(), serverId, ownerId: bidder.id, ref: structuredClone(item.ref), amount, status: "pending", createdAt: new Date().toISOString() };
+}
+async function requestAuctionMarketProposal(ownerId) {
+    if (state.auctionTradeBusy) return;
+    const serverId = getActiveServer()?.id, bidder = getAuctionBidders().find((item) => item.id === ownerId), proposals = state.structure.settings.auctionMarketProposals || [], offer = proposeAuctionMarketSale(bidder, state.structure.settings.auctionOwnership || [], proposals, serverId);
+    if (!offer) { alert("No new sale proposal is available. The personality needs at least two owned photos and no pending market proposal."); return; }
+    state.auctionTradeBusy = true; try { await saveAuctionChanges(() => ({ auctionMarketProposals: [...(state.structure.settings.auctionMarketProposals || []), offer] })); await ensureAuctionPhotoRefsLoaded([offer.ref]); state.auctionTradeNotice = `${bidder.name} proposed a market sale. It needs your approval.`; state.auctionTradeBusy = false; render(); } catch (error) { console.error(error); alert("Could not save the sale proposal."); } finally { state.auctionTradeBusy = false; }
+}
+async function resolveAuctionMarketProposal(id, approve) {
+    if (state.auctionTradeBusy) return;
+    const serverId = getActiveServer()?.id, proposal = (state.structure.settings.auctionMarketProposals || []).find((item) => item.id === id && item.serverId === serverId && item.status === "pending"); if (!proposal) { alert("This proposal is no longer pending."); return; }
+    if (approve && getSavedAuctionSession(serverId)) { alert("Finish or discard the current auction before approving a market sale."); return; }
+    if (approve && !confirm(`Approve ${getAuctionOwnerName(proposal.ownerId)}'s sale for $${proposal.amount}? The photo returns to the market; the original remains in its channel.`)) return;
+    state.auctionTradeBusy = true;
+    try { let outcome = "declined"; await saveAuctionChanges(() => { const ownership = state.structure.settings.auctionOwnership || [], valid = Number.isSafeInteger(proposal.amount) && proposal.amount >= 0 && auctionTradeOwnerHas(ownership, serverId, proposal.ownerId, proposal.ref); if (approve && getSavedAuctionSession(serverId)) throw new Error("Finish or discard the current auction before approving a sale."); outcome = !approve ? "declined" : valid ? "accepted" : "stale"; const changes = { auctionMarketProposals: (state.structure.settings.auctionMarketProposals || []).map((item) => item.id === id && item.serverId === serverId ? { ...item, status: outcome, resolvedAt: new Date().toISOString() } : item) }; if (outcome === "accepted") { const balances = { ...(state.structure.settings.auctionBalances || {}) }, local = { ...(balances[serverId] || {}) }; local[proposal.ownerId] = Math.min(Number.MAX_SAFE_INTEGER, (Number(local[proposal.ownerId]) || 0) + proposal.amount); balances[serverId] = local; Object.assign(changes, { auctionOwnership: ownership.filter((item) => !(item.serverId === serverId && item.ownerId === proposal.ownerId && auctionPhotoKey(item.ref) === auctionPhotoKey(proposal.ref))), auctionBalances: balances, auctionTrades: invalidateAuctionTradesForRefs(serverId, [proposal.ref]), auctionConsignments: (state.structure.settings.auctionConsignments || []).filter((item) => item.serverId !== serverId || auctionPhotoKey(item.ref) !== auctionPhotoKey(proposal.ref)), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), { id: newLocalGameRecordId(), serverId, ref: structuredClone(proposal.ref), fromOwnerId: proposal.ownerId, toOwnerId: null, type: "market-sale", price: proposal.amount, createdAt: new Date().toISOString() }] }); } return changes; }); state.auctionTradeNotice = outcome === "accepted" ? `Sale approved. ${getAuctionOwnerName(proposal.ownerId)} received $${proposal.amount}; the original photo stays in its channel.` : outcome === "declined" ? "Sale proposal declined. Nothing changed ownership." : "Sale proposal expired because ownership changed."; state.auctionTradeBusy = false; render(); } catch (error) { console.error(error); alert(error.message || "Could not save the decision. Nothing changed."); } finally { state.auctionTradeBusy = false; }
+}
+
+function getPendingAuctionMarketSales() {
+    const serverId = getActiveServer()?.id;
+    return (state.structure.settings.auctionMarketProposals || []).filter((item) => item.serverId === serverId && item.status === "pending").slice().sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+function renderAuctionMarketInbox() {
+    const serverId = getActiveServer()?.id, page = document.createElement("section"); page.className = "blindAuction auctionExtraPage auctionMarketInbox";
+    const heading = document.createElement("h3"); heading.textContent = "Market sale inbox"; const help = document.createElement("p"); help.textContent = "All personalities' pending sale proposals in this server appear here. Approving releases the photo for re-auction and credits its owner; declining changes nothing. The original always stays in its channel."; page.append(heading, help);
+    if (state.auctionTradeNotice) { const notice = document.createElement("p"); notice.className = "auctionTradeDecision"; notice.setAttribute("role", "status"); notice.textContent = state.auctionTradeNotice; page.appendChild(notice); }
+    const pending = getPendingAuctionMarketSales(), limit = state.auctionMarketInboxLimit || 10, count = document.createElement("p"); count.textContent = `${pending.length} pending proposal${pending.length === 1 ? "" : "s"}`; page.appendChild(count);
+    if (!pending.length) page.appendChild(emptyPanel("No market sales are awaiting your approval."));
+    pending.slice(0, limit).forEach((proposal) => { const card = document.createElement("article"); card.className = "auctionTradeOffer"; const title = document.createElement("strong"); title.textContent = `${getAuctionOwnerName(proposal.ownerId)} · $${proposal.amount}`; const info = document.createElement("p"); info.textContent = "Proposed payment: 60% of the photo's trade value when proposed, rounded down."; card.append(title, info, auctionImageCard(proposal.ref, "Proposed market sale")); const actions = document.createElement("div"); actions.className = "blindAuctionActions"; const approve = document.createElement("button"); approve.type = "button"; approve.className = "adventurePrimary"; approve.textContent = "Approve sale"; approve.disabled = Boolean(state.auctionTradeBusy); approve.addEventListener("click", () => resolveAuctionMarketProposal(proposal.id, true)); const decline = document.createElement("button"); decline.type = "button"; decline.textContent = "Decline sale"; decline.disabled = Boolean(state.auctionTradeBusy); decline.addEventListener("click", () => resolveAuctionMarketProposal(proposal.id, false)); actions.append(approve, decline); card.appendChild(actions); page.appendChild(card); });
+    if (pending.length > limit) { const more = document.createElement("button"); more.textContent = "Show 10 more proposals"; more.addEventListener("click", async () => { more.disabled = true; const next = limit + 10; try { await ensureAuctionPhotoRefsLoaded(pending.slice(limit, next).map((item) => item.ref)); state.auctionMarketInboxLimit = next; if (state.activeView.type === "auctionMarketInbox" && getActiveServer()?.id === serverId) renderMessages(); } catch (error) { console.error(error); more.disabled = false; } }); page.appendChild(more); }
+    const historyItems = (state.structure.settings.auctionMarketProposals || []).filter((item) => item.serverId === serverId && item.status !== "pending").slice(-10).reverse();
+    if (historyItems.length) { const history = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Recent sale decisions"; history.appendChild(summary); historyItems.forEach((item) => { const line = document.createElement("p"); line.textContent = `${item.status === "accepted" ? "Approved" : item.status === "declined" ? "Declined" : "Expired"} · ${getAuctionOwnerName(item.ownerId)} · $${item.amount}`; history.appendChild(line); }); page.appendChild(history); }
+    els.messages.appendChild(page);
 }
 
 let auctionOwnerCache = { records: null, serverId: null, map: new Map() };
@@ -4148,7 +4256,7 @@ function saveAuctionChanges(changes, options = {}) {
 function buildNuclearAuctionResetPatch(settings) {
     const patch = {};
     Object.entries(settings || {}).forEach(([key, value]) => { if (!key.startsWith("auction") || key === "auctionFreshStartVersion") return; patch[key] = Array.isArray(value) ? [] : value && typeof value === "object" ? {} : typeof value === "boolean" ? false : typeof value === "number" ? 0 : typeof value === "string" ? "" : null; });
-    Object.assign(patch, { auctionBidders: [], auctionArchivedBidders: [], auctionOwnership: [], auctionHistory: [], auctionTrades: [], auctionConsignments: [], auctionOwnershipEvents: [], auctionDinnerHistory: [], auctionExhibitionHistory: [], auctionMilestones: [], auctionSeasonCompletions: [], auctionBalances: {}, auctionSessions: {}, auctionRelationshipOverrides: {}, auctionScrapbookEdits: {}, auctionSeasonSizes: {}, auctionEconomy: {}, auctionPersonalitySettings: {}, auctionConsignment: {}, auctionRosterTopCount: 25, allowAuctionBotTrades: false, showAuctionOwners: true, auctionFreshStartVersion: 127 });
+    Object.assign(patch, { auctionBidders: [], auctionArchivedBidders: [], auctionOwnership: [], auctionHistory: [], auctionTrades: [], auctionMarketProposals: [], auctionConsignments: [], auctionOwnershipEvents: [], auctionDinnerHistory: [], auctionExhibitionHistory: [], auctionMilestones: [], auctionSeasonCompletions: [], auctionBalances: {}, auctionSessions: {}, auctionRelationshipOverrides: {}, auctionScrapbookEdits: {}, auctionSeasonSizes: {}, auctionEconomy: {}, auctionPersonalitySettings: {}, auctionConsignment: {}, auctionRosterTopCount: 25, allowAuctionBotTrades: false, showAuctionOwners: true, auctionFreshStartVersion: 127 });
     return patch;
 }
 async function nuclearResetAuctionData() {
@@ -4180,9 +4288,9 @@ async function archiveAuctionPersonality(serverId, bidderId, disposition, expect
         const keySet = new Set(keys), at = new Date().toISOString();
         const ownership = (settings.auctionOwnership || []).flatMap((item) => item.serverId !== serverId || item.ownerId !== bidderId ? [item] : disposition === "john" ? [{ ...item, ownerId: "john", acquiredVia: "admin", previousOwnerId: bidderId }] : []);
         const events = owned.map((item) => ({ serverId, ref: structuredClone(item.ref), type: disposition === "john" ? "transfer" : "release", fromOwnerId: bidderId, ...(disposition === "john" ? { toOwnerId: "john" } : {}), createdAt: at }));
-        const trades = (settings.auctionTrades || []).map((trade) => trade.serverId === serverId && trade.status === "pending" && (trade.fromOwnerId === bidderId || trade.toOwnerId === bidderId || [trade.giveRef, trade.wantRef].some((ref) => keySet.has(auctionPhotoKey(ref)))) ? { ...trade, status: "stale", resolvedAt: at, reason: "personality deleted" } : trade);
+        const trades = (settings.auctionTrades || []).map((trade) => trade.serverId === serverId && trade.status === "pending" && (trade.fromOwnerId === bidderId || trade.toOwnerId === bidderId || auctionTradeAllRefs(trade).some((ref) => keySet.has(auctionPhotoKey(ref)))) ? { ...trade, status: "stale", resolvedAt: at, reason: "personality deleted" } : trade);
         const archived = Array.isArray(settings.auctionArchivedBidders) ? settings.auctionArchivedBidders : [];
-        return { auctionBidders: bidders.filter((item) => !(item.serverId === serverId && item.id === bidderId)), auctionArchivedBidders: [...archived, { serverId, bidder: structuredClone(bidder), deletedAt: at, disposition }], auctionOwnership: ownership, auctionOwnershipEvents: [...(settings.auctionOwnershipEvents || []), ...events], auctionTrades: trades, auctionConsignments: (settings.auctionConsignments || []).filter((item) => item.serverId !== serverId || (item.sellerId !== bidderId && !keySet.has(auctionPhotoKey(item.ref)))) };
+        return { auctionBidders: bidders.filter((item) => !(item.serverId === serverId && item.id === bidderId)), auctionArchivedBidders: [...archived, { serverId, bidder: structuredClone(bidder), deletedAt: at, disposition }], auctionOwnership: ownership, auctionOwnershipEvents: [...(settings.auctionOwnershipEvents || []), ...events], auctionTrades: trades, auctionMarketProposals: (settings.auctionMarketProposals || []).map((item) => item.serverId === serverId && item.status === "pending" && (item.ownerId === bidderId || keySet.has(auctionPhotoKey(item.ref))) ? { ...item, status: "stale", resolvedAt: at, reason: "personality deleted" } : item), auctionConsignments: (settings.auctionConsignments || []).filter((item) => item.serverId !== serverId || (item.sellerId !== bidderId && !keySet.has(auctionPhotoKey(item.ref)))) };
     });
 }
 async function restoreArchivedAuctionPersonality(serverId, bidderId) {
@@ -4447,7 +4555,7 @@ async function resolveAuctionBid(amount, expectedIndex, openLot = null) {
         const sessions = { ...(state.structure.settings.auctionSessions || {}) };
         sessions[game.serverId] = snapshotAuctionSession(game, { screen: "reveal", index: nextIndex, results: nextResults, remaining: balances.john, balances: nextBalances, bidders: nextBidders, dialogue: shownDialogue, openLot: null });
         const changes = { auctionHistory: history, auctionOwnership: ownership, auctionBalances: { ...(state.structure.settings.auctionBalances || {}), [game.serverId]: balances }, auctionSessions: sessions, auctionBidders: allBidders };
-        if (winner && consignment) { changes.auctionConsignments = (state.structure.settings.auctionConsignments || []).filter((item) => item.serverId !== game.serverId || auctionPhotoKey(item.ref) !== auctionPhotoKey(ref)); changes.auctionTrades = invalidateAuctionTradesForRefs(game.serverId, [ref]); }
+        if (winner && consignment) { changes.auctionConsignments = (state.structure.settings.auctionConsignments || []).filter((item) => item.serverId !== game.serverId || auctionPhotoKey(item.ref) !== auctionPhotoKey(ref)); changes.auctionTrades = invalidateAuctionTradesForRefs(game.serverId, [ref]); changes.auctionMarketProposals = invalidateAuctionMarketProposals(game.serverId, [ref]); }
         if (milestones.length) changes.auctionMilestones = [...(state.structure.settings.auctionMilestones || []), ...milestones];
         await saveAuctionChanges(changes);
         game.remaining = balances.john; game.balances = nextBalances; game.results = nextResults; game.index = nextIndex; game.bidders = nextBidders; game.dialogue = shownDialogue; game.openLot = null; game.screen = "reveal";
@@ -4475,6 +4583,8 @@ async function continueAuctionAfterReveal() {
         if (finished && game.serverId === getActiveServer()?.id) {
             try { const existing = state.structure.settings.auctionTrades || []; changes.auctionTrades = [...existing, ...suggestedAuctionTrades(state.structure.settings.auctionOwnership || [], existing, game.serverId)]; }
             catch (error) { console.warn("Could not prepare suggested trades:", error); }
+            try { const proposals = [...(state.structure.settings.auctionMarketProposals || [])], values = getAuctionTradeValues(); for (const bidder of getAuctionBidders()) if (Math.random() < .3) { const offer = proposeAuctionMarketSale(bidder, state.structure.settings.auctionOwnership || [], proposals, game.serverId, values); if (offer) proposals.push(offer); } changes.auctionMarketProposals = proposals; }
+            catch (error) { console.warn("Could not prepare market-sale proposals:", error); }
         }
         await saveAuctionChanges(changes);
         game.screen = finished ? "results" : "play"; game.dialogue = dialogue; game.dialogueCount = dialogueCount; game.lastDialogueRound = lastDialogueRound; game.openLot = nextLot;
@@ -4528,7 +4638,13 @@ function renderRelationshipMap() {
     if (people.length < 2) { page.appendChild(emptyPanel("Create a bidder in an auction to explore relationships.")); els.messages.appendChild(page); return; }
     if (!state.relationshipMap || state.relationshipMap.serverId !== serverId) state.relationshipMap = { serverId, a: "john", b: people[1].id };
     const mapState = state.relationshipMap; if (!people.some((item) => item.id === mapState.a)) mapState.a = "john"; if (!people.some((item) => item.id === mapState.b) || mapState.a === mapState.b) mapState.b = people.find((item) => item.id !== mapState.a).id;
-    const help = document.createElement("p"); help.textContent = "All pairs are listed below. The diagram highlights up to 12 people; select any pair to inspect their timeline or adjust their relationship. Adjustments change game influence, not historical records."; page.appendChild(help);
+    const help = document.createElement("p"); help.textContent = "Explore how shared bidding and accepted trades influence each pair. These are game signals, not claims about real feelings. Choose a pair for the evidence and controls; historical records never change."; page.appendChild(help);
+    const selectedRelation = getAuctionRelationship(mapState.a, mapState.b), firstPerson = people.find((person) => person.id === mapState.a), secondPerson = people.find((person) => person.id === mapState.b), insight = document.createElement("section"); insight.className = "relationshipInsight";
+    const insightHeading = document.createElement("h4"); insightHeading.textContent = `${firstPerson.name} & ${secondPerson.name}`; const portraitRow = document.createElement("div"); portraitRow.className = "relationshipPortraits"; [firstPerson, secondPerson].forEach((person) => { const wrap = document.createElement("div"); if (person.avatarRef) wrap.appendChild(auctionProfilePhoto(person.avatarRef, person.name)); else { const icon = document.createElement("span"); icon.className = "auctionBidderInitial"; icon.textContent = person.name.slice(0, 1); wrap.appendChild(icon); } const name = document.createElement("strong"); name.textContent = person.name; wrap.appendChild(name); portraitRow.appendChild(wrap); });
+    const influenceOn = getAuctionPersonalitySettings().relationshipInfluence, firstBoost = Math.round(Math.min(.16, selectedRelation.contests * .008 + (selectedRelation.wins[mapState.b] || 0) * .012) * 100), secondBoost = Math.round(Math.min(.16, selectedRelation.contests * .008 + (selectedRelation.wins[mapState.a] || 0) * .012) * 100), summary = document.createElement("p");
+    const bidEffect = (person, boost) => person.id === "john" ? "John's bids are manual" : `${person.name}'s bid estimate can increase by up to ${boost}%`;
+    summary.textContent = `${selectedRelation.contests} shared bidding rounds · ${selectedRelation.trades} accepted trades · ${firstPerson.name} won ${selectedRelation.wins[mapState.a] || 0} shared rounds, ${secondPerson.name} won ${selectedRelation.wins[mapState.b] || 0}. ${influenceOn ? `When both compete, ${bidEffect(firstPerson, firstBoost)}; ${bidEffect(secondPerson, secondBoost)}. Accepted trades can also make offers more appealing.` : "Relationship effects on bids and trades are currently off."}`;
+    const recent = getRelationshipTimeline(mapState.a, mapState.b)[0], last = document.createElement("small"); last.textContent = recent ? `Latest shared event: ${recent.text}` : "No shared events recorded yet."; insight.append(insightHeading, portraitRow, summary, last); page.appendChild(insight);
     const filterLabel = document.createElement("label"); filterLabel.textContent = "Show connections "; const filter = document.createElement("select"); [["all", "All connections"], ["friendly", "Trade partners"], ["rival", "Shared bidding"], ["mixed", "Both"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; option.selected = (mapState.filter || "all") === value; filter.appendChild(option); }); filter.addEventListener("change", () => { mapState.filter = filter.value; renderMessages(); }); filterLabel.appendChild(filter); page.appendChild(filterLabel);
     const ordered = [mapState.a, mapState.b, ...people.map((item) => item.id)].filter((id, index, all) => all.indexOf(id) === index).slice(0, 12), svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.classList.add("relationshipNetwork"); svg.setAttribute("viewBox", "0 0 600 420"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "Relationship map. Choose people below for details.");
     const coords = new Map(ordered.map((id, index) => { const angle = (index / ordered.length) * Math.PI * 2 - Math.PI / 2; return [id, { x: 300 + 225 * Math.cos(angle), y: 210 + 150 * Math.sin(angle) }]; }));
@@ -4538,7 +4654,7 @@ function renderRelationshipMap() {
     const allPairs = []; people.forEach((first, i) => people.slice(i + 1).forEach((second) => { const relationship = getAuctionRelationship(first.id, second.id), filter = mapState.filter || "all"; if (filter === "friendly" && !relationship.trades || filter === "rival" && !relationship.contests || filter === "mixed" && !(relationship.contests && relationship.trades)) return; allPairs.push({ first, second, relationship }); }));
     allPairs.sort((a, b) => (b.relationship.contests + b.relationship.trades) - (a.relationship.contests + a.relationship.trades) || a.first.name.localeCompare(b.first.name) || a.second.name.localeCompare(b.second.name));
     const overview = document.createElement("section"), overviewTitle = document.createElement("h4"); overviewTitle.textContent = `All relationships · ${allPairs.length}`; overview.appendChild(overviewTitle); const overviewHelp = document.createElement("p"); overviewHelp.textContent = "Trust reflects trades; rivalry reflects shared bids. Tap a pair for its history and controls."; overview.appendChild(overviewHelp); const overviewGrid = document.createElement("div"); overviewGrid.className = "auctionAllRelations";
-    allPairs.forEach(({ first, second, relationship }) => { const button = document.createElement("button"); button.type = "button"; button.className = "auctionRelationPair"; const title = document.createElement("strong"); title.textContent = `${first.name} & ${second.name}`; const values = document.createElement("span"); values.textContent = `Trust ${relationship.trades} · Rivalry ${relationship.contests}${relationship.manuallyAdjusted ? " · adjusted" : ""}`; button.append(title, values); button.addEventListener("click", () => { mapState.a = first.id; mapState.b = second.id; renderMessages(); }); overviewGrid.appendChild(button); }); if (!allPairs.length) overviewGrid.appendChild(emptyPanel("No pairs match this filter.")); overview.appendChild(overviewGrid); page.appendChild(overview);
+    allPairs.forEach(({ first, second, relationship }) => { const button = document.createElement("button"); button.type = "button"; button.className = "auctionRelationPair"; button.setAttribute("aria-pressed", String([mapState.a, mapState.b].includes(first.id) && [mapState.a, mapState.b].includes(second.id))); const title = document.createElement("strong"); title.textContent = `${first.name} & ${second.name}`; const values = document.createElement("span"); values.textContent = `${relationship.trades && relationship.contests ? "Partners & rivals" : relationship.trades ? "Trade partners" : relationship.contests ? "Bidding rivals" : "No shared activity"} · ${relationship.trades} trades · ${relationship.contests} shared bids${relationship.manuallyAdjusted ? " · adjusted" : ""}`; button.append(title, values); button.addEventListener("click", () => { mapState.a = first.id; mapState.b = second.id; renderMessages(); document.querySelector(".relationshipInsight")?.scrollIntoView({ block: "nearest" }); }); overviewGrid.appendChild(button); }); if (!allPairs.length) overviewGrid.appendChild(emptyPanel("No pairs match this filter.")); overview.appendChild(overviewGrid); page.appendChild(overview);
     const selectors = document.createElement("div"); selectors.className = "blindAuctionSetup"; [["a", "First person"], ["b", "Second person"]].forEach(([key, labelText]) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); people.forEach((person) => { const option = document.createElement("option"); option.value = person.id; option.textContent = person.name; option.selected = mapState[key] === person.id; select.appendChild(option); }); select.addEventListener("change", () => { mapState[key] = select.value; const other = key === "a" ? "b" : "a"; if (mapState[other] === select.value) mapState[other] = people.find((item) => item.id !== select.value).id; renderMessages(); }); label.appendChild(select); selectors.appendChild(label); }); page.appendChild(selectors);
     const key = JSON.stringify([mapState.a, mapState.b].sort()), actual = getAuctionRelationshipRecords().get(key) || { contests: 0, trades: 0, wins: {} }, relation = getAuctionRelationship(mapState.a, mapState.b), override = state.structure.settings.auctionRelationshipOverrides?.[serverId]?.[key] || {};
     const detail = document.createElement("p"); detail.textContent = `${getAuctionOwnerName(mapState.a)} & ${getAuctionOwnerName(mapState.b)}: ${actual.contests} recorded shared bidding rounds · ${actual.trades} recorded trades. Current influence: rivalry ${relation.contests}, trust ${relation.trades}${relation.manuallyAdjusted ? " (adjusted)" : ""}.`; page.appendChild(detail);
@@ -4654,20 +4770,31 @@ function renderAuctionCompare() {
     page.appendChild(grid); if (picks.length === 2 && picks[0].id !== picks[1].id) { const relation = getAuctionRelationship(picks[0].id, picks[1].id), pair = document.createElement("p"); pair.textContent = `Together: ${relation.manuallyAdjusted ? relation.actualContests : relation.contests} recorded shared bidding rounds · ${relation.manuallyAdjusted ? relation.actualTrades : relation.trades} completed trades${relation.manuallyAdjusted ? " (influence adjusted)" : ""}.`; page.appendChild(pair); } els.messages.appendChild(page);
 }
 
+function getAuctionScrapbookMinimum() { const value = Number(state.structure.settings.auctionScrapbookMinimum); return Number.isSafeInteger(value) && value >= 1 && value <= 1000000 ? value : 100; }
 function getAuctionScrapbookEvents() {
-    const serverId = getActiveServer()?.id, events = [], add = (type, id, date, text, ref = null) => events.push({ key: `${serverId}:${type}:${id}`, type, date, text, ref });
-    getAuctionHistory().forEach((round, index) => { if (round.ownerId && Number(round.price) >= 25) add("purchase", round.id || `${round.auctionId}-${index}`, round.createdAt, `${getAuctionOwnerName(round.ownerId)} bought a photo for $${round.price}.`, round.ref); });
+    const serverId = getActiveServer()?.id, events = [], edits = state.structure.settings.auctionScrapbookEdits || {}, minimum = getAuctionScrapbookMinimum(), add = (type, id, date, text, ref = null) => events.push({ key: `${serverId}:${type}:${id}`, type, date, text, ref });
+    getAuctionHistory().forEach((round, index) => { const id = round.id || `${round.auctionId}-${index}`; if (round.ownerId && (Number(round.price) >= minimum || Object.prototype.hasOwnProperty.call(edits, `${serverId}:purchase:${id}`))) add("purchase", id, round.createdAt, `${getAuctionOwnerName(round.ownerId)} bought a photo for $${round.price}.`, round.ref); });
     getAuctionTrades().forEach((trade, index) => { if (trade.status === "accepted") add("trade", trade.id || index, trade.resolvedAt, `${getAuctionOwnerName(trade.fromOwnerId)} and ${getAuctionOwnerName(trade.toOwnerId)} completed a trade.`, trade.giveRef); });
     (state.structure.settings.auctionExhibitionHistory || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("exhibition", item.id || index, item.createdAt, `${getAuctionOwnerName(item.winnerId)} won exhibition night.`, item.lineups?.find((lineup) => lineup.ownerId === item.winnerId)?.refs?.[0]));
     (state.structure.settings.auctionDinnerHistory || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("dinner", item.id || index, item.finishedAt, `Dinner with ${getAuctionOwnerName(item.ownerId)} · ${item.photoCount} photos.`, item.ref));
     (state.structure.settings.auctionMilestones || []).filter((item) => item.serverId === serverId).forEach((item, index) => add("milestone", item.id || index, item.createdAt, `${getAuctionOwnerName(item.bidderId)} · ${auctionMilestoneTitle(item)}.`, item.ref));
     return events.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
 }
+function getVisibleAuctionScrapbookEvents() {
+    const edits = state.structure.settings.auctionScrapbookEdits || {}, all = getAuctionScrapbookEvents().filter((event) => state.auctionScrapbookShowHidden || !edits[event.key]?.hidden);
+    if (state.auctionScrapbookShowAll || state.auctionScrapbookShowHidden) return all;
+    const score = (event) => { if (edits[event.key]?.note?.trim()) return 10000; if (event.type === "exhibition") return 500; if (event.type === "milestone") return 450; if (event.type === "trade") return 300; if (event.type === "dinner") return 250; const amount = Number(event.text.match(/\$(\d+)/)?.[1]) || 0; return 200 + Math.min(200, amount / 2); };
+    const chosen = new Set([...all].sort((a, b) => score(b) - score(a) || String(b.date || "").localeCompare(String(a.date || ""))).slice(0, 15).map((event) => event.key));
+    return all.filter((event) => chosen.has(event.key) || Boolean(edits[event.key]?.note?.trim()));
+}
 function renderAuctionScrapbook() {
     const page = document.createElement("section"); page.className = "blindAuction auctionExtraPage"; const heading = document.createElement("h3"); heading.textContent = "Private scrapbook"; page.appendChild(heading);
-    const help = document.createElement("p"); help.textContent = "Dinners, exhibition winners, milestones, accepted trades and purchases of $25 or more appear here. Hiding an entry never deletes its original record or photo. Dinners and milestones begin with this update."; page.appendChild(help);
-    const edits = state.structure.settings.auctionScrapbookEdits || {}, all = getAuctionScrapbookEvents(), showHidden = Boolean(state.auctionScrapbookShowHidden), events = all.filter((event) => showHidden || !edits[event.key]?.hidden), limit = state.auctionScrapbookLimit || 10;
-    const hiddenLabel = document.createElement("label"), hiddenToggle = document.createElement("input"); hiddenToggle.type = "checkbox"; hiddenToggle.checked = showHidden; hiddenLabel.append(hiddenToggle, document.createTextNode(" Show hidden scrapbook entries")); hiddenToggle.addEventListener("change", async () => { state.auctionScrapbookShowHidden = hiddenToggle.checked; state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getAuctionScrapbookEvents().filter((event) => hiddenToggle.checked || !edits[event.key]?.hidden).slice(0, 10).map((item) => item.ref).filter(Boolean)); if (state.activeView.type === "auctionScrapbook") renderMessages(); }); page.appendChild(hiddenLabel);
+    const help = document.createElement("p"); help.textContent = `Dinners, exhibition winners, milestones, accepted trades and purchases of $${getAuctionScrapbookMinimum()} or more appear here. Previously edited purchase entries remain available. Changing this filter or hiding an entry never deletes its original record or photo.`; page.appendChild(help);
+    const minLabel = document.createElement("label"); minLabel.textContent = "Minimum purchase price for scrapbook ($)"; const minInput = document.createElement("input"); minInput.type = "number"; minInput.min = "1"; minInput.max = "1000000"; minInput.inputMode = "numeric"; minInput.value = String(getAuctionScrapbookMinimum()); minLabel.appendChild(minInput); const minSave = document.createElement("button"); minSave.type = "button"; minSave.textContent = "Save purchase threshold"; minSave.addEventListener("click", async () => { const value = Number(minInput.value); if (!minInput.value.trim() || !Number.isSafeInteger(value) || value < 1 || value > 1000000) { alert("Enter a whole dollar amount from 1 to 1,000,000."); return; } minSave.disabled = true; try { await saveAuctionChanges({ auctionScrapbookMinimum: value }); state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); if (state.activeView.type === "auctionScrapbook") renderMessages(); } catch (error) { console.error(error); alert("Could not save the scrapbook threshold."); minSave.disabled = false; } }); page.append(minLabel, minSave);
+    const edits = state.structure.settings.auctionScrapbookEdits || {}, showHidden = Boolean(state.auctionScrapbookShowHidden), events = getVisibleAuctionScrapbookEvents(), limit = state.auctionScrapbookLimit || 10;
+    const displayHelp = document.createElement("p"); displayHelp.textContent = "Highlights show up to 15 important memories, plus any with your notes. Other memories remain saved; show all to browse them."; page.appendChild(displayHelp);
+    const allLabel = document.createElement("label"), allToggle = document.createElement("input"); allToggle.type = "checkbox"; allToggle.checked = Boolean(state.auctionScrapbookShowAll); allLabel.append(allToggle, document.createTextNode(" Show all matching memories")); allToggle.addEventListener("change", async () => { state.auctionScrapbookShowAll = allToggle.checked; state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getVisibleAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); if (state.activeView.type === "auctionScrapbook") renderMessages(); }); page.appendChild(allLabel);
+    const hiddenLabel = document.createElement("label"), hiddenToggle = document.createElement("input"); hiddenToggle.type = "checkbox"; hiddenToggle.checked = showHidden; hiddenLabel.append(hiddenToggle, document.createTextNode(" Show manually hidden entries")); hiddenToggle.addEventListener("change", async () => { state.auctionScrapbookShowHidden = hiddenToggle.checked; state.auctionScrapbookLimit = 10; await ensureAuctionPhotoRefsLoaded(getVisibleAuctionScrapbookEvents().slice(0, 10).map((item) => item.ref).filter(Boolean)); if (state.activeView.type === "auctionScrapbook") renderMessages(); }); page.appendChild(hiddenLabel);
     const update = async (event, change, button) => { if (state.auctionScrapbookSaving) return; state.auctionScrapbookSaving = true; button.disabled = true; try { const current = state.structure.settings.auctionScrapbookEdits || {}; await saveAuctionChanges({ auctionScrapbookEdits: { ...current, [event.key]: { ...(current[event.key] || {}), ...change } } }); if (state.activeView.type === "auctionScrapbook") renderMessages(); } catch (error) { console.error(error); alert("Could not save the scrapbook change."); button.disabled = false; } finally { state.auctionScrapbookSaving = false; } };
     if (!events.length) page.appendChild(emptyPanel("No scrapbook entries yet."));
     events.slice(0, limit).forEach((event) => { const card = document.createElement("article"); card.className = "auctionScrapbookCard"; const title = document.createElement("strong"); title.textContent = `${event.type.toUpperCase()}${edits[event.key]?.hidden ? " · HIDDEN" : ""}`; const date = document.createElement("small"); date.textContent = event.date ? new Date(event.date).toLocaleString() : "Date unavailable"; const text = document.createElement("p"); text.textContent = event.text; card.append(title, date, text);
@@ -4681,23 +4808,35 @@ function renderAuctionExhibition() {
     const title = document.createElement("h3"); title.textContent = "Exhibition night"; page.appendChild(title);
     const show = state.auctionExhibition;
     if (!show || show.serverId !== serverId) {
-        const intro = document.createElement("p"); intro.textContent = "Each participant displays a few of their owned photos. Browse the showcases and choose your winner. Originals and ownership stay unchanged."; page.appendChild(intro);
-        const label = document.createElement("label"); label.textContent = "Photos per participant (1–6)"; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "6"; input.inputMode = "numeric"; input.value = "3"; label.appendChild(input); page.appendChild(label);
+        const intro = document.createElement("p"); intro.textContent = "Choose your photos and the personalities who exhibit. Other personalities form the voting panel; nobody judges their own entry. Originals and ownership stay unchanged."; page.appendChild(intro);
+        const label = document.createElement("label"); label.textContent = "Photos per exhibitor (1–6)"; const input = document.createElement("input"); input.type = "number"; input.min = "1"; input.max = "6"; input.inputMode = "numeric"; input.value = "3"; label.appendChild(input); page.appendChild(label);
+        const ownership = getAuctionOwnership(), values = getAuctionTradeValues(), bidders = getAuctionBidders(), johnPhotos = ownership.filter((item) => item.ownerId === "john").sort((a, b) => auctionTradeValue(b.ref, values) - auctionTradeValue(a.ref, values));
+        const johnLabel = document.createElement("label"), johnToggle = document.createElement("input"); johnToggle.type = "checkbox"; johnToggle.checked = Boolean(johnPhotos.length); johnToggle.disabled = !johnPhotos.length; johnLabel.append(johnToggle, document.createTextNode(" John exhibits selected photos")); page.appendChild(johnLabel);
+        const selected = new Set(), gallery = document.createElement("div"); gallery.className = "auctionTradePickGrid"; const selectedCount = document.createElement("p"); selectedCount.textContent = "Your selected photos: 0"; const picker = document.createElement("details"), pickerTitle = document.createElement("summary"); pickerTitle.textContent = "Choose John's photos"; picker.open = Boolean(johnPhotos.length); picker.append(pickerTitle, selectedCount, gallery); let shown = 0;
+        const more = document.createElement("button"); more.type = "button"; more.textContent = "Load 25 more photos";
+        const loadMore = async () => { more.disabled = true; const batch = johnPhotos.slice(shown, shown + 25); await ensureAuctionPhotoRefsLoaded(batch.map((item) => item.ref)); if (!picker.isConnected) return; batch.forEach((item) => { const button = document.createElement("button"); button.type = "button"; button.className = "auctionTradePick"; const key = auctionPhotoKey(item.ref), attachment = findAttachment(item.ref); button.setAttribute("aria-pressed", String(selected.has(key))); if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Photo"; button.appendChild(image); } const caption = document.createElement("span"); caption.textContent = attachment?.note || attachment?.name || getChannelById(item.ref.channelId)?.name || "Photo"; button.appendChild(caption); button.addEventListener("click", () => { if (selected.has(key)) selected.delete(key); else if (selected.size < 6) selected.add(key); else { alert("Choose up to six photos."); return; } button.setAttribute("aria-pressed", String(selected.has(key))); selectedCount.textContent = `Your selected photos: ${selected.size}`; }); gallery.appendChild(button); }); shown += batch.length; more.hidden = shown >= johnPhotos.length; more.disabled = false; }; more.addEventListener("click", loadMore); picker.appendChild(more); page.appendChild(picker); if (johnPhotos.length) void loadMore(); else picker.hidden = true;
+        const people = document.createElement("fieldset"), peopleTitle = document.createElement("legend"); peopleTitle.textContent = "Choose personality exhibitors"; people.appendChild(peopleTitle); const choices = new Map(); bidders.forEach((bidder, index) => { const hasPhotos = ownership.some((item) => item.ownerId === bidder.id), row = document.createElement("label"), choice = document.createElement("input"); choice.type = "checkbox"; choice.disabled = !hasPhotos; choice.checked = hasPhotos && index < Math.max(1, Math.floor(bidders.length / 2)); row.append(choice, document.createTextNode(` ${bidder.name}${hasPhotos ? "" : " · no owned photos (can judge)"}`)); people.appendChild(row); choices.set(bidder.id, choice); }); page.appendChild(people);
         const start = document.createElement("button"); start.className = "adventurePrimary"; start.textContent = "Prepare showcases";
         start.addEventListener("click", async () => { const count = Number(input.value); if (!input.value.trim() || !Number.isInteger(count) || count < 1 || count > 6) { alert("Choose from 1 to 6 photos."); return; }
-            const ownership = getAuctionOwnership(), values = getAuctionTradeValues(), lineups = [{ id: "john" }, ...getAuctionBidders()].map((owner) => { const ranked = ownership.filter((item) => item.ownerId === owner.id).sort((a, b) => auctionPersonalScore(owner, b.ref, values) - auctionPersonalScore(owner, a.ref, values)); return { ownerId: owner.id, refs: shuffledCopy(ranked.slice(0, Math.max(count, count * 2))).slice(0, count).map((item) => structuredClone(item.ref)) }; }).filter((entry) => entry.refs.length);
-            if (!lineups.length) { alert("Auction or transfer a photo to a participant first."); return; }
+            const current = getAuctionOwnership(), currentBidders = getAuctionBidders(); if (johnToggle.checked && (!selected.size || selected.size > count)) { alert(`Choose 1 to ${count} photos for John.`); return; }
+            const lineups = []; if (johnToggle.checked) { const refs = current.filter((item) => item.ownerId === "john" && selected.has(auctionPhotoKey(item.ref))).map((item) => structuredClone(item.ref)); if (refs.length !== selected.size) { alert("One of John's selected photos is no longer owned. Reopen the setup."); return; } lineups.push({ ownerId: "john", refs }); }
+            currentBidders.filter((bidder) => choices.get(bidder.id)?.checked).forEach((owner) => { const ranked = current.filter((item) => item.ownerId === owner.id).sort((a, b) => auctionPersonalScore(owner, b.ref, values) - auctionPersonalScore(owner, a.ref, values)); const refs = shuffledCopy(ranked.slice(0, Math.max(count, count * 2))).slice(0, count).map((item) => structuredClone(item.ref)); if (refs.length) lineups.push({ ownerId: owner.id, refs }); });
+            if (lineups.length < 2) { alert("Choose at least two exhibitors with photos."); return; }
             start.disabled = true; await ensureAuctionPhotoRefsLoaded([lineups[0].refs[0]]); if (state.activeView.type !== "auctionExhibition" || getActiveServer()?.id !== serverId) return;
-            state.auctionExhibition = { id: newLocalGameRecordId(), serverId, lineups, ownerIndex: 0, photoIndex: 0, winnerId: null }; renderMessages(); }); page.appendChild(start);
+            const juryIds = currentBidders.filter((bidder) => !lineups.some((entry) => entry.ownerId === bidder.id)).map((bidder) => bidder.id); state.auctionExhibition = { id: newLocalGameRecordId(), serverId, lineups, juryIds, ownerIndex: 0, photoIndex: 0, winnerId: null, votes: null }; renderMessages(); }); page.appendChild(start);
     } else {
         const lineup = show.lineups[show.ownerIndex], ref = lineup.refs[show.photoIndex];
+        const jurySummary = document.createElement("p"); jurySummary.textContent = (show.juryIds || []).length ? `Judges (not exhibiting): ${show.juryIds.map(getAuctionOwnerName).join(", ")}.` : "No non-exhibiting personalities available; you can choose the winner."; page.appendChild(jurySummary);
         const label = document.createElement("p"); label.textContent = `${getAuctionOwnerName(lineup.ownerId)} · exhibitor ${show.ownerIndex + 1}/${show.lineups.length} · photo ${show.photoIndex + 1}/${lineup.refs.length}`; page.appendChild(label);
         page.appendChild(auctionImageCard(ref, "Tap to expand"));
         const controls = document.createElement("div"); controls.className = "blindAuctionActions";
         const navigate = async (ownerStep, photoStep) => { show.ownerIndex = (show.ownerIndex + ownerStep + show.lineups.length) % show.lineups.length; if (ownerStep) show.photoIndex = 0; else show.photoIndex = (show.photoIndex + photoStep + lineup.refs.length) % lineup.refs.length; await ensureAuctionPhotoRefsLoaded([show.lineups[show.ownerIndex].refs[show.photoIndex]]); if (state.activeView.type === "auctionExhibition" && state.auctionExhibition === show) renderMessages(); };
         [["Previous exhibitor", -1, 0], ["Next exhibitor", 1, 0], ["Previous photo", 0, -1], ["Next photo", 0, 1]].forEach(([text, ownerStep, photoStep]) => { const button = document.createElement("button"); button.textContent = text; button.disabled = ownerStep ? show.lineups.length < 2 : lineup.refs.length < 2; button.addEventListener("click", () => navigate(ownerStep, photoStep)); controls.appendChild(button); }); page.appendChild(controls);
-        if (show.winnerId) { const winner = document.createElement("p"); winner.textContent = `Winner: ${getAuctionOwnerName(show.winnerId)}. Your choice was saved locally.`; page.appendChild(winner); const recap = document.createElement("details"), summary = document.createElement("summary"), info = document.createElement("p"); summary.textContent = "Event recap"; info.textContent = `Showcases: ${show.lineups.map((entry) => `${getAuctionOwnerName(entry.ownerId)} (${entry.refs.length} photos)`).join(" · ")}. Winner: ${getAuctionOwnerName(show.winnerId)}. This event does not change trade trust or bidding rivalry.`; recap.append(summary, info); page.appendChild(recap); }
-        else { const choose = document.createElement("button"); choose.className = "adventurePrimary"; choose.textContent = `Choose ${getAuctionOwnerName(lineup.ownerId)} as winner`; choose.addEventListener("click", async () => { choose.disabled = true; try { const events = Array.isArray(state.structure.settings.auctionExhibitionHistory) ? state.structure.settings.auctionExhibitionHistory : []; await saveAuctionChanges({ auctionExhibitionHistory: [...events, { id: show.id, serverId, winnerId: lineup.ownerId, createdAt: new Date().toISOString(), lineups: structuredClone(show.lineups) }] }); show.winnerId = lineup.ownerId; renderMessages(); } catch (error) { console.error(error); choose.disabled = false; alert("Could not save the winner."); } }); page.appendChild(choose); }
+        const saveWinner = async (winnerId, button) => { button.disabled = true; try { await saveAuctionChanges(() => { const events = Array.isArray(state.structure.settings.auctionExhibitionHistory) ? state.structure.settings.auctionExhibitionHistory : []; if (events.some((event) => event.id === show.id)) throw new Error("This exhibition was already saved."); return { auctionExhibitionHistory: [...events, { id: show.id, serverId, winnerId, createdAt: new Date().toISOString(), lineups: structuredClone(show.lineups), juryVotes: structuredClone(show.votes || []) }] }; }); show.winnerId = winnerId; renderMessages(); } catch (error) { console.error(error); button.disabled = false; alert("Could not save the winner."); } };
+        if (show.winnerId) { const winner = document.createElement("p"); winner.textContent = `Winner: ${getAuctionOwnerName(show.winnerId)}. The result is saved locally.`; page.appendChild(winner); }
+        if (show.votes) { const results = document.createElement("section"), heading = document.createElement("h4"); heading.textContent = "Judging panel"; results.appendChild(heading); if (!show.votes.length) { const none = document.createElement("p"); none.textContent = "No non-exhibiting personalities are available to judge. Choose the winner yourself."; results.appendChild(none); } show.votes.forEach((vote) => { const line = document.createElement("p"); line.textContent = `${getAuctionOwnerName(vote.judgeId)} voted for ${getAuctionOwnerName(vote.ownerId)}.`; results.appendChild(line); }); page.appendChild(results); }
+        if (!show.winnerId && !show.votes) { const vote = document.createElement("button"); vote.className = "adventurePrimary"; vote.textContent = "Ask the judging panel to vote"; vote.addEventListener("click", () => { const vals = getAuctionTradeValues(), jury = getAuctionBidders().filter((person) => (show.juryIds || []).includes(person.id) && !show.lineups.some((entry) => entry.ownerId === person.id)); show.votes = jury.map((judge) => { const ranked = show.lineups.map((entry) => { const score = entry.refs.reduce((sum, ref) => sum + auctionPersonalScore(judge, ref, vals), 0) / entry.refs.length; return { ownerId: entry.ownerId, score: score * (.85 + Math.random() * .3) }; }).sort((a, b) => b.score - a.score); return { judgeId: judge.id, ownerId: ranked[0].ownerId }; }); renderMessages(); }); page.appendChild(vote); }
+        else if (!show.winnerId) { const counts = new Map(show.lineups.map((entry) => [entry.ownerId, show.votes.filter((vote) => vote.ownerId === entry.ownerId).length])), max = Math.max(...counts.values()), leaders = show.lineups.filter((entry) => counts.get(entry.ownerId) === max); const message = document.createElement("p"); message.textContent = show.votes.length ? leaders.length === 1 ? `Panel winner: ${getAuctionOwnerName(leaders[0].ownerId)} · ${max} vote${max === 1 ? "" : "s"}.` : "The panel is tied; choose between the tied exhibitors." : "Choose a winner."; page.appendChild(message); (show.votes.length && leaders.length === 1 ? leaders : show.votes.length ? leaders : show.lineups).forEach((entry) => { const choose = document.createElement("button"); choose.className = "adventurePrimary"; choose.textContent = `${show.votes.length && leaders.length === 1 ? "Confirm winner" : "Choose"} · ${getAuctionOwnerName(entry.ownerId)}`; choose.addEventListener("click", () => saveWinner(entry.ownerId, choose)); page.appendChild(choose); }); }
         const reset = document.createElement("button"); reset.textContent = "Prepare a new exhibition"; reset.addEventListener("click", () => { if (!show.winnerId && !confirm("Leave this showcase without choosing a winner?")) return; state.auctionExhibition = null; renderMessages(); }); page.appendChild(reset);
     } els.messages.appendChild(page);
 }
@@ -4921,8 +5060,8 @@ function renderAuctionDinner() {
 function getAuctionPhotoHistory(ref) {
     const key = auctionPhotoKey(ref), events = [];
     getAuctionHistory().filter((item) => auctionPhotoKey(item.ref) === key).forEach((item) => events.push({ date: item.createdAt, text: item.ownerId ? `Auction: ${getAuctionOwnerName(item.ownerId)} acquired it for $${item.price}.${item.sellerId ? ` Consigned by ${getAuctionOwnerName(item.sellerId)}; proceeds $${item.sellerProceeds}, fee $${item.consignmentFee}.` : ""}` : item.sellerId ? `Consignment: no sale; ${getAuctionOwnerName(item.sellerId)} retained it.` : "Auction: no sale." }));
-    getAuctionTrades().filter((item) => item.status === "accepted" && [item.giveRef, item.wantRef].some((r) => r && auctionPhotoKey(r) === key)).forEach((item) => { const giving = auctionPhotoKey(item.giveRef) === key; events.push({ date: item.resolvedAt, text: `Trade: ${getAuctionOwnerName(giving ? item.fromOwnerId : item.toOwnerId)} → ${getAuctionOwnerName(giving ? item.toOwnerId : item.fromOwnerId)}.` }); });
-    (state.structure.settings.auctionOwnershipEvents || []).filter((item) => item.serverId === getActiveServer()?.id && item.ref && auctionPhotoKey(item.ref) === key).forEach((item) => events.push({ date: item.createdAt, text: item.type === "release" ? `Admin released it from ${getAuctionOwnerName(item.fromOwnerId)} for re-auction.` : `Admin transferred it: ${getAuctionOwnerName(item.fromOwnerId)} → ${getAuctionOwnerName(item.toOwnerId)}.` }));
+    getAuctionTrades().filter((item) => item.status === "accepted" && auctionTradeAllRefs(item).some((r) => auctionPhotoKey(r) === key)).forEach((item) => { const giving = auctionTradeRefs(item, "give").some((ref) => auctionPhotoKey(ref) === key); events.push({ date: item.resolvedAt, text: `Trade: ${getAuctionOwnerName(giving ? item.fromOwnerId : item.toOwnerId)} → ${getAuctionOwnerName(giving ? item.toOwnerId : item.fromOwnerId)}.` }); });
+    (state.structure.settings.auctionOwnershipEvents || []).filter((item) => item.serverId === getActiveServer()?.id && item.ref && auctionPhotoKey(item.ref) === key).forEach((item) => events.push({ date: item.createdAt, text: item.type === "market-sale" ? `${getAuctionOwnerName(item.fromOwnerId)} sold it to the market for $${Number(item.price) || 0}.` : item.type === "release" ? `Admin released it from ${getAuctionOwnerName(item.fromOwnerId)} for re-auction.` : `Admin transferred it: ${getAuctionOwnerName(item.fromOwnerId)} → ${getAuctionOwnerName(item.toOwnerId)}.` }));
     return events.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
 }
 
@@ -4980,32 +5119,36 @@ function renderAuctionTradePicker(ownerId, draft, side, items) {
     const container = document.createElement("section"); container.className = "auctionTradePicker";
     const heading = document.createElement("strong"); heading.textContent = side === "give" ? "John gives" : `${getAuctionOwnerName(ownerId)} gives`; container.appendChild(heading);
     if (!items.length) { container.appendChild(emptyPanel("No owned photos available.")); return container; }
-    const pageKey = `${side}Page`, selectedKey = `${side}Key`;
-    const pages = Math.ceil(items.length / 10); draft[pageKey] = Math.max(0, Math.min(pages - 1, draft[pageKey] || 0));
+    const selectedKey = `${side}Keys`, resultsKey = `${side}Results`, values = getAuctionTradeValues();
+    draft[selectedKey] ||= []; const sorted = [...items].sort((a, b) => auctionTradeValue(b.ref, values) - auctionTradeValue(a.ref, values));
+    const searchLabel = document.createElement("label"); searchLabel.textContent = "Find by channel, filename or note"; const search = document.createElement("input"); search.type = "search"; search.value = draft[`${side}Query`] || ""; search.placeholder = "Search all owned photos"; searchLabel.appendChild(search);
+    const find = document.createElement("button"); find.type = "button"; find.textContent = "Search"; const searchStatus = document.createElement("small");
+    find.addEventListener("click", async () => { const query = search.value.trim().toLowerCase(); draft[`${side}Query`] = search.value; if (!query) { draft[resultsKey] = null; draft[`${side}Limit`] = 25; renderMessages(); return; } find.disabled = true; searchStatus.textContent = "Searching local photos…"; const matches = []; try { for (const item of sorted) { const ref = item.ref; let attachment = findAttachment(ref), messageText = ""; if (!attachment && typeof getMessageLocation === "function") { const location = await getMessageLocation(ref.messageId, ref.channelId); attachment = location?.message?.attachments?.find((a) => a.id === ref.attachmentId); messageText = location?.message?.text || ""; } const text = [getChannelById(ref.channelId)?.name, attachment?.name, attachment?.note, messageText].filter(Boolean).join(" ").toLowerCase(); if (text.includes(query)) matches.push(auctionPhotoKey(ref)); if (matches.length >= 250) break; } draft[resultsKey] = matches; draft[`${side}Limit`] = 25; const first = sorted.filter((item) => matches.includes(auctionPhotoKey(item.ref))).slice(0, 25); await ensureAuctionPhotoRefsLoaded(first.map((item) => item.ref)); if (state.activeView.type === "auctionOwner" && state.auctionTradeDraft === draft) renderMessages(); } catch (error) { console.error(error); searchStatus.textContent = "Search could not finish; try again."; find.disabled = false; } });
+    container.append(searchLabel, find, searchStatus);
+    const resultSet = Array.isArray(draft[resultsKey]) ? new Set(draft[resultsKey]) : null, filtered = resultSet ? sorted.filter((item) => resultSet.has(auctionPhotoKey(item.ref))) : sorted, visible = filtered.slice(0, resultSet ? (draft[`${side}Limit`] || 25) : 25);
+    const explanation = document.createElement("small"); explanation.textContent = resultSet ? `${filtered.length}${filtered.length === 250 ? "+" : ""} search results · ${draft[selectedKey].length} selected` : `Top ${Math.min(25, sorted.length)} by value · ${draft[selectedKey].length} selected. Search to find others.`; container.appendChild(explanation);
     const grid = document.createElement("div"); grid.className = "auctionTradePickGrid";
-    items.slice(draft[pageKey] * 10, (draft[pageKey] + 1) * 10).forEach((item) => {
+    visible.forEach((item) => {
         const button = document.createElement("button"); button.type = "button"; button.className = "auctionTradePick";
-        const key = auctionPhotoKey(item.ref); button.setAttribute("aria-pressed", String(draft[selectedKey] === key));
+        const key = auctionPhotoKey(item.ref); button.setAttribute("aria-pressed", String(draft[selectedKey].includes(key)));
         const attachment = findAttachment(item.ref);
         if (attachment) { const image = document.createElement("img"); setRenderedImageSource(image, attachment); image.alt = attachment.note || attachment.name || "Auction photo"; button.appendChild(image); }
-        const label = document.createElement("span"); label.textContent = attachment?.note || attachment?.name || "Unavailable photo"; button.appendChild(label);
-        button.addEventListener("click", () => { draft[selectedKey] = key; renderMessages(); }); grid.appendChild(button);
+        const label = document.createElement("span"); label.textContent = `${attachment?.note || attachment?.name || getChannelById(item.ref.channelId)?.name || "Photo"} · ${Math.round(auctionTradeValue(item.ref, values))}`; button.appendChild(label);
+        button.addEventListener("click", () => { const selected = draft[selectedKey]; if (selected.includes(key)) draft[selectedKey] = selected.filter((item) => item !== key); else if (selected.length < 20) draft[selectedKey] = [...selected, key]; else { alert("Choose up to 20 photos on each side."); return; } renderMessages(); }); grid.appendChild(button);
     });
-    const nav = document.createElement("div"); nav.className = "auctionTradeNav";
-    const changePage = async (page) => { draft[pageKey] = page; await ensureAuctionPhotoRefsLoaded(items.slice(page * 10, page * 10 + 10).map((item) => item.ref)); renderMessages(); };
-    const prev = document.createElement("button"); prev.textContent = "Previous"; prev.disabled = draft[pageKey] === 0; prev.addEventListener("click", () => changePage(draft[pageKey] - 1));
-    const page = document.createElement("span"); page.textContent = `${draft[pageKey] + 1} / ${pages}`;
-    const next = document.createElement("button"); next.textContent = "Next"; next.disabled = draft[pageKey] >= pages - 1; next.addEventListener("click", () => changePage(draft[pageKey] + 1));
-    nav.append(prev, page, next); container.append(grid, nav); return container;
+    container.appendChild(grid); if (resultSet && filtered.length > visible.length) { const more = document.createElement("button"); more.textContent = "Show 25 more matches"; more.addEventListener("click", async () => { const old = visible.length; draft[`${side}Limit`] = old + 25; await ensureAuctionPhotoRefsLoaded(filtered.slice(old, old + 25).map((item) => item.ref)); renderMessages(); }); container.appendChild(more); } return container;
 }
 
 function renderAuctionTradeInbox(ownerId) {
     const section = document.createElement("section"); section.className = "auctionTradeInbox";
     const heading = document.createElement("h4"); heading.textContent = "Pending trades"; section.appendChild(heading);
-    const info = document.createElement("p"); info.textContent = "One photo for one photo. Values use This or That ranking; unranked photos use a middle value. The bidder’s personality influences their offers and responses. Original files stay in their source channels."; section.appendChild(info);
-    if (state.auctionTradeNotice) { const notice = document.createElement("p"); notice.setAttribute("role", "status"); notice.textContent = state.auctionTradeNotice; section.appendChild(notice); }
+    const info = document.createElement("p"); info.textContent = "Choose up to 20 photos on each side. Values use This or That ranking; unranked photos use a middle value. The same exchange can be offered again after five completed auctions. Original photos stay in their source channels."; section.appendChild(info);
+    if (state.auctionTradeNotice) { const notice = document.createElement("p"); notice.className = "auctionTradeDecision"; notice.setAttribute("role", "status"); notice.textContent = state.auctionTradeNotice; section.appendChild(notice); }
     if (ownerId !== "john") {
         const ask = document.createElement("button"); ask.type = "button"; ask.textContent = `Ask ${getAuctionOwnerName(ownerId)} for an offer`; ask.addEventListener("click", () => requestAuctionTradeOffer(ownerId, "john")); section.appendChild(ask);
+        const askSale = document.createElement("button"); askSale.type = "button"; askSale.textContent = `Ask ${getAuctionOwnerName(ownerId)} for a market-sale proposal`; askSale.addEventListener("click", () => requestAuctionMarketProposal(ownerId)); section.appendChild(askSale);
+        const sales = (state.structure.settings.auctionMarketProposals || []).filter((item) => item.serverId === getActiveServer()?.id && item.ownerId === ownerId && item.status === "pending");
+        sales.forEach((proposal) => { const card = document.createElement("article"); card.className = "auctionTradeOffer"; const heading = document.createElement("strong"); heading.textContent = `Market-sale proposal · $${proposal.amount}`; const note = document.createElement("p"); note.textContent = "Requires your approval. Sale price is 60% of the photo's trade value when proposed; the original stays in its channel."; card.append(heading, note, auctionImageCard(proposal.ref, "Proposed market sale")); const controls = document.createElement("div"); controls.className = "blindAuctionActions"; const approve = document.createElement("button"); approve.type = "button"; approve.className = "adventurePrimary"; approve.textContent = "Approve sale"; approve.addEventListener("click", () => resolveAuctionMarketProposal(proposal.id, true)); const decline = document.createElement("button"); decline.type = "button"; decline.textContent = "Decline sale"; decline.addEventListener("click", () => resolveAuctionMarketProposal(proposal.id, false)); controls.append(approve, decline); card.appendChild(controls); section.appendChild(card); });
         const draft = state.auctionTradeDraft?.targetId === ownerId ? state.auctionTradeDraft : (state.auctionTradeDraft = { targetId: ownerId, givePage: 0, wantPage: 0 });
         const yours = getAuctionOwnership().filter((item) => item.ownerId === "john"), theirs = getAuctionOwnership().filter((item) => item.ownerId === ownerId);
         const compose = document.createElement("details"); compose.className = "auctionTradeCompose"; compose.open = Boolean(draft.open);
@@ -5013,10 +5156,10 @@ function renderAuctionTradeInbox(ownerId) {
         const summary = document.createElement("summary"); summary.textContent = "Propose a trade"; compose.appendChild(summary);
         const pickers = document.createElement("div"); pickers.className = "auctionTradePickers";
         pickers.append(renderAuctionTradePicker(ownerId, draft, "give", yours), renderAuctionTradePicker(ownerId, draft, "want", theirs)); compose.appendChild(pickers);
-        const give = yours.find((item) => auctionPhotoKey(item.ref) === draft.giveKey), want = theirs.find((item) => auctionPhotoKey(item.ref) === draft.wantKey);
+        const give = yours.filter((item) => (draft.giveKeys || []).includes(auctionPhotoKey(item.ref))), want = theirs.filter((item) => (draft.wantKeys || []).includes(auctionPhotoKey(item.ref)));
         const values = getAuctionTradeValues(), summaryValue = document.createElement("p");
-        summaryValue.textContent = give && want ? `John offers value ${Math.round(auctionTradeValue(give.ref, values))}; asks for value ${Math.round(auctionTradeValue(want.ref, values))}.` : "Choose one photo from each side.";
-        const send = document.createElement("button"); send.type = "button"; send.className = "adventurePrimary"; send.textContent = "Send offer to bidder"; send.disabled = !give || !want || Boolean(state.auctionTradeBusy); send.addEventListener("click", () => submitJohnAuctionTrade(ownerId, give.ref, want.ref));
+        summaryValue.textContent = give.length && want.length ? `John offers ${give.length} photos · total value ${Math.round(give.reduce((sum, item) => sum + auctionTradeValue(item.ref, values), 0))}; asks for ${want.length} · total value ${Math.round(want.reduce((sum, item) => sum + auctionTradeValue(item.ref, values), 0))}.` : "Choose one or more photos from each side.";
+        const send = document.createElement("button"); send.type = "button"; send.className = "adventurePrimary"; send.textContent = "Send offer to bidder"; send.disabled = !give.length || !want.length || Boolean(state.auctionTradeBusy); send.addEventListener("click", () => submitJohnAuctionTrade(ownerId, give.map((item) => item.ref), want.map((item) => item.ref)));
         compose.append(summaryValue, send); section.appendChild(compose);
         const inter = document.createElement("label"); inter.className = "auctionTradeToggle"; const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.checked = Boolean(state.structure.settings.allowAuctionBotTrades);
         inter.append(toggle, document.createTextNode(" Allow proposed trades between bidders (your approval required)"));
@@ -5031,18 +5174,18 @@ function renderAuctionTradeInbox(ownerId) {
     if (!pending.length) section.appendChild(emptyPanel("No pending trades for this profile."));
     pending.slice(0, state.auctionTradeLimit || 10).forEach((trade) => {
         const card = document.createElement("article"); card.className = "auctionTradeOffer";
-        const title = document.createElement("strong"); title.textContent = `${getAuctionOwnerName(trade.fromOwnerId)} offers ${getAuctionOwnerName(trade.toOwnerId)}`; card.appendChild(title);
+        const title = document.createElement("strong"); title.textContent = `${trade.counterToId ? "Counteroffer · " : ""}${getAuctionOwnerName(trade.fromOwnerId)} offers ${getAuctionOwnerName(trade.toOwnerId)}`; card.appendChild(title);
         const photos = document.createElement("div"); photos.className = "blindAuctionResults";
-        photos.append(auctionImageCard(trade.giveRef, `${getAuctionOwnerName(trade.fromOwnerId)} gives · value ${Math.round(auctionTradeValue(trade.giveRef, values))}`), auctionImageCard(trade.wantRef, `${getAuctionOwnerName(trade.toOwnerId)} gives · value ${Math.round(auctionTradeValue(trade.wantRef, values))}`)); card.appendChild(photos);
+        auctionTradeRefs(trade, "give").forEach((ref) => photos.appendChild(auctionImageCard(ref, `${getAuctionOwnerName(trade.fromOwnerId)} gives · value ${Math.round(auctionTradeValue(ref, values))}`))); auctionTradeRefs(trade, "want").forEach((ref) => photos.appendChild(auctionImageCard(ref, `${getAuctionOwnerName(trade.toOwnerId)} gives · value ${Math.round(auctionTradeValue(ref, values))}`))); card.appendChild(photos);
         const actions = document.createElement("div"); actions.className = "blindAuctionActions";
         const accept = document.createElement("button"); accept.type = "button"; accept.className = "adventurePrimary";
         if (trade.fromOwnerId === "john") { accept.textContent = "Ask bidder to respond"; accept.addEventListener("click", () => evaluateJohnAuctionTrade(trade.id)); }
         else { accept.textContent = trade.toOwnerId === "john" ? "Accept trade" : "Approve bidder trade"; accept.addEventListener("click", () => resolveAuctionTrade(trade.id, true)); }
         const decline = document.createElement("button"); decline.type = "button"; decline.textContent = trade.fromOwnerId === "john" ? "Withdraw offer" : "Decline"; decline.addEventListener("click", () => resolveAuctionTrade(trade.id, false)); actions.append(accept, decline); card.appendChild(actions); section.appendChild(card);
     });
-    if (pending.length > (state.auctionTradeLimit || 10)) { const more = document.createElement("button"); more.textContent = "Show 10 more offers"; more.addEventListener("click", async () => { const oldLimit = state.auctionTradeLimit || 10; state.auctionTradeLimit = oldLimit + 10; await ensureAuctionPhotoRefsLoaded(pending.slice(oldLimit, oldLimit + 10).flatMap((trade) => [trade.giveRef, trade.wantRef])); renderMessages(); }); section.appendChild(more); }
+    if (pending.length > (state.auctionTradeLimit || 10)) { const more = document.createElement("button"); more.textContent = "Show 10 more offers"; more.addEventListener("click", async () => { const oldLimit = state.auctionTradeLimit || 10; state.auctionTradeLimit = oldLimit + 10; await ensureAuctionPhotoRefsLoaded(pending.slice(oldLimit, oldLimit + 10).flatMap(auctionTradeAllRefs)); renderMessages(); }); section.appendChild(more); }
     const completed = trades.filter((item) => item.status !== "pending").slice(-10).reverse();
-    if (completed.length) { const history = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Recent trade decisions"; history.appendChild(summary); completed.forEach((item) => { const line = document.createElement("p"); line.textContent = `${getAuctionOwnerName(item.fromOwnerId)} ↔ ${getAuctionOwnerName(item.toOwnerId)} · ${item.status}`; history.appendChild(line); }); section.appendChild(history); }
+    if (completed.length) { const history = document.createElement("details"), summary = document.createElement("summary"); summary.textContent = "Recent trade decisions"; history.open = true; history.appendChild(summary); completed.forEach((item) => { const line = document.createElement("p"); line.className = `auctionTradeResult ${item.status}`; line.textContent = `${item.status === "accepted" ? "✓ ACCEPTED" : item.status === "declined" ? "✕ DECLINED" : "EXPIRED"} · ${getAuctionOwnerName(item.fromOwnerId)} ↔ ${getAuctionOwnerName(item.toOwnerId)} · ${auctionTradeRefs(item, "give").length} for ${auctionTradeRefs(item, "want").length}${item.resolvedAt ? ` · ${new Date(item.resolvedAt).toLocaleDateString()}` : ""}`; history.appendChild(line); }); section.appendChild(history); }
     return section;
 }
 
@@ -5052,6 +5195,7 @@ function createAuctionRosterCard(item, ownerId, favoriteKeys = null) {
     if (bidder) { const fit = auctionInterestMatches(bidder, item.ref), details = document.createElement("details"); details.className = "auctionPhotoFit"; const summary = document.createElement("summary"); summary.textContent = `Taste fit: ${fit.factor >= 1.3 ? "strong" : fit.factor > 1 ? "some interest" : "no known match"} · ×${fit.factor.toFixed(2)}`; const text = document.createElement("p"); text.textContent = `${fit.matches.length ? `Matching interests: ${fit.matches.map((match) => `${match.label} (+${Math.round((match.weight - 1) * 100)}%)`).join(" · ")}.` : "No saved interests match the available information."}${fit.metadataLoaded ? "" : " Tags and reactions could not be checked until the original note loads."} This describes tastes, not the full bid or roster score.`; details.append(summary, text); card.appendChild(details); }
     if (bidder) { const key = auctionPhotoKey(item.ref), favorites = favoriteKeys || new Set(getAuctionPersonalFavorites(bidder).map(auctionPhotoKey)), selected = favorites.has(key), favorite = document.createElement("button"); favorite.type = "button"; favorite.textContent = selected ? "★ Remove personal favorite" : "☆ Make personal favorite"; favorite.setAttribute("aria-pressed", String(selected)); favorite.addEventListener("click", async () => { const current = getAuctionBidders().find((entry) => entry.id === ownerId); if (!current || !getAuctionOwnership().some((entry) => entry.ownerId === ownerId && auctionPhotoKey(entry.ref) === key)) return; const overrides = { ...(current.personality?.favoriteOverrides || {}) }, ownedKeys = new Set(getAuctionOwnership().filter((entry) => entry.ownerId === ownerId).map((entry) => auctionPhotoKey(entry.ref))); if (!selected && Object.entries(overrides).filter(([id, value]) => ownedKeys.has(id) && value === "favorite").length >= 5) { alert("Up to five photos can be manually pinned as favorites. Unpin one first."); return; } overrides[key] = selected ? "excluded" : "favorite"; favorite.disabled = true; try { await saveAuctionChanges({ auctionBidders: (state.structure.settings.auctionBidders || []).map((entry) => entry.id === ownerId ? { ...entry, personality: { ...(entry.personality || {}), favoriteOverrides: overrides } } : entry) }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); favorite.disabled = false; alert("Could not save this favorite."); } }); card.appendChild(favorite); }
     const source = document.createElement("button"); source.type = "button"; source.textContent = "Open source"; source.addEventListener("click", () => openPhotoSource(item.ref)); card.appendChild(source);
+    if (ownerId === "john") { const market = document.createElement("button"); market.type = "button"; const proceeds = Math.floor(auctionTradeValue(item.ref, getAuctionTradeValues()) * .6); market.textContent = `Sell to market · $${proceeds}`; market.disabled = Boolean(getSavedAuctionSession(item.serverId)); market.addEventListener("click", async () => { if (state.auctionTradeBusy || getSavedAuctionSession(item.serverId)) return; const currentValue = Math.floor(auctionTradeValue(item.ref, getAuctionTradeValues()) * .6); if (!confirm(`Sell this photo back to the market for $${currentValue} (60% of its current This or That trade value, rounded down)? The original photo stays in its channel and becomes eligible for re-auction.`)) return; state.auctionTradeBusy = true; market.disabled = true; try { await saveAuctionChanges(() => { const ownership = state.structure.settings.auctionOwnership || []; if (getSavedAuctionSession(item.serverId) || !auctionTradeOwnerHas(ownership, item.serverId, "john", item.ref)) throw new Error("This photo is no longer available for sale."); const balances = { ...(state.structure.settings.auctionBalances || {}) }, local = { ...(balances[item.serverId] || {}) }; local.john = Math.min(Number.MAX_SAFE_INTEGER, (Number(local.john) || 0) + currentValue); balances[item.serverId] = local; return { auctionOwnership: ownership.filter((entry) => !(entry.serverId === item.serverId && entry.ownerId === "john" && auctionPhotoKey(entry.ref) === auctionPhotoKey(item.ref))), auctionBalances: balances, auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionConsignments: (state.structure.settings.auctionConsignments || []).filter((entry) => entry.serverId !== item.serverId || auctionPhotoKey(entry.ref) !== auctionPhotoKey(item.ref)), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), { id: newLocalGameRecordId(), serverId: item.serverId, ref: structuredClone(item.ref), fromOwnerId: "john", toOwnerId: null, type: "market-sale", price: currentValue, createdAt: new Date().toISOString() }] }; }); state.auctionMarketNotice = `Sold to the market for $${currentValue}. The original photo remains in its channel.`; state.auctionTradeBusy = false; render(); } catch (error) { console.error("Market sale failed:", error); alert(error.message || "The sale could not be saved. Ownership and balance remain unchanged."); market.disabled = false; } finally { state.auctionTradeBusy = false; } }); card.appendChild(market); }
     const historyButton = document.createElement("button"); historyButton.type = "button"; historyButton.textContent = "Photo history"; historyButton.addEventListener("click", () => openAuctionPhotoHistory(item.ref)); card.appendChild(historyButton);
     if (getAuctionConsignmentSettings().enabled) { const key = auctionPhotoKey(item.ref), listing = getAuctionConsignments(item.serverId).find((entry) => auctionPhotoKey(entry.ref) === key && entry.sellerId === ownerId), button = document.createElement("button"); button.type = "button"; button.textContent = listing ? "Remove consignment listing" : "List for consignment"; button.disabled = Boolean(getSavedAuctionSession(item.serverId)); button.title = button.disabled ? "Finish or discard the current auction before changing listings." : ""; button.addEventListener("click", async () => { if (getSavedAuctionSession(item.serverId) || state.auctionConsignmentBusy) return; if (!getAuctionOwnership().some((entry) => entry.serverId === item.serverId && entry.ownerId === ownerId && auctionPhotoKey(entry.ref) === key)) { alert("This photo is no longer owned by this seller."); return; } const entries = (state.structure.settings.auctionConsignments || []).filter((entry) => entry.serverId !== item.serverId || auctionPhotoKey(entry.ref) !== key); if (!listing) entries.push({ serverId: item.serverId, sellerId: ownerId, ref: structuredClone(item.ref), listedAt: new Date().toISOString() }); state.auctionConsignmentBusy = true; button.disabled = true; try { await saveAuctionChanges({ auctionConsignments: entries }); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); } catch (error) { console.error(error); alert("Could not save the listing; ownership was not changed."); button.disabled = false; } finally { state.auctionConsignmentBusy = false; } }); card.appendChild(button); }
     const transfer = document.createElement("select"); transfer.setAttribute("aria-label", "Transfer photo to");
@@ -5060,13 +5204,13 @@ function createAuctionRosterCard(item, ownerId, favoriteKeys = null) {
         if (!transfer.value) return;
         const ownership = (state.structure.settings.auctionOwnership || []).map((entry) => entry === item ? { ...entry, ownerId: transfer.value, acquiredVia: "admin" } : entry);
         const event = { serverId: item.serverId, ref: structuredClone(item.ref), type: "transfer", fromOwnerId: ownerId, toOwnerId: transfer.value, createdAt: new Date().toISOString() };
-        try { await saveAuctionChanges({ auctionOwnership: ownership, auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); } catch (error) { console.error(error); alert("Transfer could not be saved. Ownership was not changed."); transfer.value = ""; }
+        try { await saveAuctionChanges({ auctionOwnership: ownership, auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionMarketProposals: invalidateAuctionMarketProposals(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); } catch (error) { console.error(error); alert("Transfer could not be saved. Ownership was not changed."); transfer.value = ""; }
     });
     const release = document.createElement("button"); release.type = "button"; release.textContent = "Release for re-auction";
     release.addEventListener("click", async () => {
         if (!confirm("Release this photo so it can be auctioned again? The original and auction history will remain.")) return;
         const event = { serverId: item.serverId, ref: structuredClone(item.ref), type: "release", fromOwnerId: ownerId, createdAt: new Date().toISOString() };
-        try { await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((entry) => entry !== item), auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); }
+        try { await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((entry) => entry !== item), auctionTrades: invalidateAuctionTradesForRefs(item.serverId, [item.ref]), auctionMarketProposals: invalidateAuctionMarketProposals(item.serverId, [item.ref]), auctionOwnershipEvents: [...(state.structure.settings.auctionOwnershipEvents || []), event] }); render(); }
         catch (error) { console.error(error); alert("Could not release this photo. Ownership was not changed."); }
     });
     card.append(transfer, release); return card;
@@ -5217,9 +5361,10 @@ function renderAuctionOwnerChannel() {
     const page = document.createElement("section"); page.className = "blindAuction auctionOwnerPage";
     const title = document.createElement("h3"); title.textContent = `${getAuctionOwnerName(ownerId)}’s roster · ${items.length} photos`; page.appendChild(title);
     const intro = document.createElement("p"); intro.textContent = "These are references to original photos, not copies. Admin transfers and releases do not delete the original."; page.appendChild(intro);
+    if (ownerId === "john" && state.auctionMarketNotice) { const notice = document.createElement("p"); notice.className = "auctionTradeDecision"; notice.setAttribute("role", "status"); notice.textContent = state.auctionMarketNotice; page.appendChild(notice); }
     if (ownerId !== "john") { const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Rename bidder"; rename.addEventListener("click", () => renameAuctionBidder(ownerId)); page.appendChild(rename); }
     const tabs = document.createElement("div"); tabs.className = "blindAuctionActions auctionOwnerTabs";
-    const pendingCount = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).length;
+    const pendingCount = getAuctionTrades().filter((trade) => trade.status === "pending" && (trade.fromOwnerId === ownerId || trade.toOwnerId === ownerId)).length + (state.structure.settings.auctionMarketProposals || []).filter((proposal) => proposal.serverId === getActiveServer()?.id && proposal.ownerId === ownerId && proposal.status === "pending").length;
     [["roster", "Roster"], ["profile", "Profile & stats"], ["trades", `Pending trades${pendingCount ? ` (${pendingCount})` : ""}`]].forEach(([value, text]) => { const button = document.createElement("button"); button.type = "button"; button.textContent = text; button.setAttribute("aria-pressed", String((state.auctionOwnerTab || "roster") === value)); button.addEventListener("click", async () => { state.auctionOwnerTab = value; await ensureAuctionPhotoRefsLoaded(getAuctionViewRefs(ownerId, value)); if (state.activeView.type === "auctionOwner" && state.activeView.id === ownerId) renderMessages(); }); tabs.appendChild(button); });
     page.appendChild(tabs);
     if (state.auctionOwnerTab === "trades") { page.appendChild(renderAuctionTradeInbox(ownerId)); els.messages.appendChild(page); return; }
@@ -5439,9 +5584,9 @@ function renderBlindAuction() {
         start.disabled = Boolean(saved);
         start.addEventListener("click", async () => { const ids = personInputs.filter((input) => input.checked).map((input) => input.value), mode = participantMode.value, amount = mode === "manual" ? ids.length : Number(bots.value); if (mode === "manual" && (amount < 1 || amount > 8)) { alert("Choose 1 to 8 personalities."); return; } start.disabled = true; start.textContent = "Preparing…"; try { await prepareAuctionPreview(Number(count.value), amount, serverId, Boolean(consignmentToggle?.checked), { mode, ids }); } finally { start.disabled = Boolean(getSavedAuctionSession(serverId)); start.textContent = "Preview auction"; } });
         const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "Admin: release all auctioned photos";
-        reset.addEventListener("click", async () => { if (!confirm("Release every auction-owned photo in this server for re-auction? Original photos, bidder profiles, and auction history will remain.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref); await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionTrades: invalidateAuctionTradesForRefs(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Ownership was not changed."); } });
+        reset.addEventListener("click", async () => { if (!confirm("Release every auction-owned photo in this server for re-auction? Original photos, bidder profiles, and auction history will remain.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref); await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionTrades: invalidateAuctionTradesForRefs(serverId, refs), auctionMarketProposals: invalidateAuctionMarketProposals(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Ownership was not changed."); } });
         const fresh = document.createElement("button"); fresh.type = "button"; fresh.textContent = "Admin: fresh auction slate";
-        fresh.addEventListener("click", async () => { if (!confirm("Release this server's auction-owned photos, discard any unfinished auction, and reset its auction balances? Original photos, bidder profiles, and historical records will remain. Pending trades involving released photos will expire.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref), balances = { ...(state.structure.settings.auctionBalances || {}) }, sessions = { ...(state.structure.settings.auctionSessions || {}) }; delete balances[serverId]; delete sessions[serverId]; await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionBalances: balances, auctionSessions: sessions, auctionTrades: invalidateAuctionTradesForRefs(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Auction data was not changed."); } });
+        fresh.addEventListener("click", async () => { if (!confirm("Release this server's auction-owned photos, discard any unfinished auction, and reset its auction balances? Original photos, bidder profiles, and historical records will remain. Pending trades involving released photos will expire.")) return; try { const refs = getAuctionOwnership().map((item) => item.ref), balances = { ...(state.structure.settings.auctionBalances || {}) }, sessions = { ...(state.structure.settings.auctionSessions || {}) }; delete balances[serverId]; delete sessions[serverId]; await saveAuctionChanges({ auctionOwnership: (state.structure.settings.auctionOwnership || []).filter((item) => item.serverId !== serverId), auctionBalances: balances, auctionSessions: sessions, auctionTrades: invalidateAuctionTradesForRefs(serverId, refs), auctionMarketProposals: invalidateAuctionMarketProposals(serverId, refs) }); render(); } catch (error) { console.error(error); alert("Could not save the reset. Auction data was not changed."); } });
         const resetNote = document.createElement("p"); resetNote.textContent = "Release all removes auction ownership in this server but keeps balances and any unfinished auction. Fresh auction slate also clears this server’s balances and discards its unfinished auction. Both expire affected pending trades; original photos, profiles and completed history remain.";
         page.append(options, economyInfo, createWeightedGameControls(game), stats, profiles, start, resetNote, reset, fresh);
     } else if (game.screen === "preview") {
@@ -6687,7 +6832,7 @@ function openMuseumCurationEditor(exhibit = null) {
             const exhibits = state.structure.settings.museumExhibits || [];
             state.structure.settings.museumExhibits = exhibit
                 ? exhibits.map((item) => item.id === exhibit.id ? next : item)
-                : [...exhibits, next].slice(-100);
+                : [...exhibits, next];
             await saveStructure(state.structure);
             modal.remove();
             state.activeMuseumExhibitId = next.id;
@@ -10909,19 +11054,35 @@ async function getLocalAudioTrack(id) {
 function putLocalAudioTrack(track) { return localAudioRequest("readwrite", (store) => store.put(track)); }
 function deleteLocalAudioTrack(id) { return localAudioRequest("readwrite", (store) => store.delete(id)); }
 
-const audioSession = { enabled: false, player: null, url: null, sequence: 0, currentKey: null, bar: null, preloaded: null, lastTrack: null, clipEnd: null, userPaused: false, loading: false };
+const audioSession = { enabled: false, player: null, url: null, sequence: 0, currentKey: null, trackId: null, bar: null, preloaded: null, lastTrack: null, clipEnd: null, userPaused: false, loading: false };
+// Keep the now-playing label consistent with locally persisted track names.
+function updateCachedLocalAudioName(id, name) {
+    if (audioSession.preloaded?.id === id) audioSession.preloaded = { ...audioSession.preloaded, name };
+    if (audioSession.lastTrack?.id === id) audioSession.lastTrack = { ...audioSession.lastTrack, name };
+    if (audioSession.enabled && !audioSession.loading && audioSession.player?.getAttribute("src") && audioSession.trackId === id && audioSession.bar) showAudioSessionBar(state.structure.settings.localAudio?.mode === "personality" ? `${name} · random excerpt` : name);
+}
 function stopLocalAudio() {
-    audioSession.enabled = false; audioSession.sequence++; audioSession.currentKey = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
+    audioSession.enabled = false; audioSession.sequence++; audioSession.currentKey = null; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
     if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
     if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null;
     audioSession.bar?.remove(); audioSession.bar = null; document.body.classList.remove("localAudioActive");
+}
+// Changing settings or removing a track must not silently end an enabled session.
+function suspendLocalAudio(message) {
+    if (!audioSession.enabled) return;
+    audioSession.sequence++; audioSession.currentKey = null; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
+    if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
+    if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null;
+    showAudioSessionBar(message);
 }
 function audioClock(seconds) { if (!Number.isFinite(seconds) || seconds < 0) return "0:00"; return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`; }
 function audioExcerptSeconds() { const value = Number(state.structure.settings.localAudio?.excerptSeconds); return [5, 10, 20, 30].includes(value) ? value : 10; }
 function updateAudioPlayerBar() {
     const bar = audioSession.bar, player = audioSession.player; if (!bar) return;
     const button = bar.querySelector(".localAudioToggle"), progress = bar.querySelector(".localAudioProgress"), time = bar.querySelector(".localAudioTime");
-    const hasTrack = Boolean(player?.getAttribute("src")); button.disabled = !audioSession.enabled || !hasTrack || audioSession.loading;
+    const hasTrack = Boolean(player?.getAttribute("src")), config = state.structure.settings.localAudio || {};
+    const canStartBackground = config.mode !== "personality" && Boolean(config.backgroundTrackId);
+    button.disabled = !audioSession.enabled || (!hasTrack && !canStartBackground) || audioSession.loading;
     button.textContent = hasTrack && !player.paused ? "Pause" : "Play";
     const duration = hasTrack && Number.isFinite(player.duration) ? player.duration : 0; progress.disabled = !duration; progress.max = String(duration || 1); progress.value = String(hasTrack && Number.isFinite(player.currentTime) ? player.currentTime : 0);
     time.textContent = `${audioClock(hasTrack ? player.currentTime : 0)} / ${audioClock(duration)}`;
@@ -10930,8 +11091,8 @@ function showAudioSessionBar(message) {
     if (!audioSession.bar) {
         const bar = document.createElement("section"); bar.className = "localAudioSessionBar"; bar.setAttribute("aria-label", "Audio player");
         const label = document.createElement("span"); label.className = "localAudioTitle"; label.setAttribute("role", "status");
-        const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "localAudioToggle"; toggle.textContent = "Play"; toggle.addEventListener("click", () => { const player = audioSession.player; if (!audioSession.enabled || !player?.getAttribute("src")) return; if (!player.paused) { audioSession.userPaused = true; player.pause(); updateAudioPlayerBar(); return; } audioSession.userPaused = false; if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd - .1) audioSession.clipEnd = Math.min(player.duration || Infinity, player.currentTime + audioExcerptSeconds()); player.play().then(updateAudioPlayerBar).catch(() => { label.textContent = "Playback blocked; tap Play to retry."; }); });
-        const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Stop"; stop.setAttribute("aria-label", "Stop and disable audio"); stop.addEventListener("click", stopLocalAudio);
+        const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "localAudioToggle"; toggle.textContent = "Play"; toggle.addEventListener("click", () => { const player = audioSession.player; if (!audioSession.enabled) return; if (!player?.getAttribute("src")) { const config = state.structure.settings.localAudio || {}; if (config.mode !== "personality" && config.backgroundTrackId) { audioSession.userPaused = false; void playLocalAudioTrack(config.backgroundTrackId, `background:${config.backgroundTrackId}`, true); } return; } if (!player.paused) { audioSession.userPaused = true; player.pause(); updateAudioPlayerBar(); return; } audioSession.userPaused = false; if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd - .1) audioSession.clipEnd = Math.min(player.duration || Infinity, player.currentTime + audioExcerptSeconds()); player.play().then(updateAudioPlayerBar).catch(() => { label.textContent = "Playback blocked; tap Play to retry."; }); });
+        const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Disable"; stop.setAttribute("aria-label", "Stop and disable audio"); stop.addEventListener("click", stopLocalAudio);
         const progress = document.createElement("input"); progress.type = "range"; progress.className = "localAudioProgress"; progress.min = "0"; progress.max = "1"; progress.step = "0.1"; progress.value = "0"; progress.setAttribute("aria-label", "Audio position"); progress.disabled = true; progress.addEventListener("input", () => { const player = audioSession.player; if (!player || !Number.isFinite(player.duration)) return; player.currentTime = Number(progress.value); if (audioSession.clipEnd !== null) audioSession.clipEnd = Math.min(player.duration, player.currentTime + audioExcerptSeconds()); updateAudioPlayerBar(); });
         const time = document.createElement("span"); time.className = "localAudioTime"; time.textContent = "0:00 / 0:00";
         bar.append(label, toggle, stop, progress, time); document.body.appendChild(bar); audioSession.bar = bar; document.body.classList.add("localAudioActive");
@@ -10952,7 +11113,7 @@ function waitForLocalAudioMetadata(player, sequence) {
 }
 async function playLocalAudioTrack(id, key, loop = false, excerpt = false) {
     if (!audioSession.enabled || !id || audioSession.currentKey === key) return;
-    const sequence = ++audioSession.sequence; audioSession.currentKey = key; audioSession.loading = true; audioSession.clipEnd = null;
+    const sequence = ++audioSession.sequence; audioSession.currentKey = key; audioSession.trackId = id; audioSession.loading = true; audioSession.clipEnd = null;
     if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
     if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Loading audio…");
     try {
@@ -10972,7 +11133,7 @@ function playPersonalityDialogueAudio(bidderId, key) {
     if (!audioSession.enabled || audioSession.userPaused || settings.mode !== "personality") return;
     const id = settings.assignments?.[bidderId];
     if (id) void playLocalAudioTrack(id, key, false, true);
-    else if (audioSession.currentKey !== key) { audioSession.sequence++; audioSession.currentKey = key; audioSession.clipEnd = null; audioSession.loading = false; audioSession.player?.pause(); audioSession.player?.removeAttribute("src"); if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Personality audio enabled · no track assigned"); }
+    else if (audioSession.currentKey !== key) { audioSession.sequence++; audioSession.currentKey = key; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.loading = false; audioSession.player?.pause(); audioSession.player?.removeAttribute("src"); if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Personality audio enabled · no track assigned"); }
 }
 function renderPersonalityAudioAssignment(bidder) {
     const details = document.createElement("details"), summary = document.createElement("summary"), note = document.createElement("p"); details.className = "personalityAudioAssignment"; summary.textContent = "Dialogue audio"; note.textContent = "Choose a track for a random excerpt when she speaks. Enable personality audio in Settings to hear it; nothing starts automatically."; const label = document.createElement("label"); label.textContent = `${bidder.name}'s track`; const select = document.createElement("select"); select.disabled = true; label.appendChild(select); const status = document.createElement("p"); status.setAttribute("role", "status"); const save = document.createElement("button"); save.type = "button"; save.textContent = "Save dialogue track"; save.disabled = true;
@@ -10983,11 +11144,12 @@ function renderPersonalityAudioAssignment(bidder) {
 }
 function renderLocalAudioSettings() {
     const section = document.createElement("details"); section.className = "localAudioSettings"; const title = document.createElement("summary"); title.textContent = "Local audio player";
-    const help = document.createElement("p"); help.textContent = "Unlock the encrypted included recordings, or import audio on this device. Name tracks and choose background music or a track for each personality. Nothing plays until you explicitly enable audio for this session. Imported files are not included in the existing app backup; keep your originals. Included recordings require a connection and the encrypted audio files on the website.";
+    const help = document.createElement("p"); help.textContent = "Choose a mode and track, save your choices, then enable audio. The player stays at the bottom until you disable it. Nothing plays without your confirmation.";
     const unlockLabel = document.createElement("label"); unlockLabel.textContent = "Password for included recordings"; const password = document.createElement("input"); password.type = "password"; password.autocomplete = "off"; unlockLabel.appendChild(password); const unlock = document.createElement("button"); unlock.type = "button"; unlock.textContent = "Unlock and remember on this device";
     const inputLabel = document.createElement("label"); inputLabel.textContent = "Add audio files"; const input = document.createElement("input"); input.type = "file"; input.accept = "audio/*,.m4a"; input.multiple = true; inputLabel.appendChild(input);
     const status = document.createElement("p"); status.setAttribute("role", "status");
-    const content = document.createElement("div"); section.append(title, help, unlockLabel, unlock, inputLabel, status, content); let editing = false;
+    const unlockPanel = document.createElement("details"), unlockTitle = document.createElement("summary"), unlockHelp = document.createElement("p"); unlockTitle.textContent = "Unlock included recordings"; unlockHelp.textContent = "Unlock once per device. Included recordings require a connection and the encrypted files on the website."; unlockPanel.append(unlockTitle, unlockHelp, unlockLabel, unlock);
+    const content = document.createElement("div"); section.append(title, help, unlockPanel, status, content); let editing = false, libraryOpen = false;
     unlock.addEventListener("click", async () => { if (!password.value) { status.textContent = "Enter the audio password first."; return; } unlock.disabled = true; status.textContent = "Unlocking encrypted recordings…"; try { await unlockBundledAudio(password.value); password.value = ""; status.textContent = "Unlocked and remembered on this device. No audio has been played."; await refresh(); } catch (error) { password.value = ""; status.textContent = `Could not unlock: ${error.message}`; } finally { unlock.disabled = false; } });
     const refresh = async () => {
         try {
@@ -10996,17 +11158,19 @@ function renderLocalAudioSettings() {
             if (!tracks.length) { const empty = document.createElement("p"); empty.textContent = "No audio imported on this device yet."; list.appendChild(empty); }
             tracks.forEach((track) => {
                 const row = document.createElement("div"); row.className = "localAudioTrack"; const name = document.createElement("input"); name.type = "text"; name.value = track.name; name.maxLength = 100; name.setAttribute("aria-label", `Name for ${track.name}`);
-                const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Save name"; rename.addEventListener("click", async () => { const value = name.value.trim(); if (!value) { status.textContent = "Enter a name for the track."; return; } rename.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), names: { ...(state.structure.settings.localAudio?.names || {}), [track.id]: value } } })); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("Track is no longer available."); await putLocalAudioTrack({ ...original, name: value }); } status.textContent = "Name saved locally."; await refresh(); } catch (error) { status.textContent = `Could not save the name: ${error.message}`; } finally { rename.disabled = false; } });
-                const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove"; remove.addEventListener("click", async () => { if (!confirm(`Remove “${track.name}” from this device's audio library? Your original file is not changed.`)) return; remove.disabled = true; try { stopLocalAudio(); await deleteLocalAudioTrack(track.id); status.textContent = "Removed from the local audio library."; await refresh(); } catch (error) { status.textContent = `Could not remove audio: ${error.message}`; remove.disabled = false; } });
+                const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Save name"; rename.addEventListener("click", async () => { const value = name.value.trim(); if (!value) { status.textContent = "Enter a name for the track."; return; } rename.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), names: { ...(state.structure.settings.localAudio?.names || {}), [track.id]: value } } })); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("Track is no longer available."); await putLocalAudioTrack({ ...original, name: value }); } updateCachedLocalAudioName(track.id, value); status.textContent = "Name saved locally."; await refresh(); } catch (error) { console.error("Could not save the audio name:", error); status.textContent = `Could not save the name: ${error?.message || "local storage could not be written"}`; } finally { rename.disabled = false; } });
+                const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove"; remove.addEventListener("click", async () => { if (!confirm(`Remove “${track.name}” from this device's audio library? Your original file is not changed.`)) return; remove.disabled = true; try { if (audioSession.trackId === track.id) suspendLocalAudio("Track removed · choose another in audio settings"); await deleteLocalAudioTrack(track.id); status.textContent = "Removed from the local audio library."; await refresh(); } catch (error) { status.textContent = `Could not remove audio: ${error.message}`; remove.disabled = false; } });
                 row.append(name, rename); if (!track.id.startsWith("bundled:")) row.appendChild(remove); list.appendChild(row);
-            }); content.appendChild(list);
+            });
             const modeLabel = document.createElement("label"); modeLabel.textContent = "Audio mode"; const mode = document.createElement("select"); [["background", "Background track"], ["personality", "Personality dialogue tracks"]].forEach(([id, label]) => { const option = document.createElement("option"); option.value = id; option.textContent = label; option.selected = (config.mode || "background") === id; mode.appendChild(option); }); modeLabel.appendChild(mode); content.appendChild(modeLabel);
             const excerptLabel = document.createElement("label"); excerptLabel.textContent = "Personality excerpt length"; const excerpt = document.createElement("select"); [5, 10, 20, 30].forEach((seconds) => { const option = document.createElement("option"); option.value = String(seconds); option.textContent = `${seconds} seconds`; option.selected = audioExcerptSeconds() === seconds; excerpt.appendChild(option); }); excerptLabel.appendChild(excerpt); content.appendChild(excerptLabel);
-            const selectTrack = (labelText, chosen) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = chosen || ""; label.appendChild(select); content.appendChild(label); return select; };
-            const background = selectTrack("Background track (loops)", config.backgroundTrackId), assignments = new Map(); getAuctionBidders().forEach((bidder) => assignments.set(bidder.id, selectTrack(`${bidder.name}'s dialogue track`, config.assignments?.[bidder.id])));
-            const save = document.createElement("button"); save.type = "button"; save.textContent = "Save audio choices"; save.addEventListener("click", async () => { save.disabled = true; try { const updated = { ...(config.assignments || {}) }; assignments.forEach((select, id) => { if (select.value) updated[id] = select.value; else delete updated[id]; }); await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), mode: mode.value, backgroundTrackId: background.value, assignments: updated, excerptSeconds: Number(excerpt.value) } })); stopLocalAudio(); status.textContent = "Audio choices saved locally. Enable audio to start a new listening session."; await refresh(); } catch (error) { status.textContent = `Could not save audio choices: ${error.message}`; } finally { save.disabled = false; } });
-            const start = document.createElement("button"); start.type = "button"; start.textContent = "Enable audio for this session…"; start.addEventListener("click", () => { const saved = state.structure.settings.localAudio || {}; if (saved.mode !== "personality" && !saved.backgroundTrackId) { status.textContent = "Choose a background track and save your choices first."; return; } if (saved.mode === "personality" && !Object.values(saved.assignments || {}).some(Boolean)) { status.textContent = "Assign at least one personality track and save your choices first."; return; } if (!confirm("Allow the selected local audio to play in this session? You can stop it at any time.")) return; stopLocalAudio(); audioSession.enabled = true; showAudioSessionBar(saved.mode === "personality" ? "Personality audio enabled · waiting for dialogue" : "Starting background audio…"); if (saved.mode !== "personality") void playLocalAudioTrack(saved.backgroundTrackId, `background:${saved.backgroundTrackId}`, true); status.textContent = "Audio enabled for this session. Use Stop audio at any time."; });
-            content.append(save, start);
+            const selectTrack = (labelText, chosen, parent = content) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = chosen || ""; label.appendChild(select); parent.appendChild(label); return select; };
+            const background = selectTrack("Background track (loops)", config.backgroundTrackId), assignments = new Map(), assignmentPanel = document.createElement("details"), assignmentTitle = document.createElement("summary"); assignmentPanel.className = "localAudioAssignments"; assignmentTitle.textContent = "Choose tracks for personalities"; assignmentPanel.appendChild(assignmentTitle); getAuctionBidders().forEach((bidder) => assignments.set(bidder.id, selectTrack(`${bidder.name}'s dialogue track`, config.assignments?.[bidder.id], assignmentPanel))); content.appendChild(assignmentPanel);
+            const showMode = () => { const personality = mode.value === "personality"; excerptLabel.hidden = !personality; assignmentPanel.hidden = !personality; background.parentElement.hidden = personality; }; mode.addEventListener("change", showMode); showMode();
+            const save = document.createElement("button"); save.type = "button"; save.textContent = "1. Save audio choices"; save.addEventListener("click", async () => { save.disabled = true; try { const previous = state.structure.settings.localAudio || {}, modeChanged = (previous.mode || "background") !== mode.value || (mode.value === "background" && (previous.backgroundTrackId || "") !== background.value); await saveAuctionChanges(() => { const current = state.structure.settings.localAudio || {}, updated = { ...(current.assignments || {}) }; assignments.forEach((select, id) => { if (select.value) updated[id] = select.value; else delete updated[id]; }); return { localAudio: { ...current, mode: mode.value, backgroundTrackId: background.value, assignments: updated, excerptSeconds: Number(excerpt.value) } }; }); if (audioSession.enabled && modeChanged) suspendLocalAudio(mode.value === "personality" ? "Personality audio ready · waiting for dialogue" : "Background track ready · tap Play"); status.textContent = audioSession.enabled ? "Choices saved. The bottom player is still enabled." : "Choices saved. Enable audio below when you are ready."; await refresh(); } catch (error) { status.textContent = `Could not save audio choices: ${error.message}`; } finally { save.disabled = false; } });
+            const start = document.createElement("button"); start.type = "button"; start.className = "localAudioEnable"; start.textContent = "2. Enable audio for this session…"; start.addEventListener("click", () => { const saved = state.structure.settings.localAudio || {}; if (audioSession.enabled) { status.textContent = "Audio is already enabled. The player is at the bottom."; return; } if (saved.mode !== "personality" && !saved.backgroundTrackId) { status.textContent = "Choose a background track and save your choices first."; return; } if (saved.mode === "personality" && !Object.values(saved.assignments || {}).some(Boolean)) { status.textContent = "Assign at least one personality track and save your choices first."; return; } if (!confirm("Allow the selected local audio to play in this session? You can stop it at any time.")) return; audioSession.enabled = true; showAudioSessionBar(saved.mode === "personality" ? "Personality audio enabled · waiting for dialogue" : "Starting background audio…"); if (saved.mode !== "personality") void playLocalAudioTrack(saved.backgroundTrackId, `background:${saved.backgroundTrackId}`, true); status.textContent = "Audio enabled. The player stays at the bottom until you disable it."; });
+            const library = document.createElement("details"), libraryTitle = document.createElement("summary"), libraryHelp = document.createElement("p"); library.className = "localAudioLibrary"; libraryTitle.textContent = "Add, rename, or remove tracks"; libraryHelp.textContent = "Imported audio stays on this device and is not included in the existing app backup; keep your originals."; library.open = libraryOpen; library.addEventListener("toggle", () => { libraryOpen = library.open; }); library.append(libraryTitle, libraryHelp, inputLabel, list);
+            content.append(save, start, library);
             if (config.mode === "personality") audioSession.preloaded = null;
             else if (config.backgroundTrackId && audioSession.preloaded?.id !== config.backgroundTrackId) { try { audioSession.preloaded = await getLocalAudioTrack(config.backgroundTrackId); } catch (_) { audioSession.preloaded = null; } }
         } catch (error) { if (section.isConnected) status.textContent = `Could not open local audio storage: ${error.message}`; }
@@ -11030,6 +11194,18 @@ function renderSettingsPage(auctionOnly = false) {
     intro.className = "settingsIntro";
     intro.innerHTML = auctionOnly ? `<h3>Auction settings · ${escapeHTML(server?.name || "Workspace")}</h3><p>Manage personalities and auction options locally on this device.</p>` : `<h3>${escapeHTML(server?.name || "Workspace")}</h3><p>Organize channels under categories. Everything is saved in this browser on this device.</p>`;
     page.appendChild(intro);
+    const clubThemeSection = document.createElement("section"); clubThemeSection.className = "settingsCategory auctionThemeSetting";
+    const clubTitle = document.createElement("h4"); clubTitle.textContent = "Auction & dinner appearance";
+    const clubLabel = document.createElement("label"), clubToggle = document.createElement("input"); clubToggle.type = "checkbox"; clubToggle.checked = state.structure.settings.auctionClubTheme !== false;
+    clubLabel.append(clubToggle, document.createTextNode(" Pink club theme (turn off for the previous look)"));
+    const clubHelp = document.createElement("p"); clubHelp.textContent = "A decorative theme for auctions, profiles, and dinners. This changes appearance only, not photos, data, or game rules.";
+    clubToggle.addEventListener("change", async () => { const value = clubToggle.checked; clubToggle.disabled = true; try { await saveAuctionChanges({ auctionClubTheme: value }); document.body.classList.toggle("auction-club", value); } catch (error) { console.error("Could not save auction theme:", error); clubToggle.checked = !value; alert("Could not save the auction theme; the previous appearance is unchanged."); } finally { clubToggle.disabled = false; } });
+    clubThemeSection.append(clubTitle, clubLabel, clubHelp); page.appendChild(clubThemeSection);
+    const navigationSection = document.createElement("section"); navigationSection.className = "settingsCategory";
+    const navigationTitle = document.createElement("h4"); navigationTitle.textContent = "Navigation";
+    const navigationLabel = document.createElement("label"), navigationToggle = document.createElement("input"); navigationToggle.type = "checkbox"; navigationToggle.checked = state.structure.settings.openViewsAtTop !== false; navigationLabel.append(navigationToggle, document.createTextNode(" Open newly selected views at the top"));
+    const navigationHelp = document.createElement("p"); navigationHelp.textContent = "Prevents a new channel or screen from opening halfway down. Turning this off keeps the previous scrolling behavior.";
+    navigationToggle.addEventListener("change", async () => { const value = navigationToggle.checked; navigationToggle.disabled = true; try { await saveAuctionChanges({ openViewsAtTop: value }); } catch (error) { console.error("Could not save navigation setting:", error); navigationToggle.checked = !value; alert("Could not save the navigation setting."); } finally { navigationToggle.disabled = false; } }); navigationSection.append(navigationTitle, navigationLabel, navigationHelp); page.appendChild(navigationSection);
     page.appendChild(renderLocalAudioSettings());
     if (!auctionOnly) page.appendChild(renderAppearanceSettings());
     if (auctionOnly) page.appendChild(renderAuctionPersonalityCreation());
