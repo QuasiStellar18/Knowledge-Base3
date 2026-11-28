@@ -76,7 +76,7 @@ const UNLOCK_SESSION_KEY = "knowledgeDiscordUnlocked";
 const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_LOCAL_IMAGES_PER_SEND = 12;
 const IMAGE_DRAFT_WHEEL_SPIN_MS = 1800;
-const APP_BUILD_VERSION = "161";
+const APP_BUILD_VERSION = "169";
 const TOURNAMENT_SIZES = [4, 8, 16, 32, 64, 128, 256];
 
 function hasUnlockSession() {
@@ -114,7 +114,7 @@ const state = {
     randomNumberText: "",
     randomText: "",
     wasMobileLayout: false,
-    auctionsFolderCollapsed: true,
+    auctionsFolderCollapsed: false,
     error: "",
     visibleMessageLimit: 100,
     sourceFocus: null,
@@ -546,6 +546,7 @@ function normalizeServer(server, serverIndex) {
                     isHallOfFameChannel: Boolean(channel.isHallOfFameChannel),
                     isMuseumExhibitsChannel: Boolean(channel.isMuseumExhibitsChannel),
                     isExhibitStagingChannel: Boolean(channel.isExhibitStagingChannel),
+                    isAudioCoverStagingChannel: Boolean(channel.isAudioCoverStagingChannel),
                     exhibitId: channel.exhibitId || null,
                     isCensorFolderChannel: Boolean(channel.isCensorFolderChannel)
                 };
@@ -1059,6 +1060,8 @@ function renderSpecialViews() {
     const group = document.createElement("section");
     group.className = "category";
     group.appendChild(staticCategoryHeader("Workspace"));
+    group.appendChild(renderSmartChannelRow({ id: "audio-library", type: "audioLibrary", label: "audio library", prefix: "♫", title: "Browse tracks and organize albums" }));
+    group.appendChild(renderSmartChannelRow({ id: "audio-settings", type: "audioSettings", label: "audio settings", prefix: "⚙", title: "Unlock audio and manage playback" }));
     group.appendChild(renderSmartChannelRow({
         id: "pinned",
         type: "pinned",
@@ -1406,6 +1409,16 @@ function renderHeader() {
     els.comparePhotosBtn.hidden = !compareAvailable;
     els.comparePhotosBtn.disabled = !compareAvailable;
 
+    if (state.activeView.type === "audioSettings") {
+        els.activeTitle.textContent = "Audio settings";
+        els.activeMeta.textContent = "Unlock, import, and choose how audio plays";
+        return;
+    }
+    if (state.activeView.type === "audioLibrary") {
+        els.activeTitle.textContent = "Audio library";
+        els.activeMeta.textContent = "Your tracks and albums · saved on this device";
+        return;
+    }
     if (state.activeView.type === "settings") {
         els.activeTitle.textContent = "Organization settings";
         els.activeMeta.textContent = "Manage categories and create channels";
@@ -1617,6 +1630,7 @@ function renderHeader() {
 
 function renderMessages() {
     if (state.activeView.type !== "blindAuction" && state.blindAuction.screen === "play" && auctionPacingDelay()) { cancelAuctionAutoTurn(); state.blindAuction.autoPacingPaused = true; }
+    document.body.classList.toggle("audioViewOpen", ["audioLibrary", "audioSettings"].includes(state.activeView.type));
     document.body.classList.toggle("personalityGameOpen", state.activeView.type === "personalityGames");
     document.body.classList.toggle("auctionViewOpen", ["blindAuction", "auctionSettings", "auctionOwner", "auctionMarketInbox", "auctionExhibition", "auctionSeasons", "auctionDinner", "auctionCompare", "auctionScrapbook", "relationshipMap", "personalityGames", "punishmentChallenge"].includes(state.activeView.type));
     releaseRenderedObjectUrls();
@@ -1654,6 +1668,8 @@ function renderMessages() {
         els.messages.appendChild(focus);
     }
 
+    if (state.activeView.type === "audioLibrary") { renderAudioLibrary(); return; }
+    if (state.activeView.type === "audioSettings") { const page = document.createElement("section"); page.className = "audioSettingsPage"; const back = document.createElement("button"); back.type = "button"; back.textContent = "← Audio library"; back.addEventListener("click", () => openView("audioLibrary", "audio-library")); const heading = document.createElement("h2"); heading.textContent = "Audio settings"; page.append(back, heading, renderLocalAudioSettings(true)); els.messages.appendChild(page); return; }
     if (state.activeView.type === "settings") {
         renderSettingsPage();
         return;
@@ -11008,7 +11024,9 @@ function getRecentStatsDays(days, count) {
 
 // Audio is kept in a separate local database: it never changes the photo store.
 let localAudioDBPromise = null;
-const bundledAudioTracks = Array.from({ length: 11 }, (_, index) => { const n = index + 1; return { id: `bundled:${n}`, name: `Test ${n}`, paths: [5, 6, 7].includes(n) ? [`audio/track${n}.part1.kba`, `audio/track${n}.part2.kba`] : [`audio/track${n}.kba`] }; });
+const bundledAudioParts = { 5: 2, 6: 2, 7: 2, 12: 2, 17: 2, 18: 3, 19: 2, 22: 2, 23: 2, 28: 2, 31: 2, 32: 2, 33: 2, 34: 2, 36: 2, 37: 2, 43: 2, 46: 2 };
+const bundledAudioTracks = Array.from({ length: 48 }, (_, index) => { const n = index + 1, parts = bundledAudioParts[n] || 1; return { id: `bundled:${n}`, name: n <= 11 ? `Test ${n}` : `Track ${n}`, paths: parts === 1 ? [`audio/track${n}.kba`] : Array.from({ length: parts }, (__, part) => `audio/track${n}.part${part + 1}.kba`) }; });
+let bundledAudioNames = {}, bundledAudioDurations = {}, bundledAudioNamesPromise = null;
 let bundledAudioKey = null;
 function openLocalAudioDB() {
     if (!localAudioDBPromise) localAudioDBPromise = new Promise((resolve, reject) => {
@@ -11029,15 +11047,28 @@ async function localAudioRequest(mode, operation) {
     });
 }
 function listLocalAudioTracks() {
-    return localAudioRequest("readonly", (store, done) => { const tracks = [], request = store.openCursor(); request.onsuccess = () => { const cursor = request.result; if (!cursor) { done(tracks); return; } const { id, name, size } = cursor.value; tracks.push({ id, name, size }); cursor.continue(); }; });
+    return localAudioRequest("readonly", (store, done) => { const tracks = [], request = store.openCursor(); request.onsuccess = () => { const cursor = request.result; if (!cursor) { done(tracks); return; } const { id, name, size, originalName } = cursor.value; tracks.push({ id, name, size, originalName }); cursor.continue(); }; });
 }
 async function localAudioKeyRequest(mode, operation) {
     const database = await openLocalAudioDB();
     return new Promise((resolve, reject) => { const tx = database.transaction("keys", mode); let value; const request = operation(tx.objectStore("keys")); request.onsuccess = () => { value = request.result; }; tx.oncomplete = () => resolve(value); tx.onabort = () => reject(tx.error || new Error("Could not save the audio unlock.")); tx.onerror = () => {}; });
 }
 async function loadRememberedAudioKey() { if (!bundledAudioKey) bundledAudioKey = (await localAudioKeyRequest("readonly", (store) => store.get("bundled"))) || null; return bundledAudioKey; }
-async function fetchBundledAudio(track) { const parts = []; for (const path of track.paths) { const response = await fetch(path); if (!response.ok) throw new Error("Could not download the encrypted recording. Check your connection and uploaded audio files."); parts.push(await response.arrayBuffer()); } const bytes = parts.length === 1 ? parts[0] : await new Blob(parts).arrayBuffer(); if (bytes.byteLength < 48 || new TextDecoder().decode(bytes.slice(0, 4)) !== "KBA1") throw new Error("The encrypted audio file is invalid."); return bytes; }
+async function fetchBundledAudio(track) { const parts = []; for (const path of track.paths) { const response = await fetch(path, path === "audio/names.kba" ? { cache: "no-cache" } : undefined); if (!response.ok) throw new Error("Could not download the encrypted recording. Check your connection and uploaded audio files."); parts.push(await response.arrayBuffer()); } const bytes = parts.length === 1 ? parts[0] : await new Blob(parts).arrayBuffer(); if (bytes.byteLength < 48 || new TextDecoder().decode(bytes.slice(0, 4)) !== "KBA1") throw new Error("The encrypted audio file is invalid."); return bytes; }
 async function decryptBundledAudio(bytes, key) { return crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(20, 32) }, key, bytes.slice(32)); }
+async function loadBundledAudioNames() {
+    const key = await loadRememberedAudioKey(); if (!key) return {};
+    if (!bundledAudioNamesPromise) bundledAudioNamesPromise = (async () => { const bytes = await fetchBundledAudio({ paths: ["audio/names.kba"] }), plain = await decryptBundledAudio(bytes, key), values = JSON.parse(new TextDecoder().decode(plain)); if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error("Encrypted audio names are invalid."); const names = {}, durations = {}; Object.entries(values).forEach(([id, value]) => { if (!/^bundled:\d+$/.test(id)) return; const name = typeof value === "string" ? value : value?.name, seconds = Number(value?.seconds); if (typeof name === "string") names[id] = name.slice(0, 100); if (Number.isFinite(seconds) && seconds > 0) durations[id] = seconds; }); bundledAudioNames = names; bundledAudioDurations = durations; return names; })().catch((error) => { bundledAudioNamesPromise = null; throw error; });
+    return bundledAudioNamesPromise;
+}
+function bundledAudioDisplayName(track) { return state.structure.settings.localAudio?.names?.[track.id] || bundledAudioNames[track.id] || track.name; }
+function audioOriginalName(track) {
+    if (!track?.id) return "";
+    if (!track.id.startsWith("bundled:")) return typeof track.originalName === "string" ? track.originalName : "";
+    const initial = bundledAudioTracks.find((item) => item.id === track.id);
+    return bundledAudioNames[track.id] || (Number(track.id.slice(8)) <= 11 ? initial?.name : "") || "";
+}
+function audioTrackOptionLabel(track) { const seconds = track.duration || bundledAudioDurations[track.id]; return `${track.name}${Number.isFinite(seconds) && seconds > 0 ? ` · ${audioClock(seconds)}` : ""}`; }
 async function unlockBundledAudio(password) {
     if (!globalThis.crypto?.subtle) throw new Error("Audio unlock requires HTTPS or a secure browser context.");
     const bytes = await fetchBundledAudio(bundledAudioTracks[0]);
@@ -11048,13 +11079,150 @@ async function unlockBundledAudio(password) {
 }
 async function getLocalAudioTrack(id) {
     const bundled = bundledAudioTracks.find((track) => track.id === id);
-    if (bundled) { const key = await loadRememberedAudioKey(); if (!key) throw new Error("Unlock the bundled recordings in Local audio player first."); const bytes = await fetchBundledAudio(bundled); const decoded = await decryptBundledAudio(bytes, key); return { ...bundled, name: state.structure.settings.localAudio?.names?.[id] || bundled.name, blob: new Blob([decoded], { type: "audio/mp4" }) }; }
+    if (bundled) { const key = await loadRememberedAudioKey(); if (!key) throw new Error("Unlock the bundled recordings in Local audio player first."); try { await loadBundledAudioNames(); } catch (error) { console.warn("Could not load encrypted track names:", error); } const bytes = await fetchBundledAudio(bundled); const decoded = await decryptBundledAudio(bytes, key); return { ...bundled, name: bundledAudioDisplayName(bundled), blob: new Blob([decoded], { type: "audio/mp4" }) }; }
     return localAudioRequest("readonly", (store, done) => { const request = store.get(id); request.onsuccess = () => done(request.result || null); });
 }
 function putLocalAudioTrack(track) { return localAudioRequest("readwrite", (store) => store.put(track)); }
 function deleteLocalAudioTrack(id) { return localAudioRequest("readwrite", (store) => store.delete(id)); }
 
-const audioSession = { enabled: false, player: null, url: null, sequence: 0, currentKey: null, trackId: null, bar: null, preloaded: null, lastTrack: null, clipEnd: null, userPaused: false, loading: false };
+function normalizedPersonalTags(values) {
+    return [...new Set(values.flatMap((value) => String(value).toLowerCase().split(/[\s,]+/)).map((value) => value.replace(/^#+/, "").replace(/[^a-z0-9_-]/g, "").slice(0, 40)).filter(Boolean))].slice(0, 50);
+}
+function openPersonalTagEditor({ title, tags, suggestions, onSave, help }) {
+    const modal = document.createElement("section"); modal.className = "adventureMediaPicker personalTagModal"; modal.setAttribute("role", "dialog"); modal.setAttribute("aria-modal", "true"); modal.setAttribute("aria-label", title);
+    const card = document.createElement("div"); card.className = "adventureMediaPickerCard personalTagCard";
+    const heading = document.createElement("h3"); heading.textContent = title;
+    const description = document.createElement("p"); description.textContent = help || "Add tags with Enter or commas. Tap a tag to remove it.";
+    const chosen = document.createElement("div"); chosen.className = "personalTagChips"; let current = normalizedPersonalTags(tags || []);
+    const input = document.createElement("input"); input.type = "text"; input.placeholder = "Add tags, separated by commas"; input.setAttribute("aria-label", "Add tags"); input.maxLength = 400;
+    const add = document.createElement("button"); add.type = "button"; add.textContent = "Add tags";
+    const suggestionsTitle = document.createElement("small"); suggestionsTitle.textContent = "Existing tags · tap to add";
+    const available = document.createElement("div"); available.className = "personalTagChips";
+    const status = document.createElement("p"); status.setAttribute("role", "status");
+    const actions = document.createElement("div"); actions.className = "personalTagActions"; const save = document.createElement("button"); save.type = "button"; save.textContent = "Save tags"; const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel";
+    const draw = () => { chosen.textContent = ""; available.textContent = ""; current.forEach((tag) => { const chip = document.createElement("button"); chip.type = "button"; chip.textContent = `#${tag} ×`; chip.setAttribute("aria-label", `Remove tag ${tag}`); chip.addEventListener("click", () => { current = current.filter((value) => value !== tag); draw(); }); chosen.appendChild(chip); }); const options = normalizedPersonalTags(suggestions || []).filter((tag) => !current.includes(tag)); suggestionsTitle.hidden = !options.length; options.slice(0, 30).forEach((tag) => { const chip = document.createElement("button"); chip.type = "button"; chip.textContent = `+ #${tag}`; chip.addEventListener("click", () => { current = normalizedPersonalTags([...current, tag]); draw(); }); available.appendChild(chip); }); };
+    const addInput = () => { current = normalizedPersonalTags([...current, input.value]); input.value = ""; draw(); }; add.addEventListener("click", addInput); input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addInput(); } }); cancel.addEventListener("click", () => modal.remove());
+    save.addEventListener("click", async () => { addInput(); save.disabled = true; status.textContent = "Saving locally…"; try { await onSave(current); modal.remove(); } catch (error) { status.textContent = `Could not save tags: ${error.message}`; save.disabled = false; } });
+    actions.append(cancel, save); card.append(heading, description, chosen, input, add, suggestionsTitle, available, status, actions); modal.appendChild(card); document.body.appendChild(modal); draw(); input.focus();
+}
+function knownPhotoTags() { const values = []; for (const messages of state.messagesByChannel.values()) for (const message of messages) values.push(...(message.tags || [])); return values; }
+function editPhotoMessageTags(message, channelId) {
+    openPersonalTagEditor({ title: "Photo note tags", tags: message.tags || [], suggestions: knownPhotoTags(), help: "Tags apply to this note and every photo in it. Tags typed in the note itself are kept.", onSave: async (tags) => { const messages = state.messagesByChannel.get(channelId) || [], original = messages.find((item) => item.id === message.id); if (!original) throw new Error("This note is no longer loaded."); const next = { ...original, tags: normalizedPersonalTags([...tags, ...extractTags(original.text || "")]) }; await saveChannelMessage(channelId, next); state.messagesByChannel.set(channelId, messages.map((item) => item.id === message.id ? next : item)); renderMessages(); } });
+}
+async function getAudioCoverStagingChannel() {
+    const server = getActiveServer(); if (!server || server.isAdventureServer) throw new Error("Open a regular workspace first.");
+    let channel = allChannels(server).find((item) => item.isAudioCoverStagingChannel); if (channel) return channel;
+    const next = structuredClone(state.structure), nextServer = next.servers.find((item) => item.id === server.id), folder = nextServer?.categories.find((item) => !item.hidden) || nextServer?.categories[0]; if (!folder) throw new Error("Create a folder first.");
+    channel = { id: uniqueId("channel", "audio-cover-staging"), name: "audio-cover-staging", isAudioCoverStagingChannel: true, hidden: false }; folder.channels.push(channel);
+    await saveStructure(next); state.structure = next; renderChannels(); return channel;
+}
+async function openAudioCoverStaging() { try { const channel = await getAudioCoverStagingChannel(); await openView("channel", channel.id); } catch (error) { alert(`Could not open cover staging: ${error.message}`); } }
+async function openAudioCoverPicker(track, targetType = "track") {
+    let channel; try { channel = await getAudioCoverStagingChannel(); await ensurePhotoReferencesLoaded([{ channelId: channel.id }]); } catch (error) { alert(`Could not load cover photos: ${error.message}`); return; }
+    const modal = document.createElement("section"); modal.className = "adventureMediaPicker audioCoverModal"; modal.setAttribute("role", "dialog"); modal.setAttribute("aria-label", `Choose cover for ${track.name}`);
+    const card = document.createElement("div"); card.className = "adventureMediaPickerCard audioCoverCard"; const heading = document.createElement("h3"); heading.textContent = `${targetType === "album" ? "Album cover" : "Cover"} for ${track.name}`; const help = document.createElement("p"); help.textContent = targetType === "album" ? `Choose an image from #${channel.name}. This album cover is separate from its tracks and stays inside the app.` : `Choose an image from #${channel.name}. The cover stays inside the app and is not written into the audio file.`;
+    const grid = document.createElement("div"); grid.className = "audioCoverGrid"; const status = document.createElement("p"); status.setAttribute("role", "status");
+    const entries = (state.messagesByChannel.get(channel.id) || []).flatMap((message) => (message.attachments || []).filter((attachment) => attachment.type?.startsWith("image/") && shouldShowAttachment(attachment)).map((attachment) => ({ attachment, ref: { channelId: channel.id, messageId: message.id, attachmentId: attachment.id } })));
+    let shown = 0; const more = document.createElement("button"); more.type = "button"; more.textContent = "Load more photos";
+    let saving = false; const saveCover = async (ref) => { if (saving) return; saving = true; status.textContent = "Saving cover…"; try { await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}; if (targetType === "album") { const albums = audioAlbums(); if (!albums.some((album) => album.id === track.id)) throw new Error("This album no longer exists."); return { localAudio: { ...config, albums: albums.map((album) => album.id === track.id ? { ...album, coverRef: ref || null } : album) } }; } const covers = { ...(config.covers || {}) }; if (ref) covers[track.id] = ref; else delete covers[track.id]; return { localAudio: { ...config, covers } }; }); modal.remove(); if (state.activeView.type === "audioLibrary") renderMessages(); } catch (error) { status.textContent = `Could not save cover: ${error.message}`; saving = false; } };
+    const draw = () => { entries.slice(shown, shown + 10).forEach(({ attachment, ref }) => { const button = document.createElement("button"); button.type = "button"; button.setAttribute("aria-label", `Use ${attachment.name || "photo"} as cover`); const image = document.createElement("img"); image.alt = attachment.name || "Cover photo"; image.loading = "lazy"; setRenderedImageSource(image, attachment); button.appendChild(image); button.addEventListener("click", () => void saveCover(ref)); grid.appendChild(button); }); shown = Math.min(entries.length, shown + 10); more.hidden = shown >= entries.length; }; more.addEventListener("click", draw);
+    const upload = document.createElement("button"); upload.type = "button"; upload.textContent = "Open staging channel to add photos"; upload.addEventListener("click", () => { modal.remove(); void openView("channel", channel.id); }); const clear = document.createElement("button"); clear.type = "button"; clear.textContent = "Remove cover"; clear.addEventListener("click", () => void saveCover(null)); const close = document.createElement("button"); close.type = "button"; close.textContent = "Cancel"; close.addEventListener("click", () => modal.remove());
+    if (!entries.length) status.textContent = "No photos here yet. Open the staging channel and upload some first."; card.append(heading, help, upload, grid, more, clear, close, status); modal.appendChild(card); document.body.appendChild(modal); draw();
+}
+
+// Album membership is local metadata: it references tracks without copying or decrypting them.
+const audioLibraryView = { albumId: null, search: "", shuffle: false };
+function audioAlbums() { const albums = state.structure.settings.localAudio?.albums; return Array.isArray(albums) ? albums.filter((album) => album && typeof album.id === "string" && Array.isArray(album.trackIds)) : []; }
+async function updateAudioAlbums(change) {
+    await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}; return { localAudio: { ...config, albums: change(audioAlbums().map((album) => ({ ...album, trackIds: [...album.trackIds] }))) } }; });
+    if (state.activeView.type === "audioLibrary") renderMessages();
+}
+function audioLibraryPlay(ids) {
+    if (!ids.length) return;
+    if (!audioSession.enabled && !confirm("Enable audio for this session and play your selection? You can disable it in the bottom player.")) return;
+    audioSession.enabled = true; audioSession.userPaused = false;
+    audioSession.queue = { ids: [...ids], index: 0 };
+    void playLocalAudioTrack(ids[0], `library:${++audioSession.librarySequence}`, false, false);
+}
+function shuffleAudioIds(ids) { const shuffled = [...ids]; for (let i = shuffled.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; } return shuffled; }
+function openAudioRenameDialog(track) {
+    const modal = document.createElement("section"); modal.className = "adventureMediaPicker personalTagModal"; modal.setAttribute("role", "dialog"); modal.setAttribute("aria-label", `Rename ${track.name}`);
+    const card = document.createElement("div"); card.className = "adventureMediaPickerCard personalTagCard"; const title = document.createElement("h3"); title.textContent = "Rename track"; const input = document.createElement("input"); input.type = "text"; input.maxLength = 100; input.value = track.name; input.setAttribute("aria-label", "Track name"); const status = document.createElement("p"); status.setAttribute("role", "status"); const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel"; cancel.addEventListener("click", () => modal.remove()); const save = document.createElement("button"); save.type = "button"; save.textContent = "Save name"; save.addEventListener("click", async () => { const value = input.value.trim(); if (!value) { status.textContent = "Enter a name first."; return; } save.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}; return { localAudio: { ...config, names: { ...(config.names || {}), [track.id]: value } } }; }); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("This track is no longer available."); await putLocalAudioTrack({ ...original, originalName: original.originalName || original.name, name: value }); } updateCachedLocalAudioName(track.id, value); modal.remove(); if (state.activeView.type === "audioLibrary") renderMessages(); } catch (error) { status.textContent = `Could not save the name: ${error.message}`; save.disabled = false; } }); const actions = document.createElement("div"); actions.className = "personalTagActions"; actions.append(cancel, save); card.append(title, input, status, actions); modal.appendChild(card); document.body.appendChild(modal); input.focus();
+}
+function renderAudioLibrary() {
+    const page = document.createElement("section"); page.className = "audioLibrary";
+    const hero = document.createElement("div"); hero.className = "audioLibraryHero";
+    const eyebrow = document.createElement("span"); eyebrow.textContent = "YOUR LISTENING SPACE";
+    const heading = document.createElement("h2"); heading.textContent = "Your audio, your way.";
+    const intro = document.createElement("p"); intro.textContent = "Browse your library, make albums and arrange tracks. Nothing plays until you choose to enable audio.";
+    const settings = document.createElement("button"); settings.type = "button"; settings.textContent = "⚙ Audio settings & unlock"; settings.addEventListener("click", () => openView("audioSettings", "audio-settings"));
+    const staging = document.createElement("button"); staging.type = "button"; staging.textContent = "Cover photo staging"; staging.addEventListener("click", openAudioCoverStaging);
+    hero.append(eyebrow, heading, intro, settings, staging);
+    const body = document.createElement("div"); body.className = "audioLibraryBody"; body.textContent = "Loading your library…";
+    page.append(hero, body); els.messages.appendChild(page);
+    void (async () => {
+        let unlocked = false, namesError = false, imported = [];
+        try { unlocked = Boolean(await loadRememberedAudioKey()); if (unlocked) { try { await loadBundledAudioNames(); } catch (error) { namesError = true; console.warn("Could not load encrypted audio names:", error); } } imported = await listLocalAudioTracks(); const refs = [...Object.values(state.structure.settings.localAudio?.covers || {}), ...audioAlbums().map((album) => album.coverRef)].filter((ref) => ref?.channelId && ref?.messageId); if (refs.length) await ensurePhotoReferencesLoaded(refs); }
+        catch (error) { if (page.isConnected) body.textContent = `Could not open the audio library: ${error.message}`; return; }
+        if (!page.isConnected || state.activeView.type !== "audioLibrary") return;
+        const tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: bundledAudioDisplayName(track) })), ...imported].sort((a, b) => a.name.localeCompare(b.name));
+        const audioConfig = state.structure.settings.localAudio || {}, audioTags = audioConfig.tags || {}, audioCovers = audioConfig.covers || {};
+        const trackById = new Map(tracks.map((track) => [track.id, track]));
+        const albums = audioAlbums(); let selected = albums.find((album) => album.id === audioLibraryView.albumId); if (!selected) audioLibraryView.albumId = null;
+        body.textContent = "";
+        if (!unlocked || namesError) { const note = document.createElement("p"); note.className = "audioLibraryNotice"; note.textContent = !unlocked ? "Included recordings are locked. Open Audio settings & unlock to see their names and play them." : "Encrypted track names could not be loaded. Check your connection and uploaded audio files."; body.appendChild(note); }
+        const albumsHeading = document.createElement("div"); albumsHeading.className = "audioLibrarySectionHeading";
+        const albumsTitle = document.createElement("h3"); albumsTitle.textContent = "Your albums";
+        const albumName = document.createElement("input"); albumName.type = "text"; albumName.maxLength = 80; albumName.placeholder = "New album name"; albumName.setAttribute("aria-label", "New album name");
+        const create = document.createElement("button"); create.type = "button"; create.textContent = "+ New album";
+        create.addEventListener("click", async () => { const name = albumName.value.trim().slice(0, 80); if (!name) { albumName.focus(); return; } create.disabled = true; try { const id = `album:${Date.now()}:${Math.random().toString(36).slice(2)}`; audioLibraryView.albumId = id; await updateAudioAlbums((items) => [...items, { id, name, trackIds: [] }]); } catch (error) { alert(`Could not save album: ${error.message}`); create.disabled = false; } });
+        albumsHeading.append(albumsTitle, albumName, create); body.appendChild(albumsHeading);
+        const albumList = document.createElement("div"); albumList.className = "audioAlbumList";
+        const all = document.createElement("button"); all.type = "button"; all.className = !selected ? "active" : ""; all.textContent = `All tracks · ${tracks.length}`; all.addEventListener("click", () => { audioLibraryView.albumId = null; renderMessages(); }); albumList.appendChild(all);
+        const getAlbumCover = (album) => findAttachment(album.coverRef) || album.trackIds.map((id) => findAttachment(audioCovers[id])).find(Boolean);
+        albums.forEach((album) => { const button = document.createElement("button"); button.type = "button"; button.className = selected?.id === album.id ? "active" : ""; const cover = getAlbumCover(album); if (cover) { const image = document.createElement("img"); image.alt = ""; image.loading = "lazy"; setRenderedImageSource(image, cover); button.appendChild(image); } const label = document.createElement("span"); label.textContent = `${album.name} · ${album.trackIds.length}`; button.appendChild(label); button.addEventListener("click", () => { audioLibraryView.albumId = album.id; renderMessages(); }); albumList.appendChild(button); }); body.appendChild(albumList);
+        const sectionHeading = document.createElement("div"); sectionHeading.className = "audioLibrarySectionHeading";
+        const title = document.createElement("h3"); title.textContent = selected ? selected.name : "All tracks"; sectionHeading.appendChild(title);
+        if (selected) {
+            const chooseAlbumCover = document.createElement("button"); chooseAlbumCover.type = "button"; chooseAlbumCover.textContent = selected.coverRef ? "Change album cover" : "Choose album cover"; chooseAlbumCover.addEventListener("click", () => void openAudioCoverPicker(selected, "album")); sectionHeading.appendChild(chooseAlbumCover);
+            const play = document.createElement("button"); play.type = "button"; play.textContent = "▶ Play album"; play.disabled = !selected.trackIds.some((id) => trackById.has(id)); play.addEventListener("click", () => { const ids = selected.trackIds.filter((id) => trackById.has(id)); audioLibraryPlay(audioLibraryView.shuffle ? shuffleAudioIds(ids) : ids); });
+            const shuffle = document.createElement("button"); shuffle.type = "button"; shuffle.textContent = audioLibraryView.shuffle ? "⇄ Shuffle: on" : "⇄ Shuffle: off"; shuffle.setAttribute("aria-pressed", String(audioLibraryView.shuffle)); shuffle.title = "Applies the next time you play an album"; shuffle.addEventListener("click", () => { audioLibraryView.shuffle = !audioLibraryView.shuffle; shuffle.textContent = audioLibraryView.shuffle ? "⇄ Shuffle: on" : "⇄ Shuffle: off"; shuffle.setAttribute("aria-pressed", String(audioLibraryView.shuffle)); }); sectionHeading.appendChild(shuffle);
+            const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Rename"; rename.addEventListener("click", async () => { const name = prompt("Album name:", selected.name)?.trim().slice(0, 80); if (!name) return; try { await updateAudioAlbums((items) => items.map((album) => album.id === selected.id ? { ...album, name } : album)); } catch (error) { alert(`Could not rename album: ${error.message}`); } });
+            const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Delete album"; remove.addEventListener("click", async () => { if (!confirm(`Delete “${selected.name}”? Its tracks will remain in your library.`)) return; try { audioLibraryView.albumId = null; await updateAudioAlbums((items) => items.filter((album) => album.id !== selected.id)); } catch (error) { alert(`Could not delete album: ${error.message}`); } }); sectionHeading.append(play, rename, remove);
+        }
+        body.appendChild(sectionHeading);
+        const search = document.createElement("input"); search.type = "search"; search.className = "audioLibrarySearch"; search.placeholder = "Search tracks or tags"; search.setAttribute("aria-label", "Search tracks or tags"); search.value = audioLibraryView.search; body.appendChild(search);
+        const tagFilters = document.createElement("div"); tagFilters.className = "audioTagFilters"; const distinctTags = normalizedPersonalTags(Object.values(audioTags).flatMap((tags) => Array.isArray(tags) ? tags : [])); if (distinctTags.length) { const reset = document.createElement("button"); reset.type = "button"; reset.textContent = "All tags"; reset.addEventListener("click", () => { search.value = ""; audioLibraryView.search = ""; drawTracks(); }); tagFilters.appendChild(reset); } distinctTags.forEach((tag) => { const chip = document.createElement("button"); chip.type = "button"; chip.textContent = `#${tag}`; chip.addEventListener("click", () => { search.value = `#${tag}`; audioLibraryView.search = search.value; drawTracks(); }); tagFilters.appendChild(chip); }); body.appendChild(tagFilters);
+        const resultCount = document.createElement("p"); resultCount.className = "audioLibraryResultCount"; resultCount.setAttribute("role", "status"); body.appendChild(resultCount);
+        let visibleTrackIds = []; const random = document.createElement("button"); random.type = "button"; random.textContent = "🎲 Random track"; random.title = "Pick from the tracks currently shown"; random.addEventListener("click", () => { if (visibleTrackIds.length) audioLibraryPlay([visibleTrackIds[Math.floor(Math.random() * visibleTrackIds.length)]]); }); body.appendChild(random);
+        const list = document.createElement("div"); list.className = "audioTrackList"; body.appendChild(list);
+        const drawTracks = () => {
+            list.textContent = ""; const items = selected ? selected.trackIds.map((id) => trackById.get(id) || { id, name: "Unavailable track" }) : tracks;
+            const query = audioLibraryView.search.trim().toLocaleLowerCase(), shown = items.filter((track) => query.startsWith("#") ? (audioTags[track.id] || []).some((tag) => String(tag).toLowerCase().includes(query.slice(1))) : `${track.name} ${audioOriginalName(track)} ${(audioTags[track.id] || []).join(" ")}`.toLocaleLowerCase().includes(query));
+            visibleTrackIds = shown.filter((track) => trackById.has(track.id)).map((track) => track.id); random.disabled = !visibleTrackIds.length; resultCount.textContent = `${shown.length} ${shown.length === 1 ? "track" : "tracks"}${query ? " found" : ""}`; if (!shown.length) { const empty = document.createElement("p"); empty.textContent = selected && !items.length ? "This album is empty. Open All tracks to add songs." : "No matching tracks. Try another search or clear the filter."; list.appendChild(empty); return; }
+            shown.forEach((track) => {
+                const row = document.createElement("div"); row.className = "audioTrackRow";
+                const icon = document.createElement("span"); icon.className = "audioTrackIcon"; const cover = findAttachment(audioCovers[track.id]); if (cover) { const image = document.createElement("img"); image.alt = ""; image.loading = "lazy"; setRenderedImageSource(image, cover); icon.appendChild(image); } else icon.textContent = "♫";
+                const detail = document.createElement("div"); detail.className = "audioTrackDetail"; const name = document.createElement("strong"); name.textContent = track.name; const sub = document.createElement("small"); sub.textContent = `${track.id.startsWith("bundled:") ? "Included recording" : "On this device"}${bundledAudioDurations[track.id] ? ` · ${audioClock(bundledAudioDurations[track.id])}` : ""}`; detail.append(name, sub);
+                const originalName = audioOriginalName(track); if (originalName && originalName !== track.name) { const description = document.createElement("small"); description.className = "audioOriginalName"; description.textContent = `Original: ${originalName}`; detail.appendChild(description); }
+                const play = document.createElement("button"); play.type = "button"; play.textContent = "▶"; play.setAttribute("aria-label", `Play ${track.name}`); play.disabled = !trackById.has(track.id); play.addEventListener("click", () => audioLibraryPlay([track.id])); row.append(icon, detail, play);
+                const labels = document.createElement("span"); labels.className = "audioTrackTags"; labels.textContent = (audioTags[track.id] || []).map((tag) => `#${tag}`).join(" "); detail.appendChild(labels);
+                const tools = document.createElement("details"); tools.className = "audioTrackTools"; const summary = document.createElement("summary"); summary.textContent = "Manage"; summary.setAttribute("aria-label", `Options for ${track.name}`); const chooseCover = document.createElement("button"); chooseCover.type = "button"; chooseCover.textContent = "Choose cover"; chooseCover.addEventListener("click", () => void openAudioCoverPicker(track)); const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Rename track"; rename.addEventListener("click", () => openAudioRenameDialog(track)); const tags = document.createElement("button"); tags.type = "button"; tags.textContent = "Edit audio tags"; tags.addEventListener("click", () => openPersonalTagEditor({ title: `Tags · ${track.name}`, tags: audioTags[track.id] || [], suggestions: distinctTags, help: "Audio tags are separate from photo tags. Add tags with Enter or commas.", onSave: async (values) => { await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}; return { localAudio: { ...config, tags: { ...(config.tags || {}), [track.id]: values } } }; }); if (state.activeView.type === "audioLibrary") renderMessages(); } })); tools.append(summary, chooseCover, rename, tags); row.appendChild(tools);
+                if (selected) {
+                    const index = selected.trackIds.indexOf(track.id);
+                    [["↑", -1], ["↓", 1]].forEach(([label, delta]) => { const move = document.createElement("button"); move.type = "button"; move.textContent = label; move.setAttribute("aria-label", `${delta < 0 ? "Move up" : "Move down"} ${track.name}`); move.disabled = index + delta < 0 || index + delta >= selected.trackIds.length; move.addEventListener("click", async () => { try { await updateAudioAlbums((items) => items.map((album) => { if (album.id !== selected.id) return album; const at = album.trackIds.indexOf(track.id), next = at + delta; if (at >= 0 && next >= 0 && next < album.trackIds.length) [album.trackIds[at], album.trackIds[next]] = [album.trackIds[next], album.trackIds[at]]; return album; })); } catch (error) { alert(`Could not reorder: ${error.message}`); } }); row.appendChild(move); });
+                    const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove"; remove.setAttribute("aria-label", `Remove ${track.name} from album`); remove.addEventListener("click", async () => { try { await updateAudioAlbums((items) => items.map((album) => album.id === selected.id ? { ...album, trackIds: album.trackIds.filter((id) => id !== track.id) } : album)); } catch (error) { alert(`Could not remove track: ${error.message}`); } }); row.appendChild(remove);
+                } else if (albums.length) {
+                    const add = document.createElement("select"); add.setAttribute("aria-label", `Add ${track.name} to an album`); const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "+ Album"; add.appendChild(placeholder); albums.forEach((album) => { const option = document.createElement("option"); option.value = album.id; option.textContent = album.name + (album.trackIds.includes(track.id) ? " ✓" : ""); option.disabled = album.trackIds.includes(track.id); add.appendChild(option); }); add.addEventListener("change", async () => { const albumId = add.value; if (!albumId) return; add.disabled = true; try { await updateAudioAlbums((items) => items.map((album) => album.id === albumId && !album.trackIds.includes(track.id) ? { ...album, trackIds: [...album.trackIds, track.id] } : album)); } catch (error) { alert(`Could not add track: ${error.message}`); add.disabled = false; } }); row.appendChild(add);
+                }
+                list.appendChild(row);
+            });
+        };
+        search.addEventListener("input", () => { audioLibraryView.search = search.value; drawTracks(); }); drawTracks();
+    })();
+}
+
+const audioSession = { enabled: false, player: null, url: null, sequence: 0, librarySequence: 0, queue: null, currentKey: null, trackId: null, bar: null, preloaded: null, lastTrack: null, clipEnd: null, userPaused: false, loading: false };
 // Keep the now-playing label consistent with locally persisted track names.
 function updateCachedLocalAudioName(id, name) {
     if (audioSession.preloaded?.id === id) audioSession.preloaded = { ...audioSession.preloaded, name };
@@ -11062,6 +11230,7 @@ function updateCachedLocalAudioName(id, name) {
     if (audioSession.enabled && !audioSession.loading && audioSession.player?.getAttribute("src") && audioSession.trackId === id && audioSession.bar) showAudioSessionBar(state.structure.settings.localAudio?.mode === "personality" ? `${name} · random excerpt` : name);
 }
 function stopLocalAudio() {
+    audioSession.queue = null;
     audioSession.enabled = false; audioSession.sequence++; audioSession.currentKey = null; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
     if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
     if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null;
@@ -11070,6 +11239,7 @@ function stopLocalAudio() {
 // Changing settings or removing a track must not silently end an enabled session.
 function suspendLocalAudio(message) {
     if (!audioSession.enabled) return;
+    audioSession.queue = null;
     audioSession.sequence++; audioSession.currentKey = null; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.userPaused = false; audioSession.loading = false; audioSession.lastTrack = null;
     if (audioSession.player) { audioSession.player.pause(); audioSession.player.removeAttribute("src"); audioSession.player.load(); }
     if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null;
@@ -11079,11 +11249,12 @@ function audioClock(seconds) { if (!Number.isFinite(seconds) || seconds < 0) ret
 function audioExcerptSeconds() { const value = Number(state.structure.settings.localAudio?.excerptSeconds); return [5, 10, 20, 30].includes(value) ? value : 10; }
 function updateAudioPlayerBar() {
     const bar = audioSession.bar, player = audioSession.player; if (!bar) return;
-    const button = bar.querySelector(".localAudioToggle"), progress = bar.querySelector(".localAudioProgress"), time = bar.querySelector(".localAudioTime");
+    const button = bar.querySelector(".localAudioToggle"), progress = bar.querySelector(".localAudioProgress"), time = bar.querySelector(".localAudioTime"), next = bar.querySelector(".localAudioNext");
     const hasTrack = Boolean(player?.getAttribute("src")), config = state.structure.settings.localAudio || {};
     const canStartBackground = config.mode !== "personality" && Boolean(config.backgroundTrackId);
     button.disabled = !audioSession.enabled || (!hasTrack && !canStartBackground) || audioSession.loading;
     button.textContent = hasTrack && !player.paused ? "Pause" : "Play";
+    if (next) next.hidden = !(audioSession.queue && audioSession.queue.index + 1 < audioSession.queue.ids.length);
     const duration = hasTrack && Number.isFinite(player.duration) ? player.duration : 0; progress.disabled = !duration; progress.max = String(duration || 1); progress.value = String(hasTrack && Number.isFinite(player.currentTime) ? player.currentTime : 0);
     time.textContent = `${audioClock(hasTrack ? player.currentTime : 0)} / ${audioClock(duration)}`;
 }
@@ -11093,14 +11264,15 @@ function showAudioSessionBar(message) {
         const label = document.createElement("span"); label.className = "localAudioTitle"; label.setAttribute("role", "status");
         const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "localAudioToggle"; toggle.textContent = "Play"; toggle.addEventListener("click", () => { const player = audioSession.player; if (!audioSession.enabled) return; if (!player?.getAttribute("src")) { const config = state.structure.settings.localAudio || {}; if (config.mode !== "personality" && config.backgroundTrackId) { audioSession.userPaused = false; void playLocalAudioTrack(config.backgroundTrackId, `background:${config.backgroundTrackId}`, true); } return; } if (!player.paused) { audioSession.userPaused = true; player.pause(); updateAudioPlayerBar(); return; } audioSession.userPaused = false; if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd - .1) audioSession.clipEnd = Math.min(player.duration || Infinity, player.currentTime + audioExcerptSeconds()); player.play().then(updateAudioPlayerBar).catch(() => { label.textContent = "Playback blocked; tap Play to retry."; }); });
         const stop = document.createElement("button"); stop.type = "button"; stop.textContent = "Disable"; stop.setAttribute("aria-label", "Stop and disable audio"); stop.addEventListener("click", stopLocalAudio);
+        const next = document.createElement("button"); next.type = "button"; next.className = "localAudioNext"; next.textContent = "Next"; next.setAttribute("aria-label", "Play next track in album"); next.hidden = true; next.addEventListener("click", () => { const queue = audioSession.queue; if (!audioSession.enabled || !queue || queue.index + 1 >= queue.ids.length) return; queue.index++; audioSession.userPaused = false; void playLocalAudioTrack(queue.ids[queue.index], `library:${++audioSession.librarySequence}`, false, false); });
         const progress = document.createElement("input"); progress.type = "range"; progress.className = "localAudioProgress"; progress.min = "0"; progress.max = "1"; progress.step = "0.1"; progress.value = "0"; progress.setAttribute("aria-label", "Audio position"); progress.disabled = true; progress.addEventListener("input", () => { const player = audioSession.player; if (!player || !Number.isFinite(player.duration)) return; player.currentTime = Number(progress.value); if (audioSession.clipEnd !== null) audioSession.clipEnd = Math.min(player.duration, player.currentTime + audioExcerptSeconds()); updateAudioPlayerBar(); });
         const time = document.createElement("span"); time.className = "localAudioTime"; time.textContent = "0:00 / 0:00";
-        bar.append(label, toggle, stop, progress, time); document.body.appendChild(bar); audioSession.bar = bar; document.body.classList.add("localAudioActive");
+        bar.append(label, toggle, next, stop, progress, time); document.body.appendChild(bar); audioSession.bar = bar; document.body.classList.add("localAudioActive");
     }
     audioSession.bar.querySelector(".localAudioTitle").textContent = message; updateAudioPlayerBar();
 }
 function getAudioPlayer() {
-    if (!audioSession.player) { const player = new Audio(); player.preload = "metadata"; ["play", "pause", "durationchange", "loadedmetadata", "ended"].forEach((event) => player.addEventListener(event, updateAudioPlayerBar)); player.addEventListener("timeupdate", () => { if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd) { player.pause(); showAudioSessionBar("Excerpt finished · waiting for dialogue"); } updateAudioPlayerBar(); }); audioSession.player = player; }
+    if (!audioSession.player) { const player = new Audio(); player.preload = "metadata"; ["play", "pause", "durationchange", "loadedmetadata", "ended"].forEach((event) => player.addEventListener(event, updateAudioPlayerBar)); player.addEventListener("ended", () => { const queue = audioSession.queue; if (!audioSession.enabled || audioSession.userPaused || !queue || queue.ids[queue.index] !== audioSession.trackId) return; queue.index++; if (queue.index < queue.ids.length) void playLocalAudioTrack(queue.ids[queue.index], `library:${++audioSession.librarySequence}`, false, false); else { audioSession.queue = null; showAudioSessionBar("Album finished · choose a track to play"); } }); player.addEventListener("timeupdate", () => { if (audioSession.clipEnd !== null && player.currentTime >= audioSession.clipEnd) { player.pause(); showAudioSessionBar("Excerpt finished · waiting for dialogue"); } updateAudioPlayerBar(); }); audioSession.player = player; }
     return audioSession.player;
 }
 function waitForLocalAudioMetadata(player, sequence) {
@@ -11121,6 +11293,8 @@ async function playLocalAudioTrack(id, key, loop = false, excerpt = false) {
         if (!audioSession.enabled || sequence !== audioSession.sequence) return;
         if (!track?.blob) throw new Error("The selected track is no longer available on this device.");
         audioSession.lastTrack = track;
+        // The optional in-app cover is never passed to system/lock-screen media controls.
+        try { if ("mediaSession" in navigator && typeof MediaMetadata !== "undefined") navigator.mediaSession.metadata = new MediaMetadata({ title: track.name, artist: "", album: "", artwork: [] }); } catch (_) { /* System media controls are optional. */ }
         const player = getAudioPlayer();
         audioSession.url = URL.createObjectURL(track.blob); player.src = audioSession.url; player.loop = loop; player.volume = 0.5;
         showAudioSessionBar(excerpt ? `${track.name} · random excerpt` : track.name);
@@ -11131,6 +11305,7 @@ async function playLocalAudioTrack(id, key, loop = false, excerpt = false) {
 function playPersonalityDialogueAudio(bidderId, key) {
     const settings = state.structure.settings.localAudio || {};
     if (!audioSession.enabled || audioSession.userPaused || settings.mode !== "personality") return;
+    audioSession.queue = null;
     const id = settings.assignments?.[bidderId];
     if (id) void playLocalAudioTrack(id, key, false, true);
     else if (audioSession.currentKey !== key) { audioSession.sequence++; audioSession.currentKey = key; audioSession.trackId = null; audioSession.clipEnd = null; audioSession.loading = false; audioSession.player?.pause(); audioSession.player?.removeAttribute("src"); if (audioSession.url) URL.revokeObjectURL(audioSession.url); audioSession.url = null; showAudioSessionBar("Personality audio enabled · no track assigned"); }
@@ -11138,13 +11313,13 @@ function playPersonalityDialogueAudio(bidderId, key) {
 function renderPersonalityAudioAssignment(bidder) {
     const details = document.createElement("details"), summary = document.createElement("summary"), note = document.createElement("p"); details.className = "personalityAudioAssignment"; summary.textContent = "Dialogue audio"; note.textContent = "Choose a track for a random excerpt when she speaks. Enable personality audio in Settings to hear it; nothing starts automatically."; const label = document.createElement("label"); label.textContent = `${bidder.name}'s track`; const select = document.createElement("select"); select.disabled = true; label.appendChild(select); const status = document.createElement("p"); status.setAttribute("role", "status"); const save = document.createElement("button"); save.type = "button"; save.textContent = "Save dialogue track"; save.disabled = true;
     details.append(summary, note, label, save, status); let loaded = false;
-    details.addEventListener("toggle", async () => { if (!details.open || loaded) return; try { const config = state.structure.settings.localAudio || {}, tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: config.names?.[track.id] || track.name })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!details.isConnected) return; const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = config.assignments?.[bidder.id] || ""; select.disabled = false; save.disabled = false; loaded = true; } catch (error) { status.textContent = `Could not load audio: ${error.message}`; } });
+    details.addEventListener("toggle", async () => { if (!details.open || loaded) return; try { try { await loadBundledAudioNames(); } catch (error) { console.warn("Could not load encrypted track names:", error); } const config = state.structure.settings.localAudio || {}, tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: bundledAudioDisplayName(track) })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!details.isConnected) return; const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = audioTrackOptionLabel(track); select.appendChild(option); }); select.value = config.assignments?.[bidder.id] || ""; select.disabled = false; save.disabled = false; loaded = true; } catch (error) { status.textContent = `Could not load audio: ${error.message}`; } });
     save.addEventListener("click", async () => { save.disabled = true; try { await saveAuctionChanges(() => { const config = state.structure.settings.localAudio || {}, assignments = { ...(config.assignments || {}) }; if (select.value) assignments[bidder.id] = select.value; else delete assignments[bidder.id]; return { localAudio: { ...config, assignments } }; }); status.textContent = "Dialogue track saved locally."; } catch (error) { status.textContent = `Could not save the track: ${error.message}`; } finally { save.disabled = false; } });
     return details;
 }
-function renderLocalAudioSettings() {
-    const section = document.createElement("details"); section.className = "localAudioSettings"; const title = document.createElement("summary"); title.textContent = "Local audio player";
-    const help = document.createElement("p"); help.textContent = "Choose a mode and track, save your choices, then enable audio. The player stays at the bottom until you disable it. Nothing plays without your confirmation.";
+function renderLocalAudioSettings(openInitially = false) {
+    const section = document.createElement("details"); section.className = "localAudioSettings"; section.open = openInitially; const title = document.createElement("summary"); title.textContent = "Playback & recordings";
+    const help = document.createElement("p"); help.textContent = "Choose how audio plays, save your choices, and enable it only when you are ready. The bottom player follows you between pages.";
     const unlockLabel = document.createElement("label"); unlockLabel.textContent = "Password for included recordings"; const password = document.createElement("input"); password.type = "password"; password.autocomplete = "off"; unlockLabel.appendChild(password); const unlock = document.createElement("button"); unlock.type = "button"; unlock.textContent = "Unlock and remember on this device";
     const inputLabel = document.createElement("label"); inputLabel.textContent = "Add audio files"; const input = document.createElement("input"); input.type = "file"; input.accept = "audio/*,.m4a"; input.multiple = true; inputLabel.appendChild(input);
     const status = document.createElement("p"); status.setAttribute("role", "status");
@@ -11153,30 +11328,30 @@ function renderLocalAudioSettings() {
     unlock.addEventListener("click", async () => { if (!password.value) { status.textContent = "Enter the audio password first."; return; } unlock.disabled = true; status.textContent = "Unlocking encrypted recordings…"; try { await unlockBundledAudio(password.value); password.value = ""; status.textContent = "Unlocked and remembered on this device. No audio has been played."; await refresh(); } catch (error) { password.value = ""; status.textContent = `Could not unlock: ${error.message}`; } finally { unlock.disabled = false; } });
     const refresh = async () => {
         try {
-            const config = state.structure.settings.localAudio || {}, unlocked = Boolean(await loadRememberedAudioKey()); const tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: config.names?.[track.id] || track.name })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!section.isConnected) return;
-            content.replaceChildren(); const unlockState = document.createElement("p"); unlockState.textContent = unlocked ? "Included recordings: unlocked on this device." : "Included recordings: locked."; content.appendChild(unlockState); const list = document.createElement("div"); list.className = "localAudioTrackList";
+            const config = state.structure.settings.localAudio || {}, unlocked = Boolean(await loadRememberedAudioKey()); if (unlocked) { try { await loadBundledAudioNames(); } catch (error) { status.textContent = "Could not load encrypted track names. Check that audio/names.kba is uploaded and the device is online."; console.warn(error); } } const tracks = [...bundledAudioTracks.map((track) => ({ ...track, name: bundledAudioDisplayName(track) })), ...(await listLocalAudioTracks())].sort((a, b) => a.name.localeCompare(b.name)); if (!section.isConnected) return;
+            content.replaceChildren(); const overview = document.createElement("div"); overview.className = "localAudioOverview"; const unlockState = document.createElement("span"); unlockState.textContent = unlocked ? "🔓 Included tracks unlocked" : "🔒 Included tracks locked"; const sessionState = document.createElement("span"); sessionState.textContent = audioSession.enabled ? "♫ Audio enabled for session" : "◌ Audio off for session"; const trackCount = document.createElement("span"); trackCount.textContent = `${tracks.length} recordings`; overview.append(unlockState, sessionState, trackCount); content.appendChild(overview); const list = document.createElement("div"); list.className = "localAudioTrackList";
             if (!tracks.length) { const empty = document.createElement("p"); empty.textContent = "No audio imported on this device yet."; list.appendChild(empty); }
             tracks.forEach((track) => {
-                const row = document.createElement("div"); row.className = "localAudioTrack"; const name = document.createElement("input"); name.type = "text"; name.value = track.name; name.maxLength = 100; name.setAttribute("aria-label", `Name for ${track.name}`);
-                const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Save name"; rename.addEventListener("click", async () => { const value = name.value.trim(); if (!value) { status.textContent = "Enter a name for the track."; return; } rename.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), names: { ...(state.structure.settings.localAudio?.names || {}), [track.id]: value } } })); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("Track is no longer available."); await putLocalAudioTrack({ ...original, name: value }); } updateCachedLocalAudioName(track.id, value); status.textContent = "Name saved locally."; await refresh(); } catch (error) { console.error("Could not save the audio name:", error); status.textContent = `Could not save the name: ${error?.message || "local storage could not be written"}`; } finally { rename.disabled = false; } });
+                const row = document.createElement("div"); row.className = "localAudioTrack"; row.dataset.trackName = track.name.toLocaleLowerCase(); const name = document.createElement("input"); name.type = "text"; name.value = track.name; name.maxLength = 100; name.setAttribute("aria-label", `Name for ${track.name}`);
+                const rename = document.createElement("button"); rename.type = "button"; rename.textContent = "Save name"; rename.addEventListener("click", async () => { const value = name.value.trim(); if (!value) { status.textContent = "Enter a name for the track."; return; } rename.disabled = true; try { if (track.id.startsWith("bundled:")) await saveAuctionChanges(() => ({ localAudio: { ...(state.structure.settings.localAudio || {}), names: { ...(state.structure.settings.localAudio?.names || {}), [track.id]: value } } })); else { const original = await getLocalAudioTrack(track.id); if (!original) throw new Error("Track is no longer available."); await putLocalAudioTrack({ ...original, originalName: original.originalName || original.name, name: value }); } updateCachedLocalAudioName(track.id, value); status.textContent = "Name saved locally."; await refresh(); } catch (error) { console.error("Could not save the audio name:", error); status.textContent = `Could not save the name: ${error?.message || "local storage could not be written"}`; } finally { rename.disabled = false; } });
                 const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove"; remove.addEventListener("click", async () => { if (!confirm(`Remove “${track.name}” from this device's audio library? Your original file is not changed.`)) return; remove.disabled = true; try { if (audioSession.trackId === track.id) suspendLocalAudio("Track removed · choose another in audio settings"); await deleteLocalAudioTrack(track.id); status.textContent = "Removed from the local audio library."; await refresh(); } catch (error) { status.textContent = `Could not remove audio: ${error.message}`; remove.disabled = false; } });
-                row.append(name, rename); if (!track.id.startsWith("bundled:")) row.appendChild(remove); list.appendChild(row);
+                row.append(name); const initialName = audioOriginalName(track); if (initialName && initialName !== track.name) { const description = document.createElement("small"); description.textContent = `Original: ${initialName}`; row.appendChild(description); } const duration = bundledAudioDurations[track.id]; if (duration) { const length = document.createElement("small"); length.textContent = `Length: ${audioClock(duration)}`; row.appendChild(length); } row.append(rename); if (!track.id.startsWith("bundled:")) row.appendChild(remove); list.appendChild(row);
             });
             const modeLabel = document.createElement("label"); modeLabel.textContent = "Audio mode"; const mode = document.createElement("select"); [["background", "Background track"], ["personality", "Personality dialogue tracks"]].forEach(([id, label]) => { const option = document.createElement("option"); option.value = id; option.textContent = label; option.selected = (config.mode || "background") === id; mode.appendChild(option); }); modeLabel.appendChild(mode); content.appendChild(modeLabel);
             const excerptLabel = document.createElement("label"); excerptLabel.textContent = "Personality excerpt length"; const excerpt = document.createElement("select"); [5, 10, 20, 30].forEach((seconds) => { const option = document.createElement("option"); option.value = String(seconds); option.textContent = `${seconds} seconds`; option.selected = audioExcerptSeconds() === seconds; excerpt.appendChild(option); }); excerptLabel.appendChild(excerpt); content.appendChild(excerptLabel);
-            const selectTrack = (labelText, chosen, parent = content) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = track.name; select.appendChild(option); }); select.value = chosen || ""; label.appendChild(select); parent.appendChild(label); return select; };
+            const selectTrack = (labelText, chosen, parent = content) => { const label = document.createElement("label"); label.textContent = labelText; const select = document.createElement("select"); const none = document.createElement("option"); none.value = ""; none.textContent = "None"; select.appendChild(none); tracks.forEach((track) => { const option = document.createElement("option"); option.value = track.id; option.textContent = audioTrackOptionLabel(track); select.appendChild(option); }); select.value = chosen || ""; label.appendChild(select); parent.appendChild(label); return select; };
             const background = selectTrack("Background track (loops)", config.backgroundTrackId), assignments = new Map(), assignmentPanel = document.createElement("details"), assignmentTitle = document.createElement("summary"); assignmentPanel.className = "localAudioAssignments"; assignmentTitle.textContent = "Choose tracks for personalities"; assignmentPanel.appendChild(assignmentTitle); getAuctionBidders().forEach((bidder) => assignments.set(bidder.id, selectTrack(`${bidder.name}'s dialogue track`, config.assignments?.[bidder.id], assignmentPanel))); content.appendChild(assignmentPanel);
             const showMode = () => { const personality = mode.value === "personality"; excerptLabel.hidden = !personality; assignmentPanel.hidden = !personality; background.parentElement.hidden = personality; }; mode.addEventListener("change", showMode); showMode();
-            const save = document.createElement("button"); save.type = "button"; save.textContent = "1. Save audio choices"; save.addEventListener("click", async () => { save.disabled = true; try { const previous = state.structure.settings.localAudio || {}, modeChanged = (previous.mode || "background") !== mode.value || (mode.value === "background" && (previous.backgroundTrackId || "") !== background.value); await saveAuctionChanges(() => { const current = state.structure.settings.localAudio || {}, updated = { ...(current.assignments || {}) }; assignments.forEach((select, id) => { if (select.value) updated[id] = select.value; else delete updated[id]; }); return { localAudio: { ...current, mode: mode.value, backgroundTrackId: background.value, assignments: updated, excerptSeconds: Number(excerpt.value) } }; }); if (audioSession.enabled && modeChanged) suspendLocalAudio(mode.value === "personality" ? "Personality audio ready · waiting for dialogue" : "Background track ready · tap Play"); status.textContent = audioSession.enabled ? "Choices saved. The bottom player is still enabled." : "Choices saved. Enable audio below when you are ready."; await refresh(); } catch (error) { status.textContent = `Could not save audio choices: ${error.message}`; } finally { save.disabled = false; } });
-            const start = document.createElement("button"); start.type = "button"; start.className = "localAudioEnable"; start.textContent = "2. Enable audio for this session…"; start.addEventListener("click", () => { const saved = state.structure.settings.localAudio || {}; if (audioSession.enabled) { status.textContent = "Audio is already enabled. The player is at the bottom."; return; } if (saved.mode !== "personality" && !saved.backgroundTrackId) { status.textContent = "Choose a background track and save your choices first."; return; } if (saved.mode === "personality" && !Object.values(saved.assignments || {}).some(Boolean)) { status.textContent = "Assign at least one personality track and save your choices first."; return; } if (!confirm("Allow the selected local audio to play in this session? You can stop it at any time.")) return; audioSession.enabled = true; showAudioSessionBar(saved.mode === "personality" ? "Personality audio enabled · waiting for dialogue" : "Starting background audio…"); if (saved.mode !== "personality") void playLocalAudioTrack(saved.backgroundTrackId, `background:${saved.backgroundTrackId}`, true); status.textContent = "Audio enabled. The player stays at the bottom until you disable it."; });
-            const library = document.createElement("details"), libraryTitle = document.createElement("summary"), libraryHelp = document.createElement("p"); library.className = "localAudioLibrary"; libraryTitle.textContent = "Add, rename, or remove tracks"; libraryHelp.textContent = "Imported audio stays on this device and is not included in the existing app backup; keep your originals."; library.open = libraryOpen; library.addEventListener("toggle", () => { libraryOpen = library.open; }); library.append(libraryTitle, libraryHelp, inputLabel, list);
+            const save = document.createElement("button"); save.type = "button"; save.className = "localAudioSave"; save.textContent = "Save playback choices"; save.addEventListener("click", async () => { save.disabled = true; try { const previous = state.structure.settings.localAudio || {}, modeChanged = (previous.mode || "background") !== mode.value || (mode.value === "background" && (previous.backgroundTrackId || "") !== background.value); await saveAuctionChanges(() => { const current = state.structure.settings.localAudio || {}, updated = { ...(current.assignments || {}) }; assignments.forEach((select, id) => { if (select.value) updated[id] = select.value; else delete updated[id]; }); return { localAudio: { ...current, mode: mode.value, backgroundTrackId: background.value, assignments: updated, excerptSeconds: Number(excerpt.value) } }; }); if (audioSession.enabled && modeChanged) suspendLocalAudio(mode.value === "personality" ? "Personality audio ready · waiting for dialogue" : "Background track ready · tap Play"); status.textContent = audioSession.enabled ? "Choices saved. The bottom player is still enabled." : "Choices saved. Enable audio below when you are ready."; await refresh(); } catch (error) { status.textContent = `Could not save audio choices: ${error.message}`; } finally { save.disabled = false; } });
+            const start = document.createElement("button"); start.type = "button"; start.className = "localAudioEnable"; start.textContent = "Enable audio for this session…"; start.addEventListener("click", () => { const saved = state.structure.settings.localAudio || {}; if (audioSession.enabled) { status.textContent = "Audio is already enabled. The player is at the bottom."; return; } if (saved.mode !== "personality" && !saved.backgroundTrackId) { status.textContent = "Choose a background track and save your choices first."; return; } if (saved.mode === "personality" && !Object.values(saved.assignments || {}).some(Boolean)) { status.textContent = "Assign at least one personality track and save your choices first."; return; } if (!confirm("Allow the selected local audio to play in this session? You can stop it at any time.")) return; audioSession.enabled = true; showAudioSessionBar(saved.mode === "personality" ? "Personality audio enabled · waiting for dialogue" : "Starting background audio…"); if (saved.mode !== "personality") void playLocalAudioTrack(saved.backgroundTrackId, `background:${saved.backgroundTrackId}`, true); status.textContent = "Audio enabled. The player stays at the bottom until you disable it."; });
+            const library = document.createElement("details"), libraryTitle = document.createElement("summary"), libraryHelp = document.createElement("p"); library.className = "localAudioLibrary"; libraryTitle.textContent = "Import & manage tracks"; libraryHelp.textContent = "Search to rename tracks or remove a local import. Imported audio stays on this device and is not included in the existing app backup; keep your originals."; library.open = libraryOpen; library.addEventListener("toggle", () => { libraryOpen = library.open; }); const trackSearch = document.createElement("input"); trackSearch.type = "search"; trackSearch.placeholder = "Search tracks to manage"; trackSearch.setAttribute("aria-label", "Search tracks to manage"); const matches = document.createElement("small"); const filterTracks = () => { const query = trackSearch.value.trim().toLocaleLowerCase(); let visible = 0; list.querySelectorAll(".localAudioTrack").forEach((row) => { row.hidden = !row.dataset.trackName.includes(query); if (!row.hidden) visible++; }); matches.textContent = `${visible} of ${tracks.length} tracks`; }; trackSearch.addEventListener("input", filterTracks); filterTracks(); library.append(libraryTitle, libraryHelp, inputLabel, trackSearch, matches, list);
             content.append(save, start, library);
-            if (config.mode === "personality") audioSession.preloaded = null;
-            else if (config.backgroundTrackId && audioSession.preloaded?.id !== config.backgroundTrackId) { try { audioSession.preloaded = await getLocalAudioTrack(config.backgroundTrackId); } catch (_) { audioSession.preloaded = null; } }
+            // Do not download or decrypt a whole recording just by opening settings.
+            if (audioSession.preloaded?.id !== config.backgroundTrackId || config.mode === "personality") audioSession.preloaded = null;
         } catch (error) { if (section.isConnected) status.textContent = `Could not open local audio storage: ${error.message}`; }
     };
     section.addEventListener("toggle", () => { if (section.open && !editing) void refresh(); });
-    input.addEventListener("change", async () => { const files = Array.from(input.files || []); if (!files.length) return; editing = true; input.disabled = true; let imported = 0; try { for (const file of files) { if (!file.type.startsWith("audio/") && !/\.(m4a|mp3|wav|aac|ogg|opus|flac)$/i.test(file.name)) throw new Error(`${file.name} is not a supported audio file.`); await putLocalAudioTrack({ id: newLocalGameRecordId(), name: file.name.replace(/\.[^.]+$/, "").slice(0, 100) || "Audio track", size: file.size, blob: file }); imported++; } status.textContent = `Imported ${imported} ${imported === 1 ? "track" : "tracks"} locally. You can rename them below.`; } catch (error) { status.textContent = `Imported ${imported} of ${files.length}. ${error.message || "Local storage is full or unavailable."}`; } finally { editing = false; input.disabled = false; input.value = ""; await refresh(); } });
+    input.addEventListener("change", async () => { const files = Array.from(input.files || []); if (!files.length) return; editing = true; input.disabled = true; let imported = 0; try { for (const file of files) { if (!file.type.startsWith("audio/") && !/\.(m4a|mp3|wav|aac|ogg|opus|flac)$/i.test(file.name)) throw new Error(`${file.name} is not a supported audio file.`); const initialName = file.name.replace(/\.[^.]+$/, "").slice(0, 100) || "Audio track"; await putLocalAudioTrack({ id: newLocalGameRecordId(), name: initialName, originalName: initialName, size: file.size, blob: file }); imported++; } status.textContent = `Imported ${imported} ${imported === 1 ? "track" : "tracks"} locally. You can rename them below.`; } catch (error) { status.textContent = `Imported ${imported} of ${files.length}. ${error.message || "Local storage is full or unavailable."}`; } finally { editing = false; input.disabled = false; input.value = ""; await refresh(); } });
     return section;
 }
 
@@ -14880,6 +15055,7 @@ function renderMessage(message, sourceChannelId = state.activeChannelId) {
     reactButton.type = "button";
     reactButton.textContent = "React";
     reactButton.addEventListener("click", () => addReaction(message.id, sourceChannelId));
+    if ((message.attachments || []).some((attachment) => attachment.type?.startsWith("image/"))) { const tagButton = document.createElement("button"); tagButton.type = "button"; tagButton.className = "iconButton"; tagButton.textContent = "Tags"; tagButton.addEventListener("click", () => editPhotoMessageTags(message, sourceChannelId)); actions.appendChild(tagButton); }
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "iconButton danger";
